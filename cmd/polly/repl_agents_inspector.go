@@ -508,15 +508,6 @@ func (list *agentsInspectorState) rows(sections map[agentSection][]string, heade
 	}
 	lanes := list.lanes
 	list.laneRows = nil
-	// A native image fills a blank row; the cell fallback draws the row.
-	laneRow := func(id, cells, action string) {
-		if lanes.native {
-			list.laneRows = append(list.laneRows, agentLaneRow{row: len(rows), id: id})
-			add(strings.Repeat(" ", width), action)
-			return
-		}
-		add(cells, action)
-	}
 	if lanes != nil {
 		if list.scrub {
 			if lanes.native {
@@ -561,14 +552,16 @@ func (list *agentsInspectorState) rows(sections map[agentSection][]string, heade
 		for _, id := range ids {
 			action := "agents-open:" + id
 			add(list.row(id, body, column, statusCap, runColumn), action)
-			if lanes == nil {
-				for _, row := range list.detailRows(id, width) {
-					add(row, action)
+			if lanes != nil {
+				// A native image fills a blank row; the cell fallback draws the row.
+				if lanes.native {
+					list.laneRows = append(list.laneRows, agentLaneRow{row: len(rows), id: id})
+					add(strings.Repeat(" ", width), action)
+				} else {
+					add(lanes.laneRow(id), action)
 				}
-				continue
 			}
-			laneRow(id, lanes.laneRow(id), action)
-			if list.scrub {
+			if lanes != nil && list.scrub {
 				if row := lanes.scrubRow(id, width); row != "" {
 					add(row, action)
 				}

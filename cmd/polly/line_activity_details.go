@@ -22,8 +22,8 @@ type lineActivityDetails struct {
 type lineToolDetail struct {
 	id, label, line string
 	// The settled parts, kept so a later change report can rebuild the line.
-	ok             bool
-	meta, duration string
+	ok       bool
+	duration string
 }
 
 func (d *lineActivityDetails) appendThought(chunk string, segmentBreak bool) {
@@ -57,7 +57,7 @@ func (t *lineToolDetail) finish(p toolPresentation) {
 		return
 	}
 	t.ok, t.duration = true, p.elapsed()
-	t.line = toolOKLine(t.label, t.duration, t.meta)
+	t.line = toolOKLine(t.label, t.duration, "")
 }
 
 // setPresentation adds the change counts a settled call reported to its
@@ -70,7 +70,7 @@ func (d *lineActivityDetails) setPresentation(id string, p toolPresentation) {
 		if t.id != id || !t.ok {
 			continue
 		}
-		t.line = toolOKLine(t.label+" "+p.counts, t.duration, t.meta)
+		t.line = toolOKLine(t.label+" "+p.counts, t.duration, "")
 		return
 	}
 }

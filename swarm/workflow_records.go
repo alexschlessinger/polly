@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"time"
@@ -183,19 +182,7 @@ func workflowRecordForWrite[T any](tx *recordTx, key sessions.RecordKey) (*T, er
 	if err != nil || !found {
 		return nil, err
 	}
-	var saved *T
-	decoder := json.NewDecoder(bytes.NewReader(record.Payload))
-	decoder.UseNumber()
-	if err := decoder.Decode(&saved); err != nil {
-		return nil, fmt.Errorf("read swarm %s %q: %w", key.Kind, key.ID, err)
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, fmt.Errorf("read swarm %s %q: trailing JSON: %w", key.Kind, key.ID, sessions.ErrCoordinationFormat)
-	}
-	if saved == nil {
-		return nil, fmt.Errorf("read swarm %s %q: null record: %w", key.Kind, key.ID, sessions.ErrCoordinationFormat)
-	}
-	return saved, nil
+	return decodeRecord[T](record, true)
 }
 
 func savedWorkflowHeader(tx *recordTx, id string) (*workflow.ReportHeader, error) {
@@ -329,22 +316,8 @@ func (r *Runtime) repairWorkflowTaskNotice(tx *recordTx, header *workflow.Report
 		t.Owner == d.Owner && t.Revision == d.Revision && t.Status == d.Status && t.AcceptedRevision == d.AcceptedRevision {
 		return nil
 	}
-	query := sessions.RecordQuery{Index: sessions.CoordinationIndexOverviewDependency, Key: sessions.CoordinationIndexKey("task", t.ID), Limit: 100}
-	for {
-		page, err := tx.Mails(query)
-		if err != nil {
-			return err
-		}
-		for _, record := range page.Records {
-			m := record.Value
-			if m.Task == t.ID && m.Revision == t.Revision && m.Execution == t.Execution {
-				return nil
-			}
-		}
-		if page.Next == "" {
-			break
-		}
-		query.After = page.Next
+	if exists, err := tx.lifecycleResultNotice(t); err != nil || exists {
+		return err
 	}
 	owner, err := tx.Member(t.Owner)
 	if err != nil || owner == nil {

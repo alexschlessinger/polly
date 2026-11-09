@@ -16,49 +16,6 @@ import (
 	"path/filepath"
 )
 
-// refreshEligible is also run in the launch transaction. ownExecution is only
-// the invocation being committed, never authority to ignore another worker.
-func (r *Runtime) refreshEligible(s *State, m *Member, f *FollowupCall, mailID, ownExecution string) error {
-	if m == nil {
-		return fail("unknown_member", "refresh requires an existing worker")
-	}
-	if err := userStopRefusal(m); err != nil {
-		return err
-	}
-	if err := refreshReservation(s, m.ID, mailID); err != nil {
-		return err
-	}
-	if r.workflowReserved(m.Controller) {
-		return fail("session_busy", "worker is reserved by an active workflow; wait for it to settle or cancel it")
-	}
-	r.mu.Lock()
-	active := r.active[m.ID]
-	busy := active != nil && active.id != ownExecution
-	r.mu.Unlock()
-	if busy {
-		return fail("session_busy", "refresh requires an idle worker; wait for its execution to finish")
-	}
-	if ok, why := memberReleaseEligible(s, m, nil); !ok {
-		return fail("refresh_refused", "refresh requires a completed, settled assignment: "+why+"; resume, accept, integrate or reconcile the existing work first")
-	}
-	if pendingFollowup(s, m.ID) {
-		return fail("session_busy", "worker has a pending follow-up; let that work settle before refreshing")
-	}
-	t := s.Tasks[m.Task]
-	if t == nil || t.Owner != m.ID || t.Status != "done" {
-		return fail("refresh_refused", "refresh requires the worker's previous assignment to be done; it does not accept prior work")
-	}
-	if f != nil && (f.PreviousTask != t.ID || f.PreviousRevision != t.Revision) {
-		return fail("stale_task", "assignment changed after the refresh selected its baseline; start a new follow-up")
-	}
-	for _, run := range s.Runs {
-		if run.Status == "paused" || run.Status == "running" && run.Starts >= run.Limit {
-			return ErrBudget
-		}
-	}
-	return validateRequirement(t, m.ReadOnly)
-}
-
 // refreshFollowup pins intent before release. Preparation is never Start mail:
 // only the assignment/execution transaction can make it runnable. Maintenance
 // precedes launchMu, as it does for release and forget.
@@ -348,21 +305,4 @@ func (r *Runtime) parkScratch(mailID string, c *ExecutionContext) (held, carry s
 		return "", "lost"
 	}
 	return held, "carried"
-}
-
-// The pending task is constructed for workspace selection, then inserted only
-// inside the transaction committing the execution and launch receipt.
-func (r *Runtime) refreshLaunchTask(s *State, m *Member, mailID, ownExecution string) (*Task, error) {
-	f, mail := s.Followups[mailID], s.Messages[mailID]
-	if f == nil || mail == nil || !f.Refresh || f.Phase != "preparing" || f.Member != m.ID {
-		return nil, fail("stale_task", "refresh preparation is no longer available; retry explicitly")
-	}
-	if err := r.refreshEligible(s, m, f, mailID, ownExecution); err != nil {
-		return nil, err
-	}
-	if f.Base != "" && !validTaskSnapshot(s.Snapshots[f.Base], f.Base) {
-		return nil, unavailableWorkspace()
-	}
-	prior := s.Tasks[f.PreviousTask]
-	return &Task{ID: f.Task, Follows: prior.ID, Owner: m.ID, Requirement: requirementOf(s, prior), Criteria: criteriaFor(requirementOf(s, prior)), Description: mail.Text, StartingSnapshot: f.Base, SourceRoot: f.Source, Status: "pending"}, nil
 }

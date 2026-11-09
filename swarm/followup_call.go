@@ -91,38 +91,6 @@ func followupViewValues(mail *Mail, f *FollowupCall, commit string) *FollowupVie
 	return v
 }
 
-func followupReplay(s *State, parent, member, message, callID string, refresh bool) (*Mail, error) {
-	if callID == "" {
-		return nil, nil
-	}
-	for _, mail := range s.Messages {
-		if mail.From != parent || mail.CallID != callID {
-			continue
-		}
-		f := s.Followups[mail.ID]
-		if mail.To != member || mail.Text != message || refresh != (f != nil && f.Refresh) {
-			return nil, errors.New("follow-up call ID already used with different arguments")
-		}
-		if mail.StartError != "" {
-			if f != nil && f.ErrorCode != "" {
-				return nil, fail(f.ErrorCode, mail.StartError)
-			}
-			return nil, errors.New(mail.StartError)
-		}
-		return mail, nil
-	}
-	return nil, nil
-}
-
-func refreshReservation(s *State, member, except string) error {
-	for id, f := range s.Followups {
-		if id != except && f.Member == member && f.Refresh && f.Phase == "preparing" {
-			return fail("session_busy", "member has a refresh in preparation; retry after it finishes")
-		}
-	}
-	return nil
-}
-
 func followupOrigin(m *Member, task *Task) string {
 	if task != nil && task.Status == "done" {
 		if !m.ReadOnly && task.Snapshot != "" {
@@ -131,43 +99,6 @@ func followupOrigin(m *Member, task *Task) string {
 		return "original_baseline"
 	}
 	return "existing_workspace"
-}
-
-// Bind pending ordinary follow-ups in the same transaction as assignment or
-// resume, and hand them back in posting order so the launch can put their
-// text into the brief. A receipt already bound to an execution never follows
-// later work.
-func bindFollowups(s *State, m *Member, t *Task, e *Execution) []*Mail {
-	var bound []*Mail
-	for id, f := range s.Followups {
-		mail := s.Messages[id]
-		if f.Refresh || f.Member != m.ID || f.Phase != "pending" || mail == nil || !mail.Start || mail.Delivered {
-			continue
-		}
-		f.Task, f.Execution, f.Base, f.Source = t.ID, e.ID, e.Base, e.SourceRoot
-		f.Phase = "launched"
-		if t.ID != f.PreviousTask {
-			f.Operation = "new_task"
-		} else {
-			f.Operation = "resume"
-			f.BaseOrigin = "existing_workspace"
-		}
-		if f.Source != "" {
-			f.BaseOrigin = "live_source"
-		}
-		bound = append(bound, mail)
-	}
-	sort.Slice(bound, func(i, j int) bool {
-		if bound[i].Posted.Equal(bound[j].Posted) {
-			return bound[i].ID < bound[j].ID
-		}
-		return bound[i].Posted.Before(bound[j].Posted)
-	})
-	return bound
-}
-
-func refreshBrief(s *State, f *FollowupCall) string {
-	return refreshBriefValues(f, snapshotCommit(s, f.Base))
 }
 
 func refreshBriefValues(f *FollowupCall, commit string) string {

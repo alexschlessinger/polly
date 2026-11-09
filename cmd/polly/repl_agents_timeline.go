@@ -481,7 +481,7 @@ func (l *agentLanes) scrubRow(id string, width int) string {
 		if span.phase == phaseTool && span.call.Name != "" {
 			var row toolDisclosureRow
 			row.setCall(span.call)
-			label = (&replModel{toolBaseDir: l.baseDir}).latestToolLabel(row, max(8, room-12))
+			label = latestToolLabel(row, max(8, room-12), l.baseDir)
 		}
 		label = style.StripImageMarkers(style.SanitizeImageText(label))
 		meta := "  " + axisLabel(at.Sub(span.start)) + " in"

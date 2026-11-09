@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -307,10 +308,7 @@ func (p *sessionsPicker) removeItem(id string) {
 		return
 	}
 	delete(p.itemIndex, id)
-	items := p.modal.items
-	copy(items[i:], items[i+1:])
-	items[len(items)-1] = replModalItem{}
-	p.modal.items = items[:len(items)-1]
+	p.modal.items = slices.Delete(p.modal.items, i, i+1)
 	for n := i; n < len(p.modal.items); n++ {
 		p.itemIndex[p.modal.items[n].identity] = n
 	}

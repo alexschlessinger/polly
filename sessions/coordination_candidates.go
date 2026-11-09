@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/coordindex"
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 )
 
 // CoordinationCandidateSelector names an observation-only runtime predicate.
@@ -241,7 +242,7 @@ func candidateMatches(r CoordinationReader, q CoordinationCandidateQuery, spec c
 		var v struct{ Status, Kind string }
 		err := candidateDecode(record, &v)
 		workflow, _, _ := strings.Cut(record.Key.ID, "/")
-		return workflow == q.Key && v.Status == "running" && v.Kind != "agent" && v.Kind != "followup", err
+		return workflow == q.Key && coordsem.WorkStepRunning(v.Kind, v.Status), err
 	case CandidateWorkflowContextStep:
 		var v struct {
 			Status, Kind string
@@ -269,7 +270,7 @@ func candidateMatches(r CoordinationReader, q CoordinationCandidateQuery, spec c
 		if err := candidateDecode(record, &v); err != nil {
 			return false, err
 		}
-		if v.Status != "applying" && v.Status != "recovery_required" {
+		if !coordsem.UncertainApply(v.Status) {
 			return false, nil
 		}
 		for _, ref := range v.Tasks {

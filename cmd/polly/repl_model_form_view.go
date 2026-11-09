@@ -159,14 +159,6 @@ func formLine(width int, left, note []formSpan) (string, int) {
 	return row + strings.Repeat(" ", gap) + noteText, formPad + used + gap
 }
 
-func padCells(s string, width int) string {
-	return s + strings.Repeat(" ", max(0, width-rw.StringWidth(s)))
-}
-
-func padCellsLeft(s string, width int) string {
-	return strings.Repeat(" ", max(0, width-rw.StringWidth(s))) + s
-}
-
 func (f *modelForm) text(maxRows, width int) string {
 	f.hits = f.hits[:0]
 	if f.modal != nil {
@@ -299,7 +291,7 @@ func (f *modelForm) setupRows(maxRows, width int) []string {
 // its arrows, and they step it when clicked.
 func (f *modelForm) fieldRow(width, y, n int) string {
 	label, value, note := f.field(n, max(1, width-formValueX-formPad))
-	caret, name := formSpan{"  ", "", ""}, formSpan{padCells(label, formLabelW), "", ""}
+	caret, name := formSpan{"  ", "", ""}, formSpan{rw.FillRight(label, formLabelW), "", ""}
 	focused := f.focus == n
 	if focused {
 		caret = formSpan{"› ", "accent", "bold"}
@@ -573,10 +565,10 @@ func (f *modelForm) listRows(width, y, n int) []string {
 	columns := func(context, in, out string, role string) []formSpan {
 		var spans []formSpan
 		if showContext {
-			spans = append(spans, formSpan{padCellsLeft(context, formContextW), role, ""})
+			spans = append(spans, formSpan{rw.FillLeft(context, formContextW), role, ""})
 		}
 		if showPrices {
-			spans = append(spans, formSpan{padCellsLeft(in, formPriceW), role, ""}, formSpan{padCellsLeft(out, formPriceW), role, ""})
+			spans = append(spans, formSpan{rw.FillLeft(in, formPriceW), role, ""}, formSpan{rw.FillLeft(out, formPriceW), role, ""})
 		}
 		return spans
 	}

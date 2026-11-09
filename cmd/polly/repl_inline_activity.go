@@ -123,7 +123,7 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool, callWidth int) 
 // its place, so a call too quick to watch still shows what it was and how
 // it ended. The label fits width columns.
 func (m *replModel) latestToolField(row toolDisclosureRow, width int) turnDockField {
-	label := style.StripImageMarkers(m.latestToolLabel(row, width-2))
+	label := style.StripImageMarkers(latestToolLabel(row, width-2, m.toolBaseDir))
 	var field turnDockField
 	if !row.settled {
 		field = activityField(label, activityRunning, false)
@@ -142,13 +142,13 @@ func (m *replModel) latestToolField(row toolDisclosureRow, width int) turnDockFi
 
 // latestToolLabel names a call for the activity line: the command, the
 // file, or the tool, fit to width columns.
-func (m *replModel) latestToolLabel(row toolDisclosureRow, width int) string {
+func latestToolLabel(row toolDisclosureRow, width int, baseDir string) string {
 	switch {
 	case row.bash != nil:
 		return "$ " + row.bash.fit(max(8, width-2))
 	case row.file != nil:
 		name := compactToolName(row.toolName)
-		return name + " " + fitToolPath(relativeToolPath(row.file.path, m.toolBaseDir), max(8, width-rw.StringWidth(name)-1))
+		return name + " " + fitToolPath(relativeToolPath(row.file.path, baseDir), max(8, width-rw.StringWidth(name)-1))
 	default:
 		if row.toolName == "" {
 			return row.label
