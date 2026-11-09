@@ -35,9 +35,17 @@ func releaseRecordsFixture(t *testing.T, history int) (*Runtime, sessions.Coordi
 	return r, r.parent
 }
 
+// Release fixtures stop automatic release and have no active executions, but a
+// completed release can still start an idle wake. It reads r.parent under launchMu.
+func setReleaseTestParent(r *Runtime, parent sessions.CoordinationSession) {
+	r.launchMu.Lock()
+	r.parent = parent
+	r.launchMu.Unlock()
+}
+
 func seedReleaseRecords(t *testing.T, r *Runtime, parent sessions.CoordinationSession, id string) {
 	t.Helper()
-	r.parent = parent
+	setReleaseTestParent(r, parent)
 	if err := r.updateRecords(t.Context(), func(tx *recordTx) error {
 		if err := tx.PutMember(&Member{ID: id, Context: id, Execution: id, Task: id, Controller: "owner"}); err != nil {
 			return err
@@ -56,15 +64,44 @@ func seedReleaseRecords(t *testing.T, r *Runtime, parent sessions.CoordinationSe
 
 type releaseMeasuredSession struct {
 	*followupCountedSession
-	metrics *runtimemetrics.Recorder
+	metrics    *runtimemetrics.Recorder
+	background context.Context
 }
 
 func (s *releaseMeasuredSession) ReadRecords(ctx context.Context, fn func(sessions.CoordinationReader) error) error {
+	// Idle wake checks use the runtime context, independently of the release.
+	// Exclude them without losing the synchronous finishing reads, which use
+	// a separate parent-lease context rather than the caller's context.
+	if ctx == s.background {
+		return s.records.ReadRecords(ctx, fn)
+	}
 	return s.followupCountedSession.ReadRecords(runtimemetrics.WithRecorder(ctx, s.metrics), fn)
 }
 
 func (s *releaseMeasuredSession) UpdateRecords(ctx context.Context, fn func(sessions.CoordinationTx) error) (sessions.CoordinationCommit, error) {
 	return s.followupCountedSession.UpdateRecords(runtimemetrics.WithRecorder(ctx, s.metrics), fn)
+}
+
+func TestReleaseMeasurementExcludesIdleWake(t *testing.T) {
+	t.Parallel()
+	r, parent := releaseRecordsFixture(t, 0)
+	seedReleaseRecords(t, r, parent, "selected")
+	counted := &followupCountedSession{CoordinationSession: parent, records: parent.(sessions.CoordinationRecords), counts: new(followupAccessCounts)}
+	metrics := runtimemetrics.New()
+	setReleaseTestParent(r, &releaseMeasuredSession{followupCountedSession: counted, metrics: metrics, background: r.ctx})
+	t.Cleanup(func() { setReleaseTestParent(r, parent) })
+
+	// Force the same read that release completion starts asynchronously, rather
+	// than relying on the scheduler to overlap it with a measurement window.
+	r.wakeIdleMember("selected")
+	c := counted.counts
+	got := [6]int64{c.reads.Load(), c.writes.Load(), c.gets.Load(), c.queries.Load(), c.rows.Load(), c.broad.Load()}
+	if got != [6]int64{} {
+		t.Fatalf("idle wake contaminated release counts: %v", got)
+	}
+	if metrics.Snapshot() != (runtimemetrics.Snapshot{}) {
+		t.Fatal("idle wake contaminated release metrics")
+	}
 }
 
 func TestRecordReleaseExactBoundedAndLegacyParity(t *testing.T) {
@@ -75,15 +112,15 @@ func TestRecordReleaseExactBoundedAndLegacyParity(t *testing.T) {
 		for _, history := range []int{4, 256} {
 			t.Run(fmt.Sprintf("legacy=%v/history=%d", legacy, history), func(t *testing.T) {
 				r, parent := releaseRecordsFixture(t, history)
-				t.Cleanup(func() { r.parent = parent })
+				t.Cleanup(func() { setReleaseTestParent(r, parent) })
 				for _, mode := range []string{"automatic", "targeted", "cleanup", "discard", "workflow"} {
 					seedReleaseRecords(t, r, parent, "selected")
 					counted := &followupCountedSession{CoordinationSession: parent, records: parent.(sessions.CoordinationRecords), counts: new(followupAccessCounts)}
 					metrics := runtimemetrics.New()
 					if legacy {
-						r.parent = repositoryLegacyOnly{parent}
+						setReleaseTestParent(r, repositoryLegacyOnly{parent})
 					} else {
-						r.parent = &releaseMeasuredSession{followupCountedSession: counted, metrics: metrics}
+						setReleaseTestParent(r, &releaseMeasuredSession{followupCountedSession: counted, metrics: metrics, background: r.ctx})
 					}
 					ctx := runtimemetrics.WithRecorder(t.Context(), metrics)
 					var err error
