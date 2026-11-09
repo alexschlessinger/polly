@@ -645,15 +645,5 @@ func changedCoordinationScopes(ctx context.Context, parent string, before, after
 			}
 		}
 	}
-	out := make([]RevisionScope, 0, len(scopes))
-	for scope := range scopes {
-		out = append(out, scope)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Index != out[j].Index {
-			return out[i].Index < out[j].Index
-		}
-		return out[i].Key < out[j].Key
-	})
-	return out, nil
+	return sortedScopes(scopes), nil
 }
