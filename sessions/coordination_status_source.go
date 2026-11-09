@@ -165,7 +165,7 @@ func (s semanticSource) memberFacts(id string) (*statusMember, coordsem.MemberFa
 	}
 	return m, coordsem.DescribeMember(m.Control, e, display, open, f.deferred, f.delivering), nil
 }
-func (s semanticSource) taskDecision(f statusTaskBase, c *statusCandidate, reason string, deps int) (coordsem.DecisionItem, error) {
+func (s semanticSource) taskDecision(f statusTaskBase, reason string, deps int) (coordsem.DecisionItem, error) {
 	in := coordsem.TaskDecisionInputs{Task: f.task.Task, Execution: f.execution, Delivering: f.delivering, Editing: f.editing, Provenance: f.provenance, DependencyReason: reason, UnfinishedDependencies: deps}
 	if f.owner != nil {
 		in.Owner = &f.owner.Member
@@ -175,9 +175,6 @@ func (s semanticSource) taskDecision(f statusTaskBase, c *statusCandidate, reaso
 		return coordsem.DecisionItem{}, err
 	}
 	in.OwnerDisplay = owner.Display
-	if c != nil {
-		in.CandidateID, in.CandidateStatus, in.CandidateAction = c.ID, c.Status, statusCandidateAction(c)
-	}
 	e, err := semanticGet[struct {
 		RetryPause *struct {
 			Attempts    int

@@ -152,17 +152,10 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 }
 
 func (r *recordReader) publicationCommit(p *Publication) (string, error) {
-	if p == nil || p.Snapshot == "" {
+	if p == nil {
 		return "", nil
 	}
-	snapshot, err := r.Snapshot(p.Snapshot)
-	if err != nil {
-		return "", err
-	}
-	if validTaskSnapshot(snapshot, p.Snapshot) {
-		return snapshot.Commit, nil
-	}
-	return "", nil
+	return r.lifecycleSnapshotCommit(p.Snapshot)
 }
 
 func (tx *recordTx) advancePublicationMark(d *checkpointDependencies, p *Publication) error {

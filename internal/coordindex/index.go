@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 )
 
 type Index string
@@ -285,7 +288,7 @@ func Extract(kind, id string, payload json.RawMessage) ([]Relation, Order, error
 			add(FollowupPreparingMember, str("member"))
 		}
 	case "apply":
-		if status := str("status"); status == "applying" || status == "recovery_required" {
+		if coordsem.UncertainApply(str("status")) {
 			add(Index("semantic.uncertain-apply"), "")
 		}
 		var refs []struct {
@@ -425,13 +428,8 @@ func Extract(kind, id string, payload json.RawMessage) ([]Relation, Order, error
 	case "publication":
 		scope := PublicationScope(Publication{Scope: str("scope"), Kind: str("kind")})
 		run := str("run")
-		if scope == "machine" {
-			add(PublicationAudience, Key("machine"))
-		} else {
-			add(PublicationAudience, Key("run", run))
-		}
-		if scope != "run" {
-			add(PublicationAudience, Key("parent"))
+		for _, audience := range PublicationAudiences(Publication{Scope: scope, Run: run}) {
+			add(PublicationAudience, audience)
 		}
 		if key := str("key"); key != "" {
 			claimRun := run
@@ -490,11 +488,5 @@ func Extract(kind, id string, payload json.RawMessage) ([]Relation, Order, error
 		}
 		return relations[i].Key < relations[j].Key
 	})
-	out := relations[:0]
-	for _, r := range relations {
-		if len(out) == 0 || out[len(out)-1] != r {
-			out = append(out, r)
-		}
-	}
-	return out, order, nil
+	return slices.Compact(relations), order, nil
 }

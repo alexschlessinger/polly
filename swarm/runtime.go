@@ -347,9 +347,7 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 		}
 		// Appending interrupted receipts and clearing the intent must be one
 		// leased commit. An uncertain commit is inspected on reopen, not replayed.
-		raw := &sessions.CoordinationState{}
-		appendInterruptedIntent(raw, turn.Intent)
-		if err := tx.Effects(sessions.CoordinationEffects{Append: raw.Append}); err != nil {
+		if err := tx.Effects(sessions.CoordinationEffects{Append: interruptedIntent(turn.Intent)}); err != nil {
 			return err
 		}
 		turn.Intent = nil
@@ -364,17 +362,18 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 	return err
 }
 
-// appendInterruptedIntent replays a journaled tool batch into the transcript
+// interruptedIntent replays a journaled tool batch into the transcript
 // with an interrupted receipt for each of its calls: the agent learns what may
 // have run, and the runtime never executes the uncertain calls again.
-func appendInterruptedIntent(raw *sessions.CoordinationState, intent []messages.ChatMessage) {
-	raw.Append = append(raw.Append, intent...)
+func interruptedIntent(intent []messages.ChatMessage) []messages.ChatMessage {
+	out := append([]messages.ChatMessage(nil), intent...)
 	if len(intent) == 0 {
-		return
+		return out
 	}
 	for _, call := range intent[len(intent)-1].ToolCalls {
-		raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: llm.ToolInterruptedContent})
+		out = append(out, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: llm.ToolInterruptedContent})
 	}
+	return out
 }
 func (r *Runtime) prepare(ctx context.Context) error {
 	r.prepareMu.Lock()
@@ -2646,13 +2645,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 				if identity.ActorID != memberID || e == nil || e.Member != memberID || e.Generation != resume.Generation {
 					return errors.New("recovery generation changed")
 				}
-				appendMessages := append([]messages.ChatMessage(nil), e.Intent...)
-				if len(e.Intent) > 0 {
-					for _, call := range e.Intent[len(e.Intent)-1].ToolCalls {
-						appendMessages = append(appendMessages, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: llm.ToolInterruptedContent})
-					}
-				}
-				if err := tx.Effects(sessions.CoordinationEffects{Append: appendMessages}); err != nil {
+				if err := tx.Effects(sessions.CoordinationEffects{Append: interruptedIntent(e.Intent)}); err != nil {
 					return err
 				}
 				e.Intent = nil

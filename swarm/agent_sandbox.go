@@ -53,21 +53,3 @@ func (r *Runtime) restoredAgentSandbox(m *Member, c *ExecutionContext) ([]string
 	presets = sandboxPresets(presets, r.config.AgentSandbox)
 	return presets, validateSavedSandbox("member", m.ID, presets)
 }
-
-// restoreAgentSandboxes persists the current host floor alongside all saved
-// restrictions. Members retain the policy even when their context is released;
-// contexts carry the policy consumed by the tool host and the inspector.
-func (r *Runtime) restoreAgentSandboxes(s *State) error {
-	for _, m := range s.Members {
-		c := s.Contexts[m.Context]
-		presets, err := r.restoredAgentSandbox(m, c)
-		if err != nil {
-			return err
-		}
-		m.SandboxPresets = presets
-		if c != nil {
-			c.SandboxPresets = slices.Clone(presets)
-		}
-	}
-	return nil
-}

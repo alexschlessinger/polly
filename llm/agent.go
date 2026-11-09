@@ -2114,25 +2114,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		}
 	}
 
-	// A single worker executes in request order, preserving dependencies
-	// between calls without launching competing goroutines.
-	parallelism := a.effectiveParallelism(len(approvedIndices))
-	if parallelism == 1 {
-		for _, idx := range approvedIndices {
-			if err := ctx.Err(); err != nil {
-				return results, err
-			}
-			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
-			if err != nil {
-				return results, err
-			}
-			results[idx] = result
-		}
-		return results, nil
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	execute := func(idx int) error {
+	execute := func(ctx context.Context, idx int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -2142,10 +2124,24 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		}
 		return err
 	}
+
+	// A single worker executes in request order, preserving dependencies
+	// between calls without launching competing goroutines.
+	parallelism := a.effectiveParallelism(len(approvedIndices))
+	if parallelism == 1 {
+		for _, idx := range approvedIndices {
+			if err := execute(ctx, idx); err != nil {
+				return results, err
+			}
+		}
+		return results, nil
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
 	if a.config.MaxParallelTools <= 0 {
 		// Unlimited mode still starts one goroutine per approved call.
 		for _, idx := range approvedIndices {
-			g.Go(func() error { return execute(idx) })
+			g.Go(func() error { return execute(ctx, idx) })
 		}
 	} else {
 		// Queue positions, not goroutines. The batch already owns the calls,
@@ -2163,7 +2159,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 					idx := approvedIndices[next]
 					next++
 					queueMu.Unlock()
-					if err := execute(idx); err != nil {
+					if err := execute(ctx, idx); err != nil {
 						return err
 					}
 				}

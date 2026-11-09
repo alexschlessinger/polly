@@ -335,7 +335,7 @@ func (s statusStore) derive(key RecordKey) (out statusFact, err error) {
 				}
 				item = coordsem.DecisionItem{Kind: "integration", ID: c.ID, Label: "integration " + c.ID, Why: why, Action: statusCandidateAction(c)}
 			} else {
-				item, err = source.taskDecision(f, nil, reason, deps)
+				item, err = source.taskDecision(f, reason, deps)
 				if err != nil {
 					return out, err
 				}
