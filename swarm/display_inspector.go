@@ -355,14 +355,7 @@ func (s inspectorSource) snapshot(id string) (*worktree.Snapshot, error) {
 	return getInspectorRecord[worktree.Snapshot](s.rd, "snapshot", id)
 }
 func (s inspectorSource) commit(id string) (string, error) {
-	capture, err := s.snapshot(id)
-	if err != nil {
-		return "", err
-	}
-	if !validTaskSnapshot(capture, id) {
-		return "", nil
-	}
-	return capture.Commit, nil
+	return s.rd.lifecycleSnapshotCommit(id)
 }
 func (s inspectorSource) factsFor(key sessions.RecordKey) (sessions.CoordinationInspectorFacts, error) {
 	if s.full == nil {

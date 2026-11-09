@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -28,13 +29,7 @@ func (d *taskDependencies) requirement() string {
 	if d == nil || d.Task == nil {
 		return ""
 	}
-	if d.Task.Requirement != "" {
-		return d.Task.Requirement
-	}
-	if d.Owner != nil && !d.Owner.ReadOnly {
-		return RequirementApplied
-	}
-	return RequirementReviewed
+	return coordsem.Requirement(semanticTask(d.Task), d.Owner != nil, d.Owner != nil && d.Owner.ReadOnly)
 }
 
 func (d *taskDependencies) delivering() bool {
@@ -68,12 +63,10 @@ type executionSliceState struct {
 }
 
 // admissionReceipts identifies exactly what was staged/retained, not all pending
-// input. WorkflowIDs load headers only; workflow notice mail and task receipts
-// must be explicitly selected in MailIDs/TaskIDs by the calling operation.
+// input.
 type admissionReceipts struct {
 	MailIDs        []string
 	PublicationIDs []string
-	WorkflowIDs    []string
 	TaskIDs        []string
 }
 
@@ -241,11 +234,6 @@ func (r *recordReader) Checkpoint(executionID string, receipts admissionReceipts
 	}
 	for _, id := range receipts.TaskIDs {
 		if err = loadTask(id); err != nil {
-			return nil, err
-		}
-	}
-	for _, id := range receipts.WorkflowIDs {
-		if err = loadWorkflow(id); err != nil {
 			return nil, err
 		}
 	}
