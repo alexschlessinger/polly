@@ -156,7 +156,7 @@ func indexedRecordChangeMode(ctx context.Context, conn *sql.Conn, parent []byte,
 		if err != nil {
 			return err
 		}
-		if err = status.affected(key, before, statusAffected); err != nil {
+		if err = status.affected(key, statusAffected); err != nil {
 			return err
 		}
 	}
@@ -281,7 +281,7 @@ func indexedRecordChangeMode(ctx context.Context, conn *sql.Conn, parent []byte,
 		return nil
 	}
 	if statusChanged {
-		if err = status.affected(key, after, statusAffected); err != nil {
+		if err = status.affected(key, statusAffected); err != nil {
 			return err
 		}
 		if err = status.refresh(statusAffected, statusBefore); err != nil {
