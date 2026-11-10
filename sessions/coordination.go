@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -126,9 +127,23 @@ func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationStat
 		return nil, err
 	}
 	defer cache.release()
+	if family, ok := s.rememberedFamily(); ok && s.coord.known && s.coord.writers == 0 {
+		_, cleanup, err := s.operationContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cleanup()
+		state := s.rememberedState(family)
+		state.Records = copyRecords(family.records)
+		return state, nil
+	}
 	var state *CoordinationState
-	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) (err error) {
-		state, _, err = s.loadCoordination(ctx, conn)
+	err := s.leasedUntracked(ctx, false, func(ctx context.Context, conn *sql.Conn) (err error) {
+		var parent []byte
+		state, parent, err = s.loadCoordination(ctx, conn)
+		if err == nil {
+			s.remember(parent, state.Sequence)
+		}
 		return err
 	})
 	if err != nil {
@@ -136,6 +151,29 @@ func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationStat
 	}
 	state.Records = copyRecords(state.Records)
 	return state, nil
+}
+
+// rememberedFamily returns the family's records when this session can answer
+// from memory: its lease cannot have been taken, the writer is working, and
+// the database confirmed the records recently. The caller holds the cache.
+func (s *sqliteSession) rememberedFamily() (cachedFamily, bool) {
+	if s.coord.parent == nil || !s.leaseFresh() || !s.store.writer.healthy() {
+		return cachedFamily{}, false
+	}
+	return s.store.coordination.current(s.coord.parent)
+}
+
+// rememberedState is the state loadCoordination would read, without Records.
+func (s *sqliteSession) rememberedState(family cachedFamily) *CoordinationState {
+	return &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(s.coord.parent), Sequence: s.coord.sequence, Revision: family.revision}
+}
+
+// remember keeps what a transaction just read or wrote of this session's
+// row. The caller holds the cache.
+func (s *sqliteSession) remember(parent []byte, sequence int64) {
+	s.coord.parent, s.coord.sequence = parent, sequence
+	// A write in flight on the row may land after this transaction.
+	s.coord.known = s.coord.writers == 0
 }
 
 // CoordinationRevisionSession is optional. It answers whether the family's
@@ -151,11 +189,20 @@ func (s *sqliteSession) CoordinationRevision(ctx context.Context) (uint64, error
 		return 0, err
 	}
 	defer cache.release()
+	if family, ok := s.rememberedFamily(); ok {
+		_, cleanup, err := s.operationContext(ctx)
+		if err != nil {
+			return 0, err
+		}
+		cleanup()
+		return family.revision, nil
+	}
 	var revision uint64
-	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
-		state, _, err := s.loadCoordination(ctx, conn)
+	err := s.leasedUntracked(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
+		state, parent, err := s.loadCoordination(ctx, conn)
 		if err == nil {
 			revision = state.Revision
+			s.remember(parent, state.Sequence)
 		}
 		return err
 	})
@@ -209,11 +256,17 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 		return err
 	}
 	defer cache.release()
+	if known != nil {
+		if family, ok := s.rememberedFamily(); ok && s.coord.known && s.coord.writers == 0 {
+			return s.updateRemembered(ctx, *known, family, fn)
+		}
+	}
 	var parent []byte
 	var committed *CoordinationState
 	var before map[string]map[string]json.RawMessage
 	changed, wrote := false, false
-	err := s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
+	next := int64(-1)
+	err := s.leasedUntracked(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
 		state, family, err := s.loadCoordination(opCtx, conn)
 		if err != nil {
 			return err
@@ -254,15 +307,21 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 				return err
 			}
 		}
+		next = state.Sequence
 		if len(state.Append) == 0 {
 			return nil
 		}
-		next, err := appendMessages(opCtx, conn, s.id, state.Sequence, state.Append)
+		next, err = appendMessages(opCtx, conn, s.id, state.Sequence, state.Append)
 		if err != nil {
 			return err
 		}
 		return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
 	})
+	if err == nil && next >= 0 {
+		s.remember(parent, next)
+	} else {
+		s.coord.known = false
+	}
 	switch {
 	case err == nil && changed && known != nil:
 		// The family's maps belong to the cache; only the changed records move.
@@ -281,11 +340,114 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 		committed.Revision = cache.replace(parent, before)
 	case err == nil && changed:
 		committed.Revision = cache.replace(parent, committed.Records)
-	case wrote:
+	case err != nil && wrote:
 		// The commit may or may not have landed; the table decides.
 		cache.forget(parent)
 	}
 	return err
+}
+
+// updateRemembered is UpdateCoordinationFrom answered from memory. The
+// callback sees what a transaction would have read. Its changes go to the
+// family in memory and to the writer's queue, and the update returns without
+// touching the database; an update that pins artifacts or registers members
+// has rows to check and is written before it returns. The caller holds the
+// cache.
+func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, family cachedFamily, fn func(*CoordinationState) error) error {
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if family.revision != known {
+		return ErrCoordinationStale
+	}
+	cache, parent := s.store.coordination, s.coord.parent
+	state := s.rememberedState(family)
+	if err := fn(state); err != nil {
+		return err
+	}
+	if state.ExpectedSequence != nil && *state.ExpectedSequence != state.Sequence {
+		return errors.New("checkpoint sequence changed")
+	}
+	changed := false
+	for kind, group := range state.Changes {
+		for id, value := range group {
+			if value != nil && (!json.Valid(value) || kind == "" || id == "") {
+				return errors.New("invalid coordination record")
+			}
+			changed = true
+		}
+	}
+	if state.Transcript != nil && (state.Transcript.Execution == "" || state.Transcript.Generation <= 0) {
+		return errors.New("invalid transcript execution identity")
+	}
+	next := state.Sequence + int64(len(state.Append))
+	if len(state.Pins) > 0 || len(state.Members) > 0 {
+		err := s.leasedUntracked(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
+			if _, err := writeRecordDelta(opCtx, conn, parent, state.Changes); err != nil {
+				return err
+			}
+			if err := registerMembers(opCtx, conn, parent, state); err != nil {
+				return err
+			}
+			if err := s.pinArtifacts(opCtx, conn, parent, state); err != nil {
+				return err
+			}
+			if state.Transcript != nil {
+				if err := writeTranscriptIdentity(opCtx, conn, s.id, state.Transcript, next); err != nil {
+					return err
+				}
+			}
+			if len(state.Append) == 0 {
+				return nil
+			}
+			if _, err := appendMessages(opCtx, conn, s.id, state.Sequence, state.Append); err != nil {
+				return err
+			}
+			return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
+		})
+		if err != nil {
+			// The commit may or may not have landed; the table decides.
+			cache.forget(parent)
+			s.coord.known = false
+			return err
+		}
+	} else if changed || len(state.Append) > 0 || state.Transcript != nil {
+		update := queuedUpdate{parent: parent, changes: state.Changes, session: s.id, sequence: state.Sequence, nowNS: time.Now().UnixNano()}
+		if state.Transcript != nil {
+			identity := *state.Transcript
+			update.transcript = &identity
+		}
+		for i, message := range state.Append {
+			payload, err := json.Marshal(message)
+			if err != nil {
+				return fmt.Errorf("encode message %d: %w", i, err)
+			}
+			update.appended = append(update.appended, payload)
+		}
+		if err := s.store.writer.accept(opCtx, update); err != nil {
+			return s.mapError(ctx, err)
+		}
+	}
+	s.coord.sequence = next
+	if changed {
+		// The family's maps belong to the cache; only the changed records move.
+		for kind, group := range state.Changes {
+			for id, value := range group {
+				if value == nil {
+					delete(family.records[kind], id)
+					continue
+				}
+				if family.records[kind] == nil {
+					family.records[kind] = map[string]json.RawMessage{}
+				}
+				family.records[kind][id] = value
+			}
+		}
+		state.Revision = cache.replace(parent, family.records)
+	}
+	return nil
 }
 
 // writeRecordDelta writes the records a callback named: a nil payload deletes.

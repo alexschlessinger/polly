@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setRecord(kind, id, payload string) func(*CoordinationState) error {
@@ -126,6 +127,9 @@ func TestCoordinationSeesAnotherConnectionsCommit(t *testing.T) {
 		if err = writer.UpdateCoordination(ctx, setRecord("task", "a", want)); err != nil {
 			t.Fatal(err)
 		}
+		// A store answers from memory for a moment before it asks the
+		// database again, which is when it notices the other connection.
+		time.Sleep(familyCheckEvery + 10*time.Millisecond)
 		if got := readRecord(t, reader, "task", "a"); got != want {
 			t.Fatalf("read after the other connection's commit = %q, want %q", got, want)
 		}
@@ -326,5 +330,85 @@ func BenchmarkCoordinationFamily(b *testing.B) {
 		})
 		_ = parent.Close()
 		_ = store.Close()
+	}
+}
+
+// Sync moves every commit out of the write-ahead log, which SQLite syncs
+// before it copies it into the database file.
+func TestSyncPutsCommitsOnDisk(t *testing.T) {
+	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
+		t.Run(modeName(mode, "disk"), func(t *testing.T) {
+			store, path := openTestStore(t, mode, nil, 0)
+			ctx := context.Background()
+			session, err := store.Acquire(ctx, "parent", AcquireOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if err := session.(CoordinationSession).UpdateCoordination(ctx, func(state *CoordinationState) error {
+				state.Records = map[string]map[string]json.RawMessage{"task": {"one": json.RawMessage(`{"id":"one"}`)}}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := SyncStore(store).Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if mode != ModeDisk {
+				return
+			}
+			var busy, logged, checkpointed int64
+			if err := store.db.QueryRow("PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &logged, &checkpointed); err != nil {
+				t.Fatal(err)
+			}
+			if logged != checkpointed {
+				t.Fatalf("%d of %d log frames reached %s", checkpointed, logged, path)
+			}
+		})
+	}
+}
+
+// An update that changes no record, such as one that only appends to the
+// transcript, leaves the family in memory.
+func TestCoordinationUnchangedUpdateKeepsTheFamily(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent, err := store.Acquire(ctx, "parent", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	coord := parent.(CoordinationSession)
+	if err = coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := coord.ReadCoordination(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row changed behind the store shows whether a later read came from
+	// the table.
+	if err = store.withWrite(ctx, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `UPDATE swarm_records SET payload_json=?`, []byte(`{"n":9}`))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, update := range map[string]func() error{
+		"whole family": func() error { return coord.UpdateCoordination(ctx, func(*CoordinationState) error { return nil }) },
+		"changed records": func() error {
+			return coord.(CoordinationDeltaSession).UpdateCoordinationFrom(ctx, before.Revision, func(*CoordinationState) error { return nil })
+		},
+	} {
+		if err := update(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		after, err := coord.ReadCoordination(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(after.Records["task"]["a"]); got != `{"n":1}` || after.Revision != before.Revision {
+			t.Fatalf("%s: an update that changed nothing reread the family: %q, revision %d then %d", name, got, before.Revision, after.Revision)
+		}
 	}
 }
