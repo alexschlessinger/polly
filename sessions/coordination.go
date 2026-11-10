@@ -172,6 +172,10 @@ func (s *sqliteSession) rememberedState(family cachedFamily) *CoordinationState 
 // row. The caller holds the cache.
 func (s *sqliteSession) remember(parent []byte, sequence int64) {
 	s.coord.parent, s.coord.sequence = parent, sequence
+	if known := s.family.Load(); known == nil || *known != string(parent) {
+		family := string(parent)
+		s.family.Store(&family)
+	}
 	// A write in flight on the row may land after this transaction.
 	s.coord.known = s.coord.writers == 0
 }
@@ -185,6 +189,21 @@ type CoordinationRevisionSession interface {
 
 func (s *sqliteSession) CoordinationRevision(ctx context.Context) (uint64, error) {
 	cache := s.store.coordination
+	// The usual answer needs no turn at the cache: this session's lease is
+	// fresh and the family was confirmed a moment ago.
+	if parent := s.family.Load(); parent != nil && s.leaseFresh() && s.store.writer.healthy() {
+		if revision, ok := cache.peek(*parent); ok {
+			if cause := context.Cause(s.ctx); cause != nil {
+				return 0, cause
+			}
+			if ctx != nil {
+				if cause := context.Cause(ctx); cause != nil {
+					return 0, cause
+				}
+			}
+			return revision, nil
+		}
+	}
 	if err := cache.hold(ctx); err != nil {
 		return 0, err
 	}

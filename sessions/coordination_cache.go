@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -24,8 +25,11 @@ type coordinationCache struct {
 	// from. SQLite's data_version moves when another connection, in this
 	// process or another, commits; a different connection has a counter of
 	// its own. Either difference discards every family.
-	conn     any
-	version  int64
+	conn    any
+	version int64
+	// mu lets a reader that does not hold the cache ask a family's revision.
+	// Only the holder writes families, and it takes mu to do so.
+	mu       sync.RWMutex
 	families map[string]cachedFamily
 	// revisions never repeats, so equal revisions mean equal records even
 	// after a family was dropped and read again.
@@ -44,6 +48,26 @@ type cachedFamily struct {
 func (c *coordinationCache) current(parent []byte) (cachedFamily, bool) {
 	family, ok := c.families[string(parent)]
 	return family, ok && time.Since(family.checked) < familyCheckEvery
+}
+
+// peek is current's revision for a caller that does not hold the cache.
+func (c *coordinationCache) peek(parent string) (uint64, bool) {
+	c.mu.RLock()
+	family, ok := c.families[parent]
+	c.mu.RUnlock()
+	return family.revision, ok && time.Since(family.checked) < familyCheckEvery
+}
+
+func (c *coordinationCache) set(parent []byte, family cachedFamily) {
+	c.mu.Lock()
+	c.families[string(parent)] = family
+	c.mu.Unlock()
+}
+
+func (c *coordinationCache) clear() {
+	c.mu.Lock()
+	clear(c.families)
+	c.mu.Unlock()
 }
 
 func newCoordinationCache() *coordinationCache {
@@ -76,12 +100,12 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		return nil, 0, err
 	}
 	if driver != c.conn || version != c.version {
-		clear(c.families)
+		c.clear()
 		c.conn, c.version = driver, version
 	}
 	if family, ok := c.families[string(parent)]; ok {
 		family.checked = time.Now()
-		c.families[string(parent)] = family
+		c.set(parent, family)
 		return family.records, family.revision, nil
 	}
 	records, err := readSwarmRecords(ctx, conn, parent)
@@ -89,10 +113,10 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		return nil, 0, err
 	}
 	if len(c.families) >= maxCachedFamilies {
-		clear(c.families)
+		c.clear()
 	}
 	c.revisions++
-	c.families[string(parent)] = cachedFamily{records, c.revisions, time.Now()}
+	c.set(parent, cachedFamily{records, c.revisions, time.Now()})
 	return records, c.revisions, nil
 }
 
@@ -101,13 +125,17 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 func (c *coordinationCache) replace(parent []byte, records map[string]map[string]json.RawMessage) uint64 {
 	c.revisions++
 	if family, ok := c.families[string(parent)]; ok {
-		c.families[string(parent)] = cachedFamily{records, c.revisions, family.checked}
+		c.set(parent, cachedFamily{records, c.revisions, family.checked})
 	}
 	return c.revisions
 }
 
 // forget drops a family whose stored records may no longer match memory.
-func (c *coordinationCache) forget(parent []byte) { delete(c.families, string(parent)) }
+func (c *coordinationCache) forget(parent []byte) {
+	c.mu.Lock()
+	delete(c.families, string(parent))
+	c.mu.Unlock()
+}
 
 // copyRecords returns records with maps and payload bytes of its own. The
 // payloads share one allocation, each capped so an append cannot reach the
