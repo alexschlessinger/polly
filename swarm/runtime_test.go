@@ -30,7 +30,7 @@ func (f modelFunc) ChatCompletionStream(ctx context.Context, req *llm.Completion
 func answer(text string) messages.ChatMessage {
 	return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: text, StopReason: messages.StopReasonEndTurn}
 }
-func runtimeTest(t *testing.T, model llm.LLM, concurrent, starts int) *Runtime {
+func runtimeTest(t testing.TB, model llm.LLM, concurrent, starts int) *Runtime {
 	t.Helper()
 	return runtimeTestWithParent(t, model, concurrent, starts, nil)
 }
@@ -65,7 +65,7 @@ func useRegistry(c *Config, registry *tools.ToolRegistry) {
 	c.OpenWorktrees = testOpenWorktrees(registry)
 }
 
-func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
+func runtimeTestWithParent(t testing.TB, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
 	t.Helper()
 	ctx := context.Background()
 	store, err := sessions.OpenStore(sessions.StoreConfig{Mode: sessions.ModeMemory})

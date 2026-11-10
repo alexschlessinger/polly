@@ -117,7 +117,8 @@ func TestCandidateReceiptProjectionErrorsAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := s.Integrations[plan.ID]
+	stored := *s.Integrations[plan.ID]
+	candidate := &stored
 	if strings.Contains(tools.Result(candidate), `"receipt"`) {
 		t.Fatal("Go candidate serialization gained a null receipt")
 	}

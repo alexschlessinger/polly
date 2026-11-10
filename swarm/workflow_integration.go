@@ -188,8 +188,8 @@ func (h *workflowHost) releaseHeld(ctx context.Context, id string) (any, error) 
 	}
 	r.launchMu.Lock()
 	r.parentTools.Lock()
-	err = r.update(ctx, func(s *State) error {
-		current := s.Contexts[id]
+	err = r.edit(ctx, func(s *State) error {
+		current := s.ownContext(id)
 		if current == nil || !h.releaseAuthority(s, id) {
 			return fail("unknown_context", "workspace changed during release")
 		}

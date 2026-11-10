@@ -79,15 +79,15 @@ func (r *Runtime) rollbackWorkspaceWithScratch(c *ExecutionContext, followup str
 	if c == nil {
 		return
 	}
-	err := r.update(context.WithoutCancel(r.ctx), func(s *State) error {
-		current := s.Contexts[c.ID]
+	err := r.edit(context.WithoutCancel(r.ctx), func(s *State) error {
+		current := s.ownContext(c.ID)
 		if current == nil {
 			return nil
 		}
 		if m := s.Members[current.Owner]; m != nil && m.Context == current.ID && m.Execution != "" {
 			return nil
 		}
-		if f := s.Followups[followup]; f != nil && f.HeldScratch != "" {
+		if f := s.ownFollowup(followup); f != nil && f.HeldScratch != "" {
 			held, _ := r.parkScratch(followup, current)
 			if held == "" {
 				// A failed restoration must not delete the only remaining copy.

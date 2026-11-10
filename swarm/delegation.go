@@ -119,7 +119,7 @@ func (r *Runtime) followupTask(ctx context.Context, target, message, callID stri
 		mail.ResumeExecution = i.id
 	}
 	r.mu.Unlock()
-	err = r.update(ctx, func(s *State) error {
+	err = r.edit(ctx, func(s *State) error {
 		m := s.Members[id]
 		if m == nil {
 			return errors.New("unknown member")
@@ -253,13 +253,14 @@ func (r *Runtime) InterruptAgent(ctx context.Context, target string) (any, error
 func (r *Runtime) recordFollowupFailure(memberID string, cause error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 	defer cancel()
-	_ = r.update(ctx, func(s *State) error {
+	_ = r.edit(ctx, func(s *State) error {
 		found := false
-		for _, mail := range s.Messages {
+		for key, mail := range s.Messages {
 			if mail.To == memberID && mail.Start && !mail.Delivered {
+				mail = s.ownMail(key)
 				mail.Start, mail.StartError = false, cause.Error()
 				if f := s.Followups[mail.ID]; f != nil && f.Phase != "launched" {
-					f.Phase = "failed"
+					s.ownFollowup(mail.ID).Phase = "failed"
 				}
 				found = true
 			}

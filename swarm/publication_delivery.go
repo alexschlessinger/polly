@@ -127,6 +127,7 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 		if slices.Contains(p.AdmittedTo, reader) {
 			return errors.New("publication admission changed")
 		}
+		p = s.ownPublication(p.ID)
 		p.AdmittedTo = append(p.AdmittedTo, reader)
 		if !before {
 			return nil
@@ -135,14 +136,14 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 		return errors.New("publication admission changed")
 	}
 	mark := PublicationMark{Posted: p.Posted, ID: p.ID}
-	if m := s.Members[reader]; m != nil {
-		m.Publications = mark
+	if s.Members[reader] != nil {
+		s.ownMember(reader).Publications = mark
 		return nil
 	}
 	if s.Parents == nil {
 		s.Parents = map[string]*ParentRecord{}
 	}
-	record := s.Parents[reader]
+	record := s.ownParent(reader)
 	if record == nil {
 		record = &ParentRecord{}
 		s.Parents[reader] = record
