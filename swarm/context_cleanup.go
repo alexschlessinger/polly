@@ -123,7 +123,7 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 						wake = append(wake, member.ID)
 					}
 				}
-				delete(s.Contexts, id)
+				drop(s, "context", &s.Contexts, id)
 			}
 			return nil
 		}); e != nil {

@@ -150,7 +150,7 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string, discard b
 			if err := r.worktrees.Cleanup(ctx, p.Checkout, ""); err != nil {
 				return err
 			}
-			if err := r.edit(ctx, func(s *State) error { delete(s.Previews, p.ID); return nil }); err != nil {
+			if err := r.edit(ctx, func(s *State) error { drop(s, "preview", &s.Previews, p.ID); return nil }); err != nil {
 				return err
 			}
 		}
@@ -203,5 +203,10 @@ func (r *Runtime) Forget(ctx context.Context) error {
 	if len(s.Snapshots) == 0 {
 		return nil
 	}
-	return r.edit(ctx, func(s *State) error { clear(s.Snapshots); return nil })
+	return r.edit(ctx, func(s *State) error {
+		for id := range s.Snapshots {
+			drop(s, "snapshot", &s.Snapshots, id)
+		}
+		return nil
+	})
 }
