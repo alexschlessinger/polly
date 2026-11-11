@@ -73,7 +73,8 @@ memory; the two read methods exist for them.
   This is accepted. The one rule: `Sync()` on the writer, which returns once
   everything enqueued so far is committed, is called before any irreversible
   host effect (applying a workspace, integrating a result). The runtime
-  calls it before it writes a result into the source tree.
+  calls it before it writes a result into the source tree, and before it
+  removes the files of a workspace whose release it has recorded.
 - **Atomic delivery.** A mail receipt and the transcript message it produced
   travel in the same `Batch`, so one transaction commits both.
 - **Backpressure.** The writer's queue is bounded. If disk falls behind, owner
@@ -177,9 +178,16 @@ execution is bounded by cores through the tool limiter, not by agent count.
    `UpdateCoordinationFrom` from memory: it checks the session's lease by its
    expiry, applies the changed records to the family it holds, queues the
    records and any appended transcript messages, and returns. One goroutine
-   commits everything queued in one transaction, in order. Every other store
-   operation first waits for the queue to empty, so it sees the rows the
-   accepted updates produced. The queue is bounded, and callers wait when it
+   commits everything queued in one transaction, in order. Every other
+   operation that runs in a transaction first waits for the queue to empty,
+   so it sees the rows the accepted updates produced: every other write to a
+   session or a family, and every read made through a session or a view. The
+   reads the store answers without a lease do not wait (the session list and
+   summaries, a session's metadata by name, the last session used), nor do
+   lease renewals and artifact reads. Of what those read, a queued update
+   writes only a session's message count, last-used time and transcript
+   identity, so the lease-free reads can report those as they were before
+   the writer's next commit. The queue is bounded, and callers wait when it
    is full. `Sync` waits for the queue and then for the disk. An update that
    pins artifacts or registers members is written before it returns. About
    every tenth of a second one operation per family goes to the database, to
