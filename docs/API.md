@@ -1370,6 +1370,16 @@ A few rules of thumb:
   the transcript of a member it holds. An update reaches the database only
   while the leases it was accepted under stand: when another handle has
   taken over the root or the member since, it is dropped.
+- `CoordinationState.Volatile` names record changes that say what the caller
+  is doing at the moment. A store may keep them in memory only. The SQLite
+  store does so for a family it drives: its own readers see the change at
+  once, and it is written with the record's next change that is not
+  volatile. The swarm runtime marks two things this way: that a member is
+  queued or running, and the count of a model call whose tools only read.
+  A second process therefore reads a member's status and counts as of the
+  last thing the member saved. A member's transcript is saved with its
+  counts (`TranscriptIdentity.Counts`), and after a restart the member's
+  next slice takes them from there.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
   result and before it writes to the source tree, and after recording a
