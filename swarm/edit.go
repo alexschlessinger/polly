@@ -444,7 +444,9 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 // edit is update for a callback that takes every record it changes through
 // its own* method, and so pays for those records, not for the family. Adding
 // and deleting records needs nothing more. Against a store that cannot write
-// a set of changes, or behind a wrapper that hides that, it is update.
+// a set of changes, or behind a wrapper that hides that, it is update. The
+// state fn is handed becomes the family's own, which later edits write: fn
+// must not keep it or a map of it, and a caller that wants the result reads.
 func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 	if err := r.prepare(ctx); err != nil {
 		return err

@@ -92,19 +92,21 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	}
 	for _, task := range s.Tasks {
 		if acceptedUnchangedTask(s, task) {
-			err = r.edit(ctx, func(current *State) error {
+			if err = r.edit(ctx, func(current *State) error {
 				for id, task := range current.Tasks {
 					if acceptedUnchangedTask(current, task) {
 						current.ownTask(id).Status = "done"
 					}
 				}
-				s = current
 				return nil
-			})
-			break
+			}); err != nil {
+				return s, err
+			}
+			// As in repairDeliveryNotices: read what the edit left.
+			return r.read(ctx)
 		}
 	}
-	return s, err
+	return s, nil
 }
 
 // acceptedUnchangedTask is an accepted submission whose tree equals its

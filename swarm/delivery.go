@@ -165,12 +165,15 @@ func needsDeliveryNotice(s *State, t *Task) bool {
 func (r *Runtime) repairDeliveryNotices(ctx context.Context, s *State) (*State, error) {
 	for _, t := range s.Tasks {
 		if needsDeliveryNotice(s, t) {
-			err := r.edit(ctx, func(current *State) error {
+			if err := r.edit(ctx, func(current *State) error {
 				r.ensureDeliveryNotices(current)
-				s = current
 				return nil
-			})
-			return s, err
+			}); err != nil {
+				return s, err
+			}
+			// The edit's state is the family's own, which the next edit
+			// writes: the caller gets a read of what it left.
+			return r.read(ctx)
 		}
 	}
 	return s, nil
