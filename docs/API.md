@@ -1206,7 +1206,13 @@ preserve who owns the title, so use `SetTitle` to change it.
 
 `ExtraReadDirs` stores the session's canonical read grants and survives reset
 and clear. `SpawnCallID` identifies the delegation that created a session, and
-`SpawnOutcome` records only that first run; follow-ups don't rewrite it.
+`SpawnOutcome` records only that first run; follow-ups don't rewrite it. A
+session that implements the optional `SpawnOutcomeSession` sets it with
+`RecordSpawnOutcome`, without reading or rewriting the rest of its settings;
+the swarm runtime uses it when a member's run ends. For a member of a family
+the store drives, the SQLite store queues the outcome with the family's
+updates: the member's own `GetMetadata` returns it at once, and the store's
+lease-free reads and other processes after the next checkpoint.
 `Metadata.Parent` is a display name, while the stable `ParentID` is the real
 ancestry key.
 
