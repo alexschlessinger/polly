@@ -118,9 +118,19 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		actor := ""
 		var parentPause *RetryPause
 		recorded := false
+		edit := r.editOn
+		if execution != "" && checkpoint.Request {
+			// A member's request is answered before anything it does rests on
+			// its transcript: the journal of the batch the reply asks for, or
+			// the slice's last checkpoint, waits for this write as well.
+			edit = func(ctx context.Context, session sessions.CoordinationSession, fn func(*sessions.CoordinationState, *State) error) error {
+				_, err := r.editAhead(ctx, session, fn)
+				return err
+			}
+		}
 		err := transcript.checkpoint(checkpoint, func() (int64, error) {
 			var next int64
-			err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+			err := edit(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 				actor = raw.ActorID
 				if execution != "" {
 					e := s.Executions[execution]

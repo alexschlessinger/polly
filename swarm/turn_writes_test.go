@@ -16,14 +16,18 @@ import (
 type turnWrite struct {
 	appended  int
 	execution bool // the update wrote the member's execution record
+	waited    bool // the member waited for the store to write the update
 }
 
 // turnWriteStore hands the runtime member sessions that note what each of
-// their updates wrote.
+// their updates wrote and whether the member waited for it.
 type turnWriteStore struct {
 	sessions.SessionStore
+	t      *testing.T
 	mu     sync.Mutex
 	writes []turnWrite
+	// waits are the waits for the updates so far, in order.
+	waits []func(context.Context) error
 }
 
 func (s *turnWriteStore) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
@@ -50,26 +54,52 @@ func (s *turnWriteSession) CoordinationRevision(ctx context.Context) (uint64, er
 }
 
 func (s *turnWriteSession) UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*sessions.CoordinationState) error) error {
-	var write turnWrite
-	err := s.coordinatedSession.(sessions.CoordinationDeltaSession).UpdateCoordinationFrom(ctx, known, func(state *sessions.CoordinationState) error {
-		if err := fn(state); err != nil {
+	var state *sessions.CoordinationState
+	err := s.coordinatedSession.(sessions.CoordinationDeltaSession).UpdateCoordinationFrom(ctx, known, func(raw *sessions.CoordinationState) error {
+		state = raw
+		return fn(raw)
+	})
+	if err != nil {
+		return err
+	}
+	store, written := s.store, state.Written
+	store.mu.Lock()
+	index, earlier := len(store.writes), store.waits
+	store.writes = append(store.writes, turnWrite{appended: len(state.Append), execution: len(state.Changes["execution"]) > 0})
+	store.waits = append(store.waits, written)
+	store.mu.Unlock()
+	if written == nil {
+		return nil
+	}
+	state.Written = func(ctx context.Context) error {
+		store.mu.Lock()
+		store.writes[index].waited = true
+		store.mu.Unlock()
+		if err := written(ctx); err != nil {
 			return err
 		}
-		write = turnWrite{appended: len(state.Append), execution: len(state.Changes["execution"]) > 0}
+		// The store writes in order: every earlier update is written too, so
+		// its wait has nothing left to wait for.
+		over, cancel := context.WithCancel(context.Background())
+		cancel()
+		for i, wait := range earlier {
+			if wait != nil && wait(over) != nil {
+				store.t.Errorf("update %d was written before update %d", index, i)
+			}
+		}
 		return nil
-	})
-	if err == nil {
-		s.store.mu.Lock()
-		s.store.writes = append(s.store.writes, write)
-		s.store.mu.Unlock()
 	}
-	return err
+	return nil
 }
 
 // A member writes its execution record when it takes its assignment, when it
 // journals a tool batch and when its slice ends. The request between two
 // batches appends the last batch to the transcript and leaves the record
 // alone, and the journal that follows carries the count and usage so far.
+//
+// The member does not wait for the store to write a request: it waits for the
+// journal before the batch runs, and for the slice's last checkpoint, and by
+// then every earlier update is written.
 func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -97,7 +127,7 @@ func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 		return reply
 	})
 	r = runtimeTest(t, model, 1, 1)
-	store := &turnWriteStore{SessionStore: r.config.Store}
+	store := &turnWriteStore{SessionStore: r.config.Store, t: t}
 	r.config.Store = store
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 	if err != nil {
@@ -105,7 +135,7 @@ func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 	}
 	// The assignment, then for each of two batches a request and a journal,
 	// then the request that is answered and the end of the slice.
-	want := []turnWrite{{2, true}, {0, false}, {0, true}, {2, false}, {0, true}, {2, false}, {1, true}}
+	want := []turnWrite{{2, true, true}, {0, false, false}, {0, true, true}, {2, false, false}, {0, true, true}, {2, false, false}, {1, true, true}}
 	got := store.seen()
 	if len(got) != len(want) {
 		t.Fatalf("member updates = %+v, want %+v", got, want)

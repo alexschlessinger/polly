@@ -469,11 +469,7 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 // members the edit pokes do not wait: the family in memory has the change as
 // soon as the store accepts it.
 func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) error {
-	poke, written, err := r.editFamily(ctx, session, fn)
-	// The pokes an edit owes are sent after it lets go of the family's state.
-	if poke != nil {
-		poke()
-	}
+	written, err := r.editAhead(ctx, session, fn)
 	if err != nil || written == nil {
 		return err
 	}
@@ -486,6 +482,20 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		return err
 	}
 	return nil
+}
+
+// editAhead is editOn without the wait: it returns once the store has
+// accepted the edit, with the wait for its write, nil for an edit already
+// written. The store writes edits in the order it accepted them, so a caller
+// may go on without waiting when nothing it does rests on this edit before a
+// later edit of its own is written.
+func (r *Runtime) editAhead(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (written func(context.Context) error, err error) {
+	poke, written, err := r.editFamily(ctx, session, fn)
+	// The pokes an edit owes are sent after it lets go of the family's state.
+	if poke != nil {
+		poke()
+	}
+	return written, err
 }
 
 // editFamily is editOn while it holds the family's state. It returns the
