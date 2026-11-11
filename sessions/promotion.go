@@ -79,11 +79,17 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 	destination.cancel(ErrStoreClosed)
 	destination.wg.Wait()
 	destination.closed.Store(true)
+	destination.writer.close()
+	destination.writer.finish()
 	old := s.db
 	s.db = destination.db
 	s.mode = ModeDisk
 	s.path = destination.path
 	transferred = true
+	// From here on an update answered from memory is logged first. The ones
+	// accepted in memory were never logged, so a checkpoint writes them now.
+	s.writer.openLog(s.path)
+	s.writer.checkpointSoon()
 	return old.Close()
 }
 

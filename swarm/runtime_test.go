@@ -67,8 +67,14 @@ func useRegistry(c *Config, registry *tools.ToolRegistry) {
 
 func runtimeTestWithParent(t testing.TB, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
 	t.Helper()
+	return runtimeTestOn(t, sessions.StoreConfig{Mode: sessions.ModeMemory}, model, concurrent, starts, wrap)
+}
+
+// runtimeTestOn is runtimeTestWithParent on a store of the test's choosing.
+func runtimeTestOn(t testing.TB, config sessions.StoreConfig, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
+	t.Helper()
 	ctx := context.Background()
-	store, err := sessions.OpenStore(sessions.StoreConfig{Mode: sessions.ModeMemory})
+	store, err := sessions.OpenStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}

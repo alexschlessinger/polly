@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -80,6 +81,8 @@ type SQLiteStore struct {
 	closed atomic.Bool
 	mu     sync.Mutex
 	open   map[*sqliteSession]struct{}
+	// byID finds the open handle on a session, which holds its lease.
+	byID map[string]*sqliteSession
 
 	coordination *coordinationCache
 	writer       *coordinationWriter
@@ -279,6 +282,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
+		byID:     make(map[string]*sqliteSession),
 
 		coordination: newCoordinationCache(),
 	}
@@ -300,7 +304,17 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 			return fail(err)
 		}
 	}
+	if config.Mode == ModeDisk {
+		// What a store that is gone left in the update log belongs in the
+		// database before anything reads it. A log that cannot be recovered
+		// now stays for the next store to try.
+		if err := store.recoverLogs(ctx, false); err != nil {
+			slog.Warn("update_log_recovery_failed", "error", err)
+		}
+		store.writer.openLog(dsnPath)
+	}
 	if err := store.Expire(ctx); err != nil {
+		store.writer.finish()
 		return fail(fmt.Errorf("expire sessions at startup: %w", err))
 	}
 	store.wg.Add(1)
@@ -544,8 +558,8 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 				return fmt.Errorf("record version %d: %w", version+1, err)
 			}
 		}
-		if err := execAll(ctx, conn, unversionedIndexes...); err != nil {
-			return fmt.Errorf("create indexes: %w", err)
+		if err := execAll(ctx, conn, unversionedSchema...); err != nil {
+			return fmt.Errorf("create unversioned schema: %w", err)
 		}
 		return nil
 	})
@@ -555,13 +569,20 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-// unversionedIndexes are created on every open instead of by a migration.
-// Older binaries validate only the indexes they name, so they tolerate these,
-// while a version bump would stop them opening a shared database.
-var unversionedIndexes = []string{
+// unversionedSchema is created on every open instead of by a migration.
+// Older binaries validate only the tables and indexes they name, so they
+// tolerate these, while a version bump would stop them opening a shared
+// database.
+var unversionedSchema = []string{
 	// swarm_members' primary key leads with the parent, so pinning checks
 	// and the cascade from a deleted session otherwise scan the table.
 	`CREATE INDEX IF NOT EXISTS swarm_members_member_idx ON swarm_members(member_id)`,
+	// The place up to which the database holds the updates of one owner of
+	// the update log, written with the checkpoint that brought it there.
+	`CREATE TABLE IF NOT EXISTS update_log_marks (
+		owner BLOB PRIMARY KEY NOT NULL CHECK(length(owner) = 16),
+		place INTEGER NOT NULL CHECK(place >= 0)
+	) STRICT, WITHOUT ROWID`,
 }
 
 var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
@@ -958,6 +979,12 @@ var schemaTables = map[string]schemaTableSpec{
 	"swarm_members":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"member_id", "BLOB", 1, 2, ""}}},
 	// schema v7
 	"model_metadata_cache": {columns: []schemaColumnSpec{{"cache_key", "TEXT", 1, 1, ""}, {"payload", "BLOB", 1, 0, ""}}},
+	// unversioned
+	"update_log_marks": {
+		columns:      []schemaColumnSpec{{"owner", "BLOB", 1, 1, ""}, {"place", "INTEGER", 1, 0, ""}},
+		withoutRowID: 1,
+		requiredSQL:  []string{"check(length(owner)=16)", "check(place>=0)"},
+	},
 }
 
 func validateSchema(ctx context.Context, conn *sql.Conn) error {
@@ -1143,10 +1170,11 @@ func (s *SQLiteStore) ensureOpen() error {
 	return nil
 }
 
-// Sync returns once every commit made so far is on disk. Commits otherwise
-// reach the disk when SQLite next checkpoints its write-ahead log, so a caller
-// about to do something it cannot undo, on the strength of what it just
-// stored, calls Sync first. A memory store has nothing to do.
+// Sync returns once the database holds every update accepted so far and
+// every commit made so far is on disk. Commits otherwise reach the disk when
+// SQLite next checkpoints its write-ahead log, so a caller about to do
+// something it cannot undo, on the strength of what it just stored, calls
+// Sync first. A memory store has no disk to wait for.
 func (s *SQLiteStore) Sync(ctx context.Context) error {
 	if err := s.writer.settle(ctx); err != nil {
 		return err
@@ -1237,13 +1265,39 @@ func (s *SQLiteStore) track(session *sqliteSession) bool {
 		return false
 	}
 	s.open[session] = struct{}{}
+	s.byID[string(session.id)] = session
 	return true
 }
 
 func (s *SQLiteStore) untrack(session *sqliteSession) {
 	s.mu.Lock()
 	delete(s.open, session)
+	if s.byID[string(session.id)] == session {
+		delete(s.byID, string(session.id))
+	}
 	s.mu.Unlock()
+}
+
+// handle returns this store's open handle on the session id, if it has one.
+func (s *SQLiteStore) handle(id string) *sqliteSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.byID[id]
+}
+
+// driver returns the handle through which this store drives the family
+// rooted at root: its handle on the root session, session itself when that
+// is the root, while the handle's lease cannot have run out. A family the
+// store drives is answered from memory; nobody else changes its records.
+func (s *SQLiteStore) driver(session *sqliteSession, root string) *sqliteSession {
+	holder := session
+	if string(session.id) != root {
+		holder = s.handle(root)
+	}
+	if holder == nil || holder.closed.Load() || !holder.leaseFresh() {
+		return nil
+	}
+	return holder
 }
 
 // Acquire opens or creates name and obtains its exclusive lease.
@@ -1272,6 +1326,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 	}()
 	waitCtx, cancel := context.WithTimeout(acquireCtx, leaseAcquireTimeout)
 	defer cancel()
+	recovered := false
 	// waitErr says why waiting for the lease ended: the caller gave up, the
 	// store closed, or the acquire timeout elapsed with the session busy.
 	waitErr := func() error {
@@ -1286,7 +1341,13 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 	for {
 		// Taken before the lease is, so it never outlasts the stored one.
 		_, expiry := leaseWindow()
-		id, busy, err := s.tryAcquire(waitCtx, name, options, owner)
+		id, busy, err := s.tryAcquire(waitCtx, name, options, owner, recovered)
+		if errors.Is(err, errRecoverLogs) {
+			recovered = true
+			if err = s.recoverLogs(waitCtx, false); err == nil {
+				continue
+			}
+		}
 		if err == nil && !busy {
 			sessionCtx, sessionCancel := context.WithCancelCause(s.ctx)
 			session := &sqliteSession{
@@ -1305,6 +1366,12 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				_ = s.releaseLease(context.Background(), id, owner)
 				return nil, ErrStoreClosed
 			}
+			// What this store remembers of a family the session roots was
+			// read while anyone could change it. From here on the store
+			// drives the family, and reads it once more to start from.
+			s.coordination.held <- struct{}{}
+			s.coordination.forget(id)
+			<-s.coordination.held
 			go session.heartbeatLoop()
 			return session, nil
 		}
@@ -1374,10 +1441,15 @@ func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...a
 	return true, garbageCollectArtifacts(ctx, conn)
 }
 
-func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte) (id []byte, busy bool, err error) {
+// tryAcquire takes the lease on name once. It does not settle: no pending
+// update touches a row it reads or writes. A lease that ran out may be all
+// that is left of a store whose update log still holds the session's last
+// messages, so unless recovered says the log was just recovered, tryAcquire
+// asks for that with errRecoverLogs before it takes such a lease.
+func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte, recovered bool) (id []byte, busy bool, err error) {
 	now, expiresNS := leaseWindow()
 	nowNS := now.UnixNano()
-	err = s.withWrite(ctx, func(conn *sql.Conn) error {
+	err = s.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 		var storedID []byte
 		var updatedNS, ttlNS int64
 		err := conn.QueryRowContext(ctx,
@@ -1407,6 +1479,16 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			}
 		} else if err != nil {
 			return err
+		}
+		if !recovered && s.mode == ModeDisk {
+			var stale bool
+			if err := conn.QueryRowContext(ctx,
+				"SELECT EXISTS(SELECT 1 FROM session_leases WHERE session_id = ? AND expires_ns <= ?)", storedID, nowNS).Scan(&stale); err != nil {
+				return err
+			}
+			if stale {
+				return errRecoverLogs
+			}
 		}
 
 		result, err := conn.ExecContext(ctx, `
@@ -1751,6 +1833,7 @@ func (s *SQLiteStore) Close() error {
 			closeErr = errors.Join(closeErr, err)
 		}
 	}
+	s.writer.finish()
 	s.dbMu.Lock()
 	defer s.dbMu.Unlock()
 	if err := s.db.Close(); err != nil {
@@ -1918,7 +2001,21 @@ func (s *sqliteSession) loseLease() error {
 // leased runs fn inside a store transaction (a write one when write is set)
 // after confirming this session still holds its lease. The context passed to
 // fn ends with the caller's or the session's; errors are mapped to the cause.
+// A write finds the session's rows as every accepted update left them: what
+// is pending for the session is written first, in the same transaction.
 func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.Context, *sql.Conn) error) error {
+	return s.leasedWrite(ctx, write, false, fn)
+}
+
+// leasedSettled is leased for a write that replaces the session's transcript.
+// It settles first: once the transcript starts over, an update accepted for
+// the old one must be behind the store's checkpoint, where whoever recovers
+// the log leaves it alone.
+func (s *sqliteSession) leasedSettled(ctx context.Context, fn func(context.Context, *sql.Conn) error) error {
+	return s.leasedWrite(ctx, true, true, fn)
+}
+
+func (s *sqliteSession) leasedWrite(ctx context.Context, write, settle bool, fn func(context.Context, *sql.Conn) error) error {
 	if write {
 		// A write may move the row a coordination update answers from
 		// memory. Counting it under the cache's hold means every update
@@ -1934,7 +2031,34 @@ func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.
 			<-cache.held
 		}()
 	}
-	return s.leasedUntracked(ctx, write, fn)
+	if !write || settle {
+		return s.leasedUntracked(ctx, write, fn)
+	}
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	writer := s.store.writer
+	pending, err := writer.takeSession(opCtx, s.id)
+	if err != nil {
+		return s.mapError(ctx, err)
+	}
+	err = s.store.withTransactionNow(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+		if err := s.requireLease(opCtx, conn); err != nil {
+			return err
+		}
+		if pending != nil {
+			if err := writePendingSession(opCtx, conn, pending, false); err != nil {
+				return err
+			}
+		}
+		return fn(opCtx, conn)
+	})
+	if err != nil && pending != nil {
+		writer.restoreSession(pending)
+	}
+	return s.mapError(ctx, err)
 }
 
 // leasedUntracked is leased for the coordination paths, which hold the cache
@@ -1959,16 +2083,14 @@ func (s *sqliteSession) leasedUntracked(ctx context.Context, write bool, fn func
 }
 
 // readSnapshot reads this session's row and checks its lease in one query,
-// under an operation context with mapped errors.
+// under an operation context with mapped errors. It does not settle: the row
+// is as of the last checkpoint, and GetMetadata adds what is pending.
 func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, error) {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return sessionSnapshot{}, err
 	}
 	defer cleanup()
-	if err := s.store.writer.settle(opCtx); err != nil {
-		return sessionSnapshot{}, s.mapError(ctx, err)
-	}
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
 	snap, err := scanSnapshotWhere(opCtx, s.store.db, `s.id = ? AND EXISTS (
@@ -2003,9 +2125,29 @@ func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error
 	return err
 }
 
+// leasedRead is leased for a read that does not settle: its caller adds what
+// is pending for the rows it reads.
+func (s *sqliteSession) leasedRead(ctx context.Context, fn func(context.Context, *sql.Conn) error) error {
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	err = s.store.withTransactionNow(opCtx, "BEGIN", func(conn *sql.Conn) error {
+		if err := s.requireLease(opCtx, conn); err != nil {
+			return err
+		}
+		return fn(opCtx, conn)
+	})
+	return s.mapError(ctx, err)
+}
+
 func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage, error) {
+	// What is pending is read first: a checkpoint that lands between the two
+	// reads moves messages into the table, never out of both.
+	start, tail := s.store.writer.pendingTail(s.id)
 	var payloads [][]byte
-	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
+	err := s.leasedRead(ctx, func(ctx context.Context, conn *sql.Conn) error {
 		next, err := nextSequence(ctx, conn, s.id)
 		if err != nil {
 			return err
@@ -2015,6 +2157,12 @@ func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if stored := int64(len(payloads)); stored < start+int64(len(tail)) {
+		if stored < start {
+			return nil, fmt.Errorf("session message sequence is corrupt: read %d messages, pending ones start at %d", stored, start)
+		}
+		payloads = append(payloads, tail[stored-start:]...)
 	}
 	// Decoding is the larger part of the cost and needs no connection.
 	return decodeHistory(payloads)
@@ -2105,7 +2253,7 @@ func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []message
 
 func (s *sqliteSession) Clear(ctx context.Context) error {
 	nowNS := time.Now().UTC().UnixNano()
-	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+	err := s.leasedSettled(ctx, func(ctx context.Context, conn *sql.Conn) error {
 		_, metadata, err := loadMetadata(ctx, conn, s.id)
 		if err != nil {
 			return err
@@ -2147,7 +2295,13 @@ func (s *sqliteSession) storeSettings(ctx context.Context, info *Metadata, repla
 	}
 	metadata := cloneMetadata(info)
 	now := time.Now().UTC()
-	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+	transaction := s.leasedSettled
+	if !replace {
+		transaction = func(ctx context.Context, fn func(context.Context, *sql.Conn) error) error {
+			return s.leased(ctx, true, fn)
+		}
+	}
+	err := transaction(ctx, func(ctx context.Context, conn *sql.Conn) error {
 		snap, current, err := loadMetadata(ctx, conn, s.id)
 		if err != nil {
 			return err
@@ -2276,11 +2430,24 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 }
 
 func (s *sqliteSession) GetMetadata(ctx context.Context) (*Metadata, error) {
+	// Read first, as in GetHistory: a checkpoint in between moves what is
+	// pending into the row.
+	identity, usedNS := s.store.writer.pendingIdentity(s.id)
 	snap, err := s.readSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return metadataFromSnapshot(snap)
+	metadata, err := metadataFromSnapshot(snap)
+	if err != nil {
+		return nil, err
+	}
+	if identity != nil && (metadata.Transcript == nil || metadata.Transcript.Sequence <= identity.Sequence) {
+		metadata.Transcript = identity
+	}
+	if used := time.Unix(0, usedNS).UTC(); usedNS > 0 && used.After(metadata.LastUsed) {
+		metadata.LastUsed = used
+	}
+	return metadata, nil
 }
 
 // First-run identity and outcome are write-once. Preserve them inside the
@@ -2333,8 +2500,27 @@ func (s *sqliteSession) close(cause error) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// An update answered from memory runs under the cache's hold and checks
+	// this handle first, so after one turn at the cache none is under way on
+	// this session or on a family it roots.
+	cache := s.store.coordination
+	cache.held <- struct{}{}
+	<-cache.held
+	// The lease is what lets a checkpoint write this session's pending
+	// updates, so they are written before it goes: the family's, when this
+	// is its root, by a checkpoint, and the session's own here.
+	writer := s.store.writer
+	err := writer.settleFamily(ctx, s.id)
+	var pending *pendingSession
+	if err == nil {
+		pending, err = writer.takeSession(ctx, s.id)
+	}
+	if err != nil {
+		result = err
+		return result
+	}
 	deleted := false
-	err := s.store.withWrite(ctx, func(conn *sql.Conn) error {
+	err = s.store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 		var retention string
 		var hasTurn int
 		var owned int
@@ -2353,6 +2539,14 @@ func (s *sqliteSession) close(cause error) error {
 		if owned == 0 {
 			return nil
 		}
+		if pending != nil {
+			if err := writePendingSession(ctx, conn, pending, false); err != nil {
+				return err
+			}
+			if len(pending.tail) > 0 {
+				hasTurn = 1
+			}
+		}
 
 		if retention == retentionAuto && hasTurn == 0 {
 			deleted, err = deleteSessions(ctx, conn, "id = ? AND NOT "+swarmPinnedSQL, s.id)
@@ -2366,6 +2560,10 @@ func (s *sqliteSession) close(cause error) error {
 	})
 	if deleted {
 		s.store.incrementalVacuum(ctx)
+	}
+	if err != nil && pending != nil {
+		// The lease stays with the failure, so a checkpoint can still write this.
+		writer.restoreSession(pending)
 	}
 	if s.store.closed.Load() && isClosedDatabaseError(err) {
 		err = nil

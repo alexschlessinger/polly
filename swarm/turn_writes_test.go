@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 type turnWrite struct {
 	appended  int
 	execution bool // the update wrote the member's execution record
-	waited    bool // the member waited for the store to write the update
+	waited    bool // the member waited for the update to be safe from a crash
 }
 
 // turnWriteStore hands the runtime member sessions that note what each of
@@ -120,7 +121,9 @@ func memberTurnWrites(t *testing.T, tool, args string) []turnWrite {
 		reply.SetTokenUsage(10, 2)
 		return reply
 	})
-	r = runtimeTest(t, model, 1, 1)
+	// A disk store logs an update before it is safe from a crash, which is
+	// the wait a member makes or skips; a memory store has none to offer.
+	r = runtimeTestOn(t, sessions.StoreConfig{Mode: sessions.ModeDisk, Path: filepath.Join(t.TempDir(), "polly.db")}, model, 1, 1, nil)
 	store := &turnWriteStore{SessionStore: r.config.Store, t: t}
 	r.config.Store = store
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
