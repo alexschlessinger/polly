@@ -215,7 +215,7 @@ func (w *coordinationWriter) write(batch []queuedUpdate) error {
 	defer cancel()
 	return w.store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 		for _, update := range batch {
-			if _, err := writeRecordDelta(ctx, conn, update.parent, update.changes); err != nil {
+			if err := writeRecordDelta(ctx, conn, update.parent, update.changes); err != nil {
 				return err
 			}
 			next := update.sequence + int64(len(update.appended))
@@ -227,12 +227,8 @@ func (w *coordinationWriter) write(batch []queuedUpdate) error {
 			if len(update.appended) == 0 {
 				continue
 			}
-			for i, payload := range update.appended {
-				if _, err := conn.ExecContext(ctx,
-					"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-					update.session, update.sequence+int64(i), payload); err != nil {
-					return err
-				}
+			if _, err := insertMessages(ctx, conn, update.session, update.sequence, update.appended); err != nil {
+				return err
 			}
 			if err := recordTurn(ctx, conn, update.session, next, update.nowNS); err != nil {
 				return err

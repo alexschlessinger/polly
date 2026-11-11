@@ -66,6 +66,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 	}
 	view := &SessionView{}
 	var id []byte
+	var payloads [][]byte
 	err := s.withRead(ctx, func(conn *sql.Conn) error {
 		var err error
 		switch {
@@ -111,11 +112,15 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		view.Revision = hex.EncodeToString(hasher.Sum(nil))
 		view.Unchanged = view.Revision == knownRevision
 		if !view.Unchanged {
-			view.History, err = readHistory(ctx, conn, id, snap.nextSeq)
+			payloads, err = readHistoryPayloads(ctx, conn, id, snap.nextSeq)
 		}
 		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	// Decoding is the larger part of the cost and needs no connection.
+	if view.History, err = decodeHistory(payloads); err != nil {
 		return nil, err
 	}
 	// This read handle owns no lease, heartbeat, or runtime. Store shutdown
@@ -142,14 +147,6 @@ func childIDBySpawn(ctx context.Context, conn *sql.Conn, parent, spawnCallID str
 		return nil, ErrSessionNotFound
 	}
 	return id, nil
-}
-
-func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
-	payloads, err := readHistoryPayloads(ctx, conn, id, next)
-	if err != nil {
-		return nil, err
-	}
-	return decodeHistory(payloads)
 }
 
 // readHistoryPayloads reads a transcript's encoded messages, in order. A
