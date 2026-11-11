@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -2114,45 +2115,45 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		}
 	}
 
+	execute := func(ctx context.Context, idx int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
+		if err == nil {
+			results[idx] = result
+		}
+		return err
+	}
+
 	// A single worker executes in request order, preserving dependencies
-	// between calls without launching goroutines that race for the semaphore.
+	// between calls without launching competing goroutines.
 	parallelism := a.effectiveParallelism(len(approvedIndices))
 	if parallelism == 1 {
 		for _, idx := range approvedIndices {
-			if err := ctx.Err(); err != nil {
+			if err := execute(ctx, idx); err != nil {
 				return results, err
 			}
-			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
-			if err != nil {
-				return results, err
-			}
-			results[idx] = result
 		}
 		return results, nil
 	}
 
+	// Queue positions, not goroutines. The batch already owns the calls,
+	// handles and ordered result slots; only active workers need stacks. With
+	// no limit there is a worker per approved call, so every call starts at once.
 	g, ctx := errgroup.WithContext(ctx)
-
-	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, parallelism)
-
-	for _, idx := range approvedIndices {
-		tc, handle := toolCalls[idx], handles[idx]
+	var next atomic.Int64
+	for range parallelism {
 		g.Go(func() error {
-			// Acquire semaphore (respects context cancellation)
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(approvedIndices) {
+					return nil
+				}
+				if err := execute(ctx, approvedIndices[i]); err != nil {
+					return err
+				}
 			}
-
-			result, err := a.executeTool(ctx, tc, handle, cb, inline)
-			if err != nil {
-				return err
-			}
-			results[idx] = result
-			return nil
 		})
 	}
 
