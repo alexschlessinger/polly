@@ -175,19 +175,20 @@ type coordinationWriter struct {
 	closed           bool
 	// stopped is logErr != nil || applyErr != nil || closed, for healthy.
 	stopped atomic.Bool
-	// moved is closed and replaced whenever logged, applied or an error
-	// changes.
-	moved              chan struct{}
-	wakeLog, wakeApply chan struct{}
-	started            bool
-	logDone, applyDone chan struct{}
+	// loggedMoved and appliedMoved are closed and replaced when the place
+	// of that name moves or its error is set, so a waiter is woken only by
+	// the progress it waits for.
+	loggedMoved, appliedMoved chan struct{}
+	wakeLog, wakeApply        chan struct{}
+	started                   bool
+	logDone, applyDone        chan struct{}
 	// log is this handle's part of the update log; a memory store has none.
 	log *updateLog
 }
 
 func newCoordinationWriter(store *SQLiteStore) *coordinationWriter {
 	return &coordinationWriter{
-		store: store, window: newPendingWindow(), moved: make(chan struct{}),
+		store: store, window: newPendingWindow(), loggedMoved: make(chan struct{}), appliedMoved: make(chan struct{}),
 		wakeLog: make(chan struct{}, 1), wakeApply: make(chan struct{}, 1),
 		logDone: make(chan struct{}), applyDone: make(chan struct{}),
 	}
@@ -262,7 +263,7 @@ func (w *coordinationWriter) accept(ctx context.Context, update *queuedUpdate) (
 			break
 		}
 		w.wanted = max(w.wanted, w.accepted)
-		moved := w.moved
+		moved := w.appliedMoved
 		w.mu.Unlock()
 		wake(w.wakeApply)
 		select {
@@ -333,10 +334,11 @@ func (w *coordinationWriter) wait(ctx context.Context, place uint64) error {
 			w.mu.Unlock()
 			return err
 		}
-		moved := w.moved
+		logged, applied := w.loggedMoved, w.appliedMoved
 		w.mu.Unlock()
 		select {
-		case <-moved:
+		case <-logged:
+		case <-applied:
 		case <-ctx.Done():
 			return context.Cause(ctx)
 		}
@@ -363,7 +365,7 @@ func (w *coordinationWriter) settle(ctx context.Context) error {
 			return err
 		}
 		w.wanted = max(w.wanted, place)
-		moved := w.moved
+		moved := w.appliedMoved
 		w.mu.Unlock()
 		wake(w.wakeApply)
 		select {
@@ -405,7 +407,7 @@ func (w *coordinationWriter) takeSession(ctx context.Context, id []byte) (*pendi
 			w.mu.Unlock()
 			return nil, err
 		}
-		moved := w.moved
+		moved := w.appliedMoved
 		w.mu.Unlock()
 		select {
 		case <-moved:
@@ -520,9 +522,11 @@ func (w *coordinationWriter) finish() {
 	_ = log.close(clean)
 }
 
-func (w *coordinationWriter) announce() {
-	close(w.moved)
-	w.moved = make(chan struct{})
+// announce wakes the waiters on moved, one of loggedMoved and appliedMoved.
+// The caller holds mu.
+func announce(moved *chan struct{}) {
+	close(*moved)
+	*moved = make(chan struct{})
 }
 
 // logLoop writes accepted updates to the log, everything accepted since its
@@ -557,7 +561,7 @@ func (w *coordinationWriter) logLoop() {
 		} else {
 			w.logged = last
 		}
-		w.announce()
+		announce(&w.loggedMoved)
 		w.mu.Unlock()
 		if err != nil {
 			return
@@ -612,7 +616,7 @@ func (w *coordinationWriter) applyLoop() {
 		} else {
 			w.applied, w.applying = max(w.applied, window.last), nil
 		}
-		w.announce()
+		announce(&w.appliedMoved)
 		w.mu.Unlock()
 		if err != nil {
 			return
