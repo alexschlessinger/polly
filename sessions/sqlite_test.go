@@ -1649,7 +1649,7 @@ func TestConnectionConfigurationIsSharedAcrossModes(t *testing.T) {
 			for pragma, want := range map[string]int64{
 				"foreign_keys":   1,
 				"busy_timeout":   10_000,
-				"synchronous":    2, // FULL
+				"synchronous":    1, // NORMAL
 				"trusted_schema": 0,
 			} {
 				var got int64
