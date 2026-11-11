@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -34,6 +35,16 @@ func updateFrom(t *testing.T, coord CoordinationSession, fn func(*CoordinationSt
 	}
 	if err := coord.(CoordinationDeltaSession).UpdateCoordinationFrom(ctx, revision, fn); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// eventually polls until ok or two seconds have passed.
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
 	}
 }
 
@@ -358,5 +369,70 @@ func TestVolatileChangeStaysInMemory(t *testing.T) {
 	}
 	if a, b := storedRecord(t, here, "task", "a"), storedRecord(t, here, "task", "b"); a != `{"n":4}` || b != `{"n":3}` {
 		t.Fatalf("the table after a change that is not volatile: a=%q b=%q", a, b)
+	}
+}
+
+// A session that writes its own row first writes what is pending for it. A
+// checkpoint under way may hold that, among thousands of other sessions'
+// messages. The session takes its own out of the checkpoint and does not
+// wait for the rest.
+func TestSessionTakesItsPendingOutOfACheckpointUnderWay(t *testing.T) {
+	ctx := context.Background()
+	holdCheckpoints(t)
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent := acquireNamed(t, store, "parent")
+	if err := parent.(CoordinationSession).UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Acquire(ctx, "child", AcquireOptions{Parent: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	updateFrom(t, child.(CoordinationSession), changeRecord("task", "a", `{"n":2}`, "one"))
+
+	// The checkpoint starts and then waits for the store's only connection.
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	synced := make(chan error, 1)
+	go func() { synced <- store.Sync(ctx) }()
+	w := store.writer
+	eventually(t, "the checkpoint never started", func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.applying != nil
+	})
+	prompt, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	id := child.(*sqliteSession).id
+	pending, err := w.takeSession(prompt, id)
+	if err != nil || pending == nil || len(pending.tail) != 1 {
+		t.Fatalf("taking the session's pending out of the checkpoint = %+v, %v", pending, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	if got := storedRecord(t, store, "task", "a"); got != `{"n":2}` {
+		t.Fatalf("the checkpoint wrote the record %q", got)
+	}
+	if got := storedMessages(t, store); got != 0 {
+		t.Fatalf("the checkpoint wrote %d messages the session had taken", got)
+	}
+	// Given back, they are written ahead of the session's next write.
+	w.restoreSession(pending)
+	if err := child.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "two"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedMessages(t, store); got != 2 {
+		t.Fatalf("%d messages in the table after the session wrote again", got)
+	}
+	if got := historyText(t, child); got != "one,two" {
+		t.Fatalf("transcript after the session wrote again = %q", got)
 	}
 }
