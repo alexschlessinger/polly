@@ -183,7 +183,7 @@ func (r *Runtime) ensureDeliveryNotices(s *State) {
 			continue
 		}
 		notice := r.completionNotice(s, s.Members[t.Owner], s.Executions[t.Execution], t)
-		s.Messages[notice.ID] = notice
+		put(s, "mail", &s.Messages, notice.ID, notice)
 	}
 }
 

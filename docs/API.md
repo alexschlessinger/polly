@@ -1191,6 +1191,7 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
 | `Parent` | Link a child by stable identity, independent of rename |
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
+| `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store writes swarm coordination updates behind their callers and commits without waiting for the disk, so a crash can lose the latest ones |
 
 ### Metadata and titles
 
@@ -1347,5 +1348,12 @@ A few rules of thumb:
   zero is compared record by record instead. A store that also implements
   `sessions.CoordinationDeltaSession` is given only the records an update
   changed, instead of a copy of the family to edit.
+- The SQLite store answers `UpdateCoordinationFrom` and coordination reads
+  from memory and writes behind them. One store handle owns a family: a
+  second handle on the same database that writes the same family is noticed
+  within a tenth of a second, not at once.
+- A store whose commits may trail the disk implements `sessions.SyncStore`;
+  the swarm runtime calls `Sync` after recording that it is about to apply a
+  result and before it writes to the source tree.
 - `Runtime.State` returns a state shared with the runtime's own readers.
   Treat it as read-only, and copy it before editing.

@@ -126,9 +126,12 @@ type invocation struct {
 	id, member  string
 	generation  int
 	done        chan struct{}
-	cancel      context.CancelFunc
-	result      AgentResult
-	err         error
+	// poke holds at most one reminder that a record this member waits on
+	// changed; a parked member rechecks its wake conditions when it arrives.
+	poke   chan struct{}
+	cancel context.CancelFunc
+	result AgentResult
+	err    error
 }
 type Runtime struct {
 	releaseMu                                      sync.Mutex
@@ -170,9 +173,13 @@ type Runtime struct {
 	contextLocks     map[string]*sync.Mutex
 	notify           chan struct{}
 	view             StateCache
-	yield            chan struct{}
-	wg               sync.WaitGroup
-	parentTools      sync.Mutex
+	// scratchNext is where the search for a free live scratch slot starts.
+	scratchNext atomic.Int64
+	// editing admits one edit at a time; see editOn.
+	editing     sync.Mutex
+	yield       chan struct{}
+	wg          sync.WaitGroup
+	parentTools sync.Mutex
 }
 
 func New(c Config) (*Runtime, error) {
@@ -325,7 +332,7 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 		appendInterruptedIntent(raw, turn.Intent)
 		turn.Intent = nil
 		if turn.RetryPause == nil {
-			delete(s.ParentTurns, r.ID)
+			drop(s, "parent_turn", &s.ParentTurns, r.ID)
 		}
 		return encodeState(raw, s)
 	})
@@ -410,7 +417,7 @@ func (r *Runtime) prepare(ctx context.Context) error {
 				w.Status = "interrupted"
 				w.Error = &workflow.Error{Code: "interrupted", Message: "JavaScript was interrupted; restart or take over its members explicitly"}
 				notice := r.workflowNotice(s, w)
-				s.Messages[notice.ID] = notice
+				put(s, "mail", &s.Messages, notice.ID, notice)
 			}
 		}
 		r.ensureDeliveryNotices(s)
@@ -422,11 +429,71 @@ func (r *Runtime) prepare(ctx context.Context) error {
 	}
 	return err
 }
+
+// changed tells the parent's waits that something moved. Parked members are
+// told by poke, by the edit that changed a record they wait on.
 func (r *Runtime) changed() {
 	r.mu.Lock()
 	close(r.notify)
 	r.notify = make(chan struct{})
 	r.mu.Unlock()
+}
+
+// pokeAll has every active member recheck its wake conditions.
+func (r *Runtime) pokeAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, i := range r.active {
+		select {
+		case i.poke <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// pokeTouched has the members an edit concerns recheck their wake
+// conditions. A parked member wakes on its mail, on its own member record,
+// and on tasks and publications, which any member may be waiting on; no other
+// kind of record wakes one.
+func (r *Runtime) pokeTouched(touched map[string]map[string]struct{}, after, before *State) {
+	members := map[string]bool{}
+	for kind, ids := range touched {
+		switch kind {
+		case "task", "publication", "parent":
+			r.pokeAll()
+			return
+		case "member":
+			for id := range ids {
+				members[id] = true
+			}
+		case "mail", "followup":
+			// A follow-up record shares its mail's ID and gates its delivery.
+			for id := range ids {
+				mail := after.Messages[id]
+				if mail == nil {
+					mail = before.Messages[id]
+				}
+				if mail == nil {
+					r.pokeAll()
+					return
+				}
+				members[mail.To] = true
+			}
+		}
+	}
+	if len(members) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range members {
+		if i := r.active[id]; i != nil {
+			select {
+			case i.poke <- struct{}{}:
+			default:
+			}
+		}
+	}
 }
 func (r *Runtime) event(kind, member, text string) {
 	if r.config.OnEvent != nil {
@@ -600,10 +667,10 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 		if req.Snapshot != "" && (c.Checkout == nil || !sameCapturedCommit(s.Snapshots[req.Snapshot], &c.Checkout.Base)) {
 			return unavailableWorkspace()
 		}
-		s.Contexts[c.ID] = c
+		put(s, "context", &s.Contexts, c.ID, c)
 		if c.Checkout != nil {
 			snapshot := c.Checkout.Base
-			s.Snapshots[snapshot.ID] = &snapshot
+			put(s, "snapshot", &s.Snapshots, snapshot.ID, &snapshot)
 		}
 		return nil
 	})
@@ -653,7 +720,7 @@ func (r *Runtime) liveScratchSlots(dir string) []string {
 }
 
 // liveScratch claims the private scratch directory of a context observing a
-// live tree: the lowest free reserved slot in the runtime scratch root, which
+// live tree: a free reserved slot in the runtime scratch root, which
 // is outside both the observed root and the private home, so the member's own
 // sandbox can grant it while siblings deny it. When the scratch root would
 // fall inside the observed tree (polly run from the directory that holds it),
@@ -667,9 +734,16 @@ func (r *Runtime) liveScratch(root, id string) (string, error) {
 	if sandbox.PathWithin(scratch.Root(), root) {
 		return "", nil
 	}
-	for _, slot := range r.liveScratchSlots(dir) {
-		claimed, err := scratch.Reserve(slot)
+	// Start after the last slot claimed: the ones before it are usually
+	// still taken, and trying each costs a system call. The search wraps, so
+	// a released slot is found again.
+	slots := r.liveScratchSlots(dir)
+	start := int(r.scratchNext.Load()) % len(slots)
+	for n := range slots {
+		at := (start + n) % len(slots)
+		claimed, err := scratch.Reserve(slots[at])
 		if err == nil {
+			r.scratchNext.Store(int64(at + 1))
 			return claimed, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
@@ -796,7 +870,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 					if e.Status != "completed" && e.Status != "failed" && !paused {
 						return nil, fail("execution_paused", "this call already started member "+e.Member+"; resume it explicitly")
 					}
-					i := &invocation{id: e.ID, member: e.Member, done: make(chan struct{})}
+					i := &invocation{id: e.ID, member: e.Member, done: make(chan struct{}), poke: make(chan struct{}, 1)}
 					if e.Result != nil {
 						i.result = *e.Result
 					}
@@ -967,9 +1041,9 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			m.AgentName = agentName(&Member{ID: identity})
 		}
 		err = r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
-			s.Members[m.ID] = m
+			put(s, "member", &s.Members, m.ID, m)
 			c.Owner = m.ID
-			s.Contexts[c.ID] = c
+			put(s, "context", &s.Contexts, c.ID, c)
 			raw.Members = append(raw.Members, m.ID)
 			return nil
 		})
@@ -990,7 +1064,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(r.ctx, cancel)
-	i := &invocation{generation: 1, id: ids.New(), member: m.ID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
+	i := &invocation{generation: 1, id: ids.New(), member: m.ID, done: make(chan struct{}), poke: make(chan struct{}, 1), cancel: func() { stop(); cancel() }}
 	r.active[m.ID] = i
 	r.mu.Unlock()
 	r.parentTools.Lock()
@@ -1075,7 +1149,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if refreshed != nil {
 			task = refreshed
 			task.Run = run.ID
-			s.Tasks[task.ID] = task
+			put(s, "task", &s.Tasks, task.ID, task)
 		} else if task == nil {
 			requirement, err := requirementFor(req.Review, stored.ReadOnly)
 			if err != nil {
@@ -1091,7 +1165,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			if req.Session != "" {
 				task.StartingSnapshot, task.SourceRoot = continuationSource(s, stored, previous)
 			}
-			s.Tasks[task.ID] = task
+			put(s, "task", &s.Tasks, task.ID, task)
 		} else {
 			if req.Review && requirementOf(s, task) != RequirementReviewed {
 				return fail("requirement_mismatch", "review cannot change an existing task's completion requirement")
@@ -1142,7 +1216,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			e.Request.Task += "\n\nFollow-up from your parent. " + followupProvenance(s, mail) + "\n" + mail.Text
 			mail.Delivered = true
 		}
-		s.Executions[i.id] = e
+		put(s, "execution", &s.Executions, i.id, e)
 		return nil
 	})
 	r.parentTools.Unlock()
@@ -1290,11 +1364,8 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 		r.mu.Unlock()
 		r.event("waiting", i.member, "waiting for an addressed event")
 		for {
-			r.mu.Lock()
-			notify := r.notify
-			r.mu.Unlock()
-			// Every change wakes every parked member; the shared decode
-			// makes that one decode per change rather than one per member.
+			// An edit pokes the members its records concern, so a parked
+			// member rechecks only then.
 			s, err := r.State(ctx)
 			if err != nil {
 				i.err = err
@@ -1317,7 +1388,7 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 				i.err = ctx.Err()
 				r.finish(i)
 				return
-			case <-notify:
+			case <-i.poke:
 			case <-timer.C:
 			}
 			timer.Stop()
@@ -1725,7 +1796,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		}
 		r.parentTools.Lock()
 		err = r.edit(ctx, func(s *State) error {
-			s.Snapshots[snapshot.ID] = &snapshot
+			put(s, "snapshot", &s.Snapshots, snapshot.ID, &snapshot)
 			if task := s.Tasks[m.Task]; task != nil && task.Execution == i.id && task.Status == "running" {
 				s.ownTask(m.Task).Snapshot = snapshot.ID
 			}
@@ -1909,7 +1980,7 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 		// Running workflows deliver through their durable step receipt.
 		if !workflowControlled(s, e) && (retryPaused == nil || task == nil || resultNotice(s, task) == nil) {
 			mail := r.completionNotice(s, m, e, task)
-			s.Messages[mail.ID] = mail
+			put(s, "mail", &s.Messages, mail.ID, mail)
 		}
 		return nil
 	})
@@ -2207,7 +2278,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(r.ctx, cancel)
-	i := &invocation{generation: resume.Generation, id: resume.ID, member: memberID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
+	i := &invocation{generation: resume.Generation, id: resume.ID, member: memberID, done: make(chan struct{}), poke: make(chan struct{}, 1), cancel: func() { stop(); cancel() }}
 	r.mu.Lock()
 	r.active[memberID] = i
 	r.mu.Unlock()
@@ -2332,7 +2403,7 @@ func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) erro
 		if report.Run == "" {
 			report.Run = r.currentRun(s).ID
 		}
-		s.Workflows[report.ID] = &report
+		put(s, "workflow", &s.Workflows, report.ID, &report)
 		recordWorkflowDeliveries(s, &report)
 		// The checkpoint that turns a report terminal is the workflow's one
 		// notice to the parent. It shares the transaction with the status
@@ -2340,7 +2411,7 @@ func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) erro
 		if report.Status != "running" && (prior == nil || prior.Status == "running") {
 			r.ensureDeliveryNotices(s)
 			mail := r.workflowNotice(s, &report)
-			s.Messages[mail.ID] = mail
+			put(s, "mail", &s.Messages, mail.ID, mail)
 		}
 		return nil
 	})

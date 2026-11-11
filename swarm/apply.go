@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -109,13 +110,20 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 				return err
 			}
 		}
-		s.Applies[plan.ID] = &record
+		put(s, "apply", &s.Applies, plan.ID, &record)
 		// The observed parent is a captured commit too. Retain it with the
 		// receipt so every public commit can be resolved by this runtime.
-		s.Snapshots[observed.ID] = &observed
+		put(s, "snapshot", &s.Snapshots, observed.ID, &observed)
 		return nil
 	}); err != nil {
 		return err
+	}
+	// The write below cannot be undone, and recovery after a crash starts
+	// from this intent, so it has to be on disk first.
+	if store, ok := r.config.Store.(sessions.SyncStore); ok {
+		if err = store.Sync(ctx); err != nil {
+			return err
+		}
 	}
 	if err = m.RecordApply(plan.ID, record); err != nil {
 		return err
@@ -213,7 +221,7 @@ func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) erro
 		if s.Integrations[record.ID] != nil && record.Status == "applied" {
 			s.ownIntegration(record.ID).Status = "applied"
 		}
-		s.Applies[record.ID] = &record
+		put(s, "apply", &s.Applies, record.ID, &record)
 		return nil
 	})
 }

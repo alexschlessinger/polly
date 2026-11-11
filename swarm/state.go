@@ -442,6 +442,7 @@ func (r *Runtime) update(ctx context.Context, fn func(*State) error) error {
 		return encodeState(raw, s)
 	})
 	if err == nil {
+		r.pokeAll()
 		r.changed()
 	}
 	return err
@@ -453,7 +454,7 @@ func (r *Runtime) currentRun(s *State) *Run {
 		}
 	}
 	run := &Run{ID: ids.New(), Status: "running", Limit: r.config.MaxExecutions}
-	s.Runs[run.ID] = run
+	put(s, "run", &s.Runs, run.ID, run)
 	return run
 }
 
@@ -534,6 +535,28 @@ func (r *Runtime) State(ctx context.Context) (*State, error) {
 	return r.view.decode(raw)
 }
 
+// stateThrough is State for a caller holding any session of the family: the
+// session's lease is checked, and the shared state answers when the store can
+// say so without handing over the records. raw carries the session's identity
+// and no Records then. Treat the state as read-only.
+func (r *Runtime) stateThrough(ctx context.Context, session sessions.CoordinationSession) (*State, *sessions.CoordinationState, error) {
+	revisions, ok := session.(sessions.CoordinationRevisionSession)
+	identity, named := session.(sessions.ViewIdentity)
+	if _, shared := r.parent.(sessions.CoordinationRevisionSession); ok && named && shared {
+		if _, err := revisions.CoordinationRevision(ctx); err != nil {
+			return nil, nil, err
+		}
+		s, err := r.State(ctx)
+		return s, &sessions.CoordinationState{ActorID: identity.ViewID(), ParentID: r.ID}, err
+	}
+	raw, err := session.ReadCoordination(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	s, err := decodeState(raw)
+	return s, raw, err
+}
+
 // StateCache hands back the previous decode whenever a fresh read finds every
 // record unchanged, and decodes only the records that did change. A display
 // polling a swarm between checkpoints pays for the comparison, not for
@@ -544,6 +567,8 @@ type StateCache struct {
 	revision uint64
 	state    *State
 	checked  time.Time
+	// confirmed is when an edit last checked the records it left alone.
+	confirmed time.Time
 }
 
 // at returns the cached state when it was decoded from the records the store
@@ -690,7 +715,7 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 			criteria = criteriaFor(requirement)
 		}
 		task = &Task{ID: ids.New(), Run: run.ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
-		s.Tasks[task.ID] = task
+		put(s, "task", &s.Tasks, task.ID, task)
 		return nil
 	})
 	return task, err
@@ -787,7 +812,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 			t.Feedback = feedback
 			t.Revision++
 			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "info", Task: t.ID, Revision: t.Revision, Execution: t.Execution, Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
-			s.Messages[mail.ID] = mail
+			put(s, "mail", &s.Messages, mail.ID, mail)
 		}
 		return nil
 	})
@@ -845,7 +870,7 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		if kind == "reply" {
 			s.ownMail(replyTo).ReplyID = mail.ID
 		}
-		s.Messages[mail.ID] = mail
+		put(s, "mail", &s.Messages, mail.ID, mail)
 		return nil
 	})
 	return mail, err
@@ -1066,7 +1091,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 				}
 			}
 		}
-		s.Publications[p.ID] = &p
+		put(s, "publication", &s.Publications, p.ID, &p)
 		result = &p
 		raw.PinOwner = actor
 		for _, ref := range p.Artifacts {

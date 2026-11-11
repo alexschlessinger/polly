@@ -151,8 +151,8 @@ func (r *Runtime) followupTask(ctx context.Context, target, message, callID stri
 		if f.Source != "" {
 			f.BaseOrigin = "live_source"
 		}
-		s.Followups[mail.ID] = f
-		s.Messages[mail.ID] = mail
+		put(s, "followup", &s.Followups, mail.ID, f)
+		put(s, "mail", &s.Messages, mail.ID, mail)
 		return nil
 	})
 	if err == nil {
@@ -267,7 +267,7 @@ func (r *Runtime) recordFollowupFailure(memberID string, cause error) {
 		}
 		if found {
 			notice := &Mail{ID: ids.New(), From: r.ID, To: r.ID, Kind: "info", Text: "Follow-up for " + memberID + " could not start: " + cause.Error() + ". Resolve the cause before retrying with followup_task.", Posted: time.Now().UTC()}
-			s.Messages[notice.ID] = notice
+			put(s, "mail", &s.Messages, notice.ID, notice)
 		}
 		return nil
 	})
