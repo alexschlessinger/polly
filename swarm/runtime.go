@@ -1888,21 +1888,28 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		if errors.Is(runErr, ErrYielded) {
 			return
 		}
+		outcome := sessions.ReportFinished
+		if runErr != nil {
+			outcome = sessions.ReportFailed
+			if i.interrupted.Load() || ctx.Err() != nil || retryCanceled(runErr) {
+				outcome = sessions.ReportCanceled
+			} else if llm.IsIterationLimit(runErr) || committedPause {
+				outcome = sessions.ReportPaused
+			}
+		}
 		persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer stop()
+		// A store that can note the outcome by itself does so without
+		// reading the session's settings or writing them back.
+		if recorder, ok := session.(sessions.SpawnOutcomeSession); ok {
+			runErr = errors.Join(runErr, recorder.RecordSpawnOutcome(persistCtx, outcome))
+			return
+		}
 		metadata, metadataErr := session.GetMetadata(persistCtx)
 		if metadataErr == nil && metadata.SpawnOutcome == "" {
-			metadata.SpawnOutcome = sessions.ReportFinished
-			if runErr != nil {
-				metadata.SpawnOutcome = sessions.ReportFailed
-				if i.interrupted.Load() || ctx.Err() != nil || retryCanceled(runErr) {
-					metadata.SpawnOutcome = sessions.ReportCanceled
-				} else if llm.IsIterationLimit(runErr) || committedPause {
-					metadata.SpawnOutcome = sessions.ReportPaused
-				}
-			}
+			metadata.SpawnOutcome = outcome
 			metadataErr = session.SetMetadata(persistCtx, metadata)
 		}
-		stop()
 		runErr = errors.Join(runErr, metadataErr)
 	}()
 	_ = r.look(context.WithoutCancel(ctx), func(current *State) {
