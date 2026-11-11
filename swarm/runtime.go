@@ -2418,8 +2418,11 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 			if e.Generation != resume.Generation {
 				return errors.New("recovery generation changed")
 			}
-			appendInterruptedIntent(raw, e.Intent)
-			e.Intent = nil
+			// A transcript past the journal's mark already holds the batch.
+			if e.IntentAt == 0 || e.IntentAt == raw.Sequence {
+				appendInterruptedIntent(raw, e.Intent)
+			}
+			e.Intent, e.IntentAt = nil, 0
 			return nil
 		})
 		closeErr := session.Close()

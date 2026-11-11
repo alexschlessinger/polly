@@ -151,6 +151,14 @@ type Publication struct {
 	// represents a surviving claim. Its original timestamp cannot prove reads.
 	AdmittedTo []string `json:"admittedTo,omitempty"`
 }
+
+// Execution is a member's run of one assignment. Intent is the tool batch its
+// slice last journaled: the generated messages the transcript did not yet
+// hold, to be appended at transcript sequence IntentAt. A transcript that has
+// moved past IntentAt saved the batch with its results, so the intent is
+// spent; a record written before intents were stamped has no IntentAt.
+// Iterations and Usage are as of the last journaled batch or the end of the
+// last slice: a request in flight is not yet counted.
 type Execution struct {
 	Workspace  string `json:"workspace,omitempty"`
 	Base       string `json:"base,omitempty"`
@@ -159,6 +167,7 @@ type Execution struct {
 	Workflow   string                 `json:"workflow,omitempty"`
 	InputSaved bool                   `json:"inputSaved"`
 	Intent     []messages.ChatMessage `json:"intent,omitempty"`
+	IntentAt   int64                  `json:"intentAt,omitempty"`
 	Usage      Usage                  `json:"usage"`
 	ID         string                 `json:"id"`
 	Run        string                 `json:"run"`

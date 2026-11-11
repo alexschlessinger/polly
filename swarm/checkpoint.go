@@ -15,6 +15,9 @@ import (
 
 func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState, transcript *transcriptBinding) {
 	var persisted int
+	// counted is how many generated messages the execution record's usage
+	// covers. It trails persisted between a slice's journals.
+	var counted int
 	var sequence *int64
 	var workflows workflowDeliveries
 	if execution == "" {
@@ -114,28 +117,39 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		var read []string
 		actor := ""
 		var parentPause *RetryPause
+		recorded := false
 		err := transcript.checkpoint(checkpoint, func() (int64, error) {
 			var next int64
 			err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 				actor = raw.ActorID
 				if execution != "" {
-					e := s.ownExecution(execution)
+					e := s.Executions[execution]
 					if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
 						return errors.New("execution checkpoint was fenced")
 					}
 					if e.InputSaved {
 						raw.Transcript = &sessions.TranscriptIdentity{Execution: execution, Generation: generation}
 					}
-					e.Iterations = offset + checkpoint.Iterations
-					if checkpoint.Request {
-						e.Iterations++
-					}
-					e.Intent = nil
-					e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-					// Yield and exhausted retries commit their pause with the accepted
-					// prefix. Other exits stay running until finish records the outcome.
-					if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
-						e.Status = "waiting"
+					// A request between two tool batches appends to the transcript
+					// and leaves the record as the last journal wrote it: the count
+					// and usage move with the next journal, and its intent is spent
+					// once the transcript has passed it. The record is written when
+					// the slice ends, and for a typed result, whose corrections and
+					// completion are saved with the messages that carry them.
+					if checkpoint.Final || structured != nil {
+						e = s.ownExecution(execution)
+						e.Iterations = offset + checkpoint.Iterations
+						if checkpoint.Request {
+							e.Iterations++
+						}
+						e.Intent, e.IntentAt = nil, 0
+						e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[counted:]))
+						recorded = true
+						// Yield and exhausted retries commit their pause with the accepted
+						// prefix. Other exits stay running until finish records the outcome.
+						if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
+							e.Status = "waiting"
+						}
 					}
 				}
 				if execution == "" {
@@ -214,6 +228,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				// different writer, leaving the generated prefix unacknowledged.
 				sequence = &next
 				persisted = len(checkpoint.Generated)
+				if recorded {
+					counted = persisted
+				}
 			}
 			return next, err
 		})
@@ -259,7 +276,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		return nil
 	}
 	cb.JournalToolBatch = func(ctx context.Context, c llm.AgentCheckpoint) error {
-		return r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+		err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 			if execution == "" {
 				put(s, "parent_turn", &s.ParentTurns, raw.ActorID, &ParentTurn{Intent: c.Generated[persisted:]})
 				return nil
@@ -268,10 +285,16 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			if e == nil || e.Generation != generation || e.Status != "running" {
 				return errors.New("execution journal was fenced")
 			}
-			e.Intent = c.Generated[persisted:]
+			// The transcript ends where the batch's messages will be appended.
+			e.Intent, e.IntentAt = c.Generated[persisted:], raw.Sequence
 			e.Iterations = offset + c.Iterations
+			e.Usage = mergeUsage(e.Usage, usageOf(c.Generated[counted:]))
 			return nil
 		})
+		if err == nil && execution != "" {
+			counted = len(c.Generated)
+		}
+		return err
 	}
 }
 
