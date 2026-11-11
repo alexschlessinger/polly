@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,12 +99,13 @@ type Manager struct {
 	// while waiting for a source. Git worktree add/remove/prune share admin;
 	// independent indexes and object writes do not. Ref pinning has a separate
 	// narrow lock: even unique refs can share storage (for example reftable).
-	admin     sync.Mutex
-	refsMu    sync.Mutex
+	admin  sync.Mutex
+	refsMu sync.Mutex
+	// applyMu is a leaf: rewrites of one apply manifest share a temporary name.
+	applyMu   sync.Mutex
 	sourcesMu sync.Mutex
 	sources   map[string]*sourceReservation
-	slotsMu   sync.Mutex
-	nextSlot  int
+	nextSlot  atomic.Uint32 // where create starts probing, modulo len(Slots)
 	// userConfigPaths are the user's Git configuration sources and the pinned
 	// ignore and attribute files, granted read-only to every sandbox that runs
 	// Git for this repository inside the private home directory.
@@ -124,18 +126,27 @@ func (m *Manager) reserveSource(ctx context.Context, path string) (func(), error
 	return unlock, err
 }
 
-// reserveSourcePath returns the canonical identity that it reserves. Entries
-// live only while held or awaited, not for every historical snapshot/source.
-// Canonical paths also make a source's symlink aliases share its reservation.
-func (m *Manager) reserveSourcePath(ctx context.Context, path string) (string, func(), error) {
+// sourceKey is the canonical identity a path is reserved under.
+func sourceKey(path string) (string, error) {
 	key, err := filepath.Abs(path)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	if real, err := filepath.EvalSymlinks(key); err == nil {
 		key = real
 	} else if real, err := filepath.EvalSymlinks(filepath.Dir(key)); err == nil {
 		key = filepath.Join(real, filepath.Base(key)) // an interrupted release may have no tree
+	}
+	return key, nil
+}
+
+// reserveSourcePath returns the canonical identity that it reserves. Entries
+// live only while held or awaited, not for every historical snapshot/source.
+// Canonical paths also make a source's symlink aliases share its reservation.
+func (m *Manager) reserveSourcePath(ctx context.Context, path string) (string, func(), error) {
+	key, err := sourceKey(path)
+	if err != nil {
+		return "", nil, err
 	}
 	m.sourcesMu.Lock()
 	if m.sources == nil {
@@ -157,7 +168,7 @@ func (m *Manager) reserveSourcePath(ctx context.Context, path string) (string, f
 		}
 		m.sourcesMu.Unlock()
 	}
-	timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings)
+	timings := timingsFrom(ctx)
 	var start time.Time
 	if timings != nil {
 		start = time.Now()
@@ -187,8 +198,14 @@ type worktreeTimings struct {
 }
 type worktreeTimingsKey struct{}
 
-func lockWorktree(ctx context.Context, lock sync.Locker, phase string) func() {
+// timingsFrom returns the record a controlled fixture attached to ctx, or nil.
+func timingsFrom(ctx context.Context) *worktreeTimings {
 	timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings)
+	return timings
+}
+
+func lockWorktree(ctx context.Context, lock sync.Locker, phase string) func() {
+	timings := timingsFrom(ctx)
 	if timings == nil {
 		lock.Lock()
 		return lock.Unlock
@@ -472,14 +489,9 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 }
 
 func (m *Manager) offerSlot(tree string) {
-	slot := filepath.Dir(tree)
-	n, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(slot), "slot-"))
-	if err != nil || n < 0 || n >= len(m.Slots) || m.Slots[n] != slot {
-		return
+	if n := slices.Index(m.Slots, filepath.Dir(tree)); n >= 0 {
+		m.nextSlot.Store(uint32(n))
 	}
-	m.slotsMu.Lock()
-	m.nextSlot = n
-	m.slotsMu.Unlock()
 }
 
 func validateGitVersion(version string) error {
@@ -525,7 +537,7 @@ func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []b
 }
 
 func (m *gitRunner) runTo(ctx context.Context, cwd string, env []string, input []byte, isolate bool, out io.Writer, args ...string) error {
-	if timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings); timings != nil {
+	if timings := timingsFrom(ctx); timings != nil {
 		start := time.Now()
 		defer func() {
 			timings.gitCalls.Add(1)
@@ -696,36 +708,35 @@ func seedIndex(source, destination string) error {
 
 // captureSource validates the reserved checkout used for content policy and
 // provenance. Callers supply its canonical identity, not an unreserved alias.
-func (m *Manager) captureSource(ctx context.Context, source string) (string, error) {
+func (m *Manager) captureSource(ctx context.Context, source string) error {
 	real, err := filepath.EvalSymlinks(source)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if real != source {
-		return "", errors.New("snapshot source changed after reservation")
+		return errors.New("snapshot source changed after reservation")
 	}
 	out, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
 	if err != nil {
-		return "", err
+		return err
 	}
 	common, top, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	if common != m.GitDir {
-		return "", errors.New("v1 sources must belong to the parent's Git repository")
+		return errors.New("v1 sources must belong to the parent's Git repository")
 	}
 	if top != source {
-		return "", errors.New("snapshot source must be a checkout root")
+		return errors.New("snapshot source must be a checkout root")
 	}
 	if key := m.unsupportedSetting(ctx, source); key != "" {
-		return "", fmt.Errorf("unsupported repository setting %s", key)
+		return fmt.Errorf("unsupported repository setting %s", key)
 	}
-	return source, nil
+	return nil
 }
 
 // capture snapshots source; reuse is returned instead of a new snapshot when
 // its tree matches, so an unchanged source costs no ref or manifest.
 func (m *Manager) capture(ctx context.Context, source string, reuse Snapshot) (Snapshot, error) {
-	source, err := m.captureSource(ctx, source)
-	if err != nil {
+	if err := m.captureSource(ctx, source); err != nil {
 		return Snapshot{}, err
 	}
 	readCfg, readActive, err := m.Registry.BaseSandboxPolicy()
@@ -1078,16 +1089,12 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 	c := Checkout{ID: ids.New(), Base: s}
 	// Start after the last successful claim (or at a recently freed slot),
 	// but visit each slot at most once. The hint never proves ownership.
-	m.slotsMu.Lock()
-	start := m.nextSlot
-	if len(m.Slots) > 0 {
-		m.nextSlot = (start + 1) % len(m.Slots)
-	}
-	m.slotsMu.Unlock()
-	for probe := 0; probe < len(m.Slots); probe++ {
+	start := int(m.nextSlot.Add(1) - 1)
+	timings := timingsFrom(ctx)
+	for probe := range len(m.Slots) {
 		n := (start + probe) % len(m.Slots)
 		slot := m.Slots[n]
-		if timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings); timings != nil {
+		if timings != nil {
 			timings.slotProbes.Add(1)
 		}
 		ownerPath := filepath.Join(slot, "owner")
@@ -1124,9 +1131,7 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 			return Checkout{}, errors.Join(err, closeErr)
 		}
 		defer unlock() // excludes old release records until the manifest exists
-		m.slotsMu.Lock()
-		m.nextSlot = (n + 1) % len(m.Slots)
-		m.slotsMu.Unlock()
+		m.nextSlot.Store(uint32(n + 1))
 		c.Path = filepath.Join(slot, "tree")
 		break
 	}

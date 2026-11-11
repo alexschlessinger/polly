@@ -305,8 +305,10 @@ func (m *Manager) ReconcileApply(ctx context.Context, p ApplyPlan) (string, erro
 }
 
 func (m *Manager) RecordApply(id string, value any) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	// The fixed apply manifest name may be rewritten by the phased API.
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	return m.manifest("apply-"+id, value)
 }

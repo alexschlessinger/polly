@@ -36,16 +36,10 @@ func TestBuildApplyPlanAndParentApplyExclusion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	defer once.Do(func() { close(release) })
-	m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
-		if slices.Contains(cmd.Args, "diff") && slices.Contains(cmd.Args, candidate.Commit) {
-			close(entered)
-			<-release
-		}
-		return nil
+	entered, release := holdGit(m, func(cmd *exec.Cmd) bool {
+		return slices.Contains(cmd.Args, "diff") && slices.Contains(cmd.Args, candidate.Commit)
 	})
+	defer release()
 	var got ApplyPlan
 	planned := make(chan error, 1)
 	go func() {
@@ -57,7 +51,7 @@ func TestBuildApplyPlanAndParentApplyExclusion(t *testing.T) {
 	applied := make(chan error, 1)
 	go func() { applied <- m.WriteApply(ctx, attrsPlan) }()
 	applyFinished := parentApplyFinishedOrQueued(t, m, applied)
-	once.Do(func() { close(release) })
+	release()
 	if err := awaitWorktreeResult(t, planned); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +67,6 @@ func TestBuildApplyPlanAndParentApplyExclusion(t *testing.T) {
 	// Changes after planning still fail closed at the existing identity check.
 	// The paths drift mode permits an unrelated .gitattributes file, so it is
 	// the patch check, not whole-tree drift detection, that must reject this.
-	m.sandbox = commandBarrier(func(*exec.Cmd) error { return nil })
 	if _, err := m.PreflightApply(ctx, got); err == nil || err.Error() != "integration patch identity changed" {
 		t.Fatalf("accepted changed patch identity after planning: %v", err)
 	}
@@ -148,12 +141,8 @@ func TestPreviewReleasesParentBeforeAdministration(t *testing.T) {
 	defer cancel()
 	base := testSnapshot(t, m, root)
 	m.admin.Lock()
-	locked := true
-	defer func() {
-		if locked {
-			m.admin.Unlock()
-		}
-	}()
+	unlockAdmin := sync.OnceFunc(m.admin.Unlock)
+	defer unlockAdmin()
 	done := make(chan error, 1)
 	go func() { _, err := m.Preview(ctx, base, base); done <- err }()
 	// Preview reaches slot creation only after the live-attribute command.
@@ -161,8 +150,7 @@ func TestPreviewReleasesParentBeforeAdministration(t *testing.T) {
 	if _, err := m.Capture(ctx, root); err != nil {
 		t.Fatal("preview held the parent while waiting for administration:", err)
 	}
-	m.admin.Unlock()
-	locked = false
+	unlockAdmin()
 	if err := awaitWorktreeResult(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -184,11 +172,7 @@ func parentApplyFinishedOrQueued(t *testing.T, m *Manager, applied <-chan error)
 			}
 			return true
 		case <-tick.C:
-			m.sourcesMu.Lock()
-			r := m.sources[m.Root]
-			queued := r != nil && r.users >= 2
-			m.sourcesMu.Unlock()
-			if queued {
+			if sourceUsers(t, m, m.Root) >= 2 {
 				return false
 			}
 		case <-timeout.C:

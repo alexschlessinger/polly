@@ -26,8 +26,7 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 		return Snapshot{}, errors.New("commit must be a full Git commit object ID")
 	}
 	commit = strings.ToLower(commit)
-	source, err = m.captureSource(ctx, source)
-	if err != nil {
+	if err := m.captureSource(ctx, source); err != nil {
 		return Snapshot{}, err
 	}
 	kind, err := m.git(ctx, source, nil, nil, "cat-file", "-t", commit)

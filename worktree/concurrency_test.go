@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,35 +43,48 @@ func awaitWorktreeResult(t *testing.T, result <-chan error) error {
 		return nil
 	}
 }
-func sourceWaiters(t *testing.T, m *Manager, path string, n int) {
+
+// holdGit parks the first Git command that matches until release is called;
+// entered is closed once it is parked. Later matches run straight through.
+func holdGit(m *Manager, match func(*exec.Cmd) bool) (entered <-chan struct{}, release func()) {
+	parked, resume := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
+		if match(cmd) && held.CompareAndSwap(false, true) {
+			close(parked)
+			<-resume
+		}
+		return nil
+	})
+	return parked, sync.OnceFunc(func() { close(resume) })
+}
+
+// sourceUsers counts the operations holding or awaiting path's reservation.
+// The fixture's input spelling can contain symlinked ancestors, but the
+// reservation map uses canonical identities, resolved as the operation did.
+func sourceUsers(t *testing.T, m *Manager, path string) int {
 	t.Helper()
-	// The fixture's input spelling can contain symlinked ancestors, but the
-	// reservation map uses canonical identities. Resolve once, as the queued
-	// operation did; an absent checkout still reserves its canonical slot path.
-	key, err := filepath.Abs(path)
+	key, err := sourceKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if real, err := filepath.EvalSymlinks(key); err == nil {
-		key = real
-	} else if real, err := filepath.EvalSymlinks(filepath.Dir(key)); err == nil {
-		key = filepath.Join(real, filepath.Base(key))
+	m.sourcesMu.Lock()
+	defer m.sourcesMu.Unlock()
+	if r := m.sources[key]; r != nil {
+		return r.users
 	}
+	return 0
+}
+func sourceWaiters(t *testing.T, m *Manager, path string, n int) {
+	t.Helper()
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
-	for {
-		m.sourcesMu.Lock()
-		r := m.sources[key]
-		ready := r != nil && r.users >= n
-		m.sourcesMu.Unlock()
-		if ready {
-			return
-		}
+	for sourceUsers(t, m, path) < n {
 		select {
 		case <-deadline.C:
-			t.Fatalf("source reservation %q (from %q) did not reach %d users", key, path, n)
+			t.Fatalf("source reservation for %q did not reach %d users", path, n)
 		case <-tick.C:
 		}
 	}
@@ -94,25 +108,14 @@ func testSnapshot(t *testing.T, m *Manager, source string) Snapshot {
 
 func TestIndependentCapturesOverlapAndSameSourceCancels(t *testing.T) {
 	m, root := fixture(t)
+	checkSourceReservationsReleased(t, m)
 	ctx := context.Background()
 	base := testSnapshot(t, m, root)
 	a, b := testCheckout(t, m, base), testCheckout(t, m, base)
 	writeTest(t, filepath.Join(a.Path, "a.txt"), "first\n")
 	writeTest(t, filepath.Join(b.Path, "a.txt"), "second\n")
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	defer func() { once.Do(func() { close(release) }) }()
-	m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
-		if cmd.Dir == a.Path {
-			select {
-			case <-entered:
-			default:
-				close(entered)
-				<-release
-			}
-		}
-		return nil
-	})
+	entered, release := holdGit(m, func(cmd *exec.Cmd) bool { return cmd.Dir == a.Path })
+	defer release()
 	first := make(chan error, 1)
 	go func() { _, err := m.Capture(ctx, a.Path); first <- err }()
 	awaitWorktree(t, entered)
@@ -142,15 +145,9 @@ func TestIndependentCapturesOverlapAndSameSourceCancels(t *testing.T) {
 	if err := awaitWorktreeResult(t, same); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled reservation: %v", err)
 	}
-	once.Do(func() { close(release) })
+	release()
 	if err := awaitWorktreeResult(t, first); err != nil {
 		t.Fatal(err)
-	}
-	m.sourcesMu.Lock()
-	remaining := len(m.sources)
-	m.sourcesMu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("retained %d idle source reservations", remaining)
 	}
 }
 
@@ -213,12 +210,8 @@ func TestAdministrationWaitRechecksCleanupTreeAndOwnership(t *testing.T) {
 			base := testSnapshot(t, m, root)
 			c, other := testCheckout(t, m, base), testCheckout(t, m, base)
 			m.admin.Lock()
-			locked := true
-			defer func() {
-				if locked {
-					m.admin.Unlock()
-				}
-			}()
+			unlockAdmin := sync.OnceFunc(m.admin.Unlock)
+			defer unlockAdmin()
 			cleanup := make(chan error, 1)
 			go func() { cleanup <- m.Cleanup(ctx, c, "") }()
 			sourceWaiters(t, m, c.Path, 1)
@@ -234,8 +227,7 @@ func TestAdministrationWaitRechecksCleanupTreeAndOwnership(t *testing.T) {
 			} else {
 				writeTest(t, filepath.Join(c.Path, "late.txt"), "retain me\n")
 			}
-			m.admin.Unlock()
-			locked = false
+			unlockAdmin()
 			if err := awaitWorktreeResult(t, cleanup); err == nil {
 				t.Fatal("cleanup trusted stale eligibility")
 			}
@@ -272,20 +264,10 @@ func TestWorktreeAdministrationSerializesRealCreates(t *testing.T) {
 	m, root := fixture(t)
 	ctx := context.Background()
 	base := testSnapshot(t, m, root)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	defer func() { once.Do(func() { close(release) }) }()
-	m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
-		if slices.Contains(cmd.Args, "worktree") && slices.Contains(cmd.Args, "add") {
-			select {
-			case <-entered:
-			default:
-				close(entered)
-				<-release
-			}
-		}
-		return nil
+	entered, release := holdGit(m, func(cmd *exec.Cmd) bool {
+		return slices.Contains(cmd.Args, "worktree") && slices.Contains(cmd.Args, "add")
 	})
+	defer release()
 	results := make(chan error, 2)
 	go func() { _, err := m.Create(ctx, base); results <- err }()
 	awaitWorktree(t, entered)
@@ -299,7 +281,7 @@ func TestWorktreeAdministrationSerializesRealCreates(t *testing.T) {
 	if _, err := m.Merge(ctx, base, base, base); err != nil {
 		t.Fatal(err)
 	}
-	once.Do(func() { close(release) })
+	release()
 	for range 2 {
 		if err := awaitWorktreeResult(t, results); err != nil {
 			t.Fatal(err)
@@ -423,16 +405,8 @@ func TestSnapshotRefPinningUsesSharedFence(t *testing.T) {
 func TestSnapshotRefCleanupWaitsForCapture(t *testing.T) {
 	m, root := fixture(t)
 	ctx := context.Background()
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	defer func() { once.Do(func() { close(release) }) }()
-	m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
-		if slices.Contains(cmd.Args, "commit-tree") {
-			close(entered)
-			<-release
-		}
-		return nil
-	})
+	entered, release := holdGit(m, func(cmd *exec.Cmd) bool { return slices.Contains(cmd.Args, "commit-tree") })
+	defer release()
 	capture := make(chan error, 1)
 	go func() { _, err := m.Capture(ctx, root); capture <- err }()
 	awaitWorktree(t, entered)
@@ -448,7 +422,7 @@ func TestSnapshotRefCleanupWaitsForCapture(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	once.Do(func() { close(release) })
+	release()
 	if err := awaitWorktreeResult(t, capture); err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +433,7 @@ func TestSnapshotRefCleanupWaitsForCapture(t *testing.T) {
 	if err != nil || len(files) != 0 {
 		t.Fatalf("unfinished snapshot cleanup: %v %v", files, err)
 	}
-	if refs := gitTest(t, root, "for-each-ref", "--format=%(refname)", "refs/polly/snapshots/"); len(refs) != 0 {
-		t.Fatalf("unretired refs: %s", refs)
+	if n := snapshotRefCount(t, root); n != 0 {
+		t.Fatalf("%d unretired refs", n)
 	}
 }

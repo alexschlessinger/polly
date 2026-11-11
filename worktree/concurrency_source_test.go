@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -226,16 +225,8 @@ func TestReviewMergeAndParentApplyExclusion(t *testing.T) {
 			if err != nil || len(plain.Conflicts) == 0 {
 				t.Fatalf("expected conflicting inputs: %+v %v", plain, err)
 			}
-			entered, release := make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			defer once.Do(func() { close(release) })
-			m.sandbox = commandBarrier(func(cmd *exec.Cmd) error {
-				if slices.Contains(cmd.Args, "merge-tree") {
-					close(entered)
-					<-release
-				}
-				return nil
-			})
+			entered, release := holdGit(m, func(cmd *exec.Cmd) bool { return slices.Contains(cmd.Args, "merge-tree") })
+			defer release()
 			type mergeResult struct {
 				tree       string
 				conflicted bool
@@ -263,7 +254,7 @@ func TestReviewMergeAndParentApplyExclusion(t *testing.T) {
 			applied := make(chan error, 1)
 			go func() { applied <- m.WriteApply(ctx, plan) }()
 			applyFinished := parentApplyFinishedOrQueued(t, m, applied)
-			once.Do(func() { close(release) })
+			release()
 			got := <-merged
 			if !applyFinished {
 				if err := awaitWorktreeResult(t, applied); err != nil {
