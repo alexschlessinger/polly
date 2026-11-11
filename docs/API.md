@@ -1352,9 +1352,13 @@ A few rules of thumb:
   from memory and writes behind them. An update that returned before it was
   written carries `CoordinationState.Written`, which returns once it is in
   the database; the swarm runtime waits on it before an edit returns, so a
-  crash of the process loses nothing an edit returned from. One store handle
-  owns a family: a second handle on the same database that writes the same
-  family is noticed within a tenth of a second, not at once.
+  crash of the process loses nothing an edit returned from. The exception is
+  a member's checkpoint before a model request, which returns at once: the
+  journal of the next tool batch, or the last checkpoint of the slice, waits
+  for that write too, so no tool runs and no result is reported on a
+  transcript a crash could take back. One store handle owns a family: a
+  second handle on the same database that writes the same family is noticed
+  within a tenth of a second, not at once.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
   result and before it writes to the source tree, and after recording a
