@@ -60,6 +60,22 @@ type ExclusiveTool interface {
 	ExclusiveBatch() bool
 }
 
+// ReadOnlyTool is implemented by a tool whose calls only read: they change no
+// file, leave no process running, send nothing to a peer and write no
+// coordination record. Repeating such a call, or never learning that it ran,
+// loses nothing, so a host that journals tool batches for recovery leaves out
+// a batch made only of them. A tool that does not say acts on the world.
+type ReadOnlyTool interface {
+	Tool
+	ReadsOnly() bool
+}
+
+// ReadsOnly reports whether tool declares that its calls only read.
+func ReadsOnly(tool Tool) bool {
+	reader, ok := tool.(ReadOnlyTool)
+	return ok && reader.ReadsOnly()
+}
+
 // RecallTool is a tool whose result is reproducible on demand: calling it
 // again with the same arguments yields the same information. The agent may
 // therefore elide a completed call's result under context pressure and

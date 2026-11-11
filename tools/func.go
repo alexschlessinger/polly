@@ -11,6 +11,7 @@ type Func struct {
 	Coordinator bool
 	LongRunning bool
 	Exclusive   bool
+	ReadOnly    bool
 	Name        string
 	Desc        string
 	Params      schema.Params
@@ -23,6 +24,7 @@ type Func struct {
 func (f *Func) Untimed() bool        { return f.LongRunning }
 func (f *Func) ExclusiveBatch() bool { return f.Exclusive }
 func (f *Func) Coordinates() bool    { return f.Coordinator }
+func (f *Func) ReadsOnly() bool      { return f.ReadOnly }
 
 func (f *Func) GetName() string { return f.Name }
 func (f *Func) GetType() string { return "native" }
