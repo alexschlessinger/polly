@@ -189,19 +189,16 @@ func (t *listArtifactsTool) Execute(ctx context.Context, raw map[string]any) (st
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "%d artifact(s) referenced by this conversation, in the order first referenced:\n", total)
-	next := 0
-	if len(refs) < total-(offset-1) {
-		next = offset + len(refs)
-	}
-	for i, ref := range refs {
-		entry := artifactListEntry(offset+i, ref)
+	shown := 0
+	for _, ref := range refs {
+		entry := artifactListEntry(offset+shown, ref)
 		if out.Len()+len(entry) > artifactListMaxBytes {
-			next = offset + i
 			break
 		}
 		out.WriteString(entry)
+		shown++
 	}
-	if next > 0 {
+	if next := offset + shown; next <= total {
 		fmt.Fprintf(&out, "[more entries; continue with offset=%d]", next)
 	}
 	return strings.TrimRight(out.String(), "\n"), nil

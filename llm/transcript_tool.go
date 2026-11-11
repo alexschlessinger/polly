@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"iter"
 	"strconv"
 	"strings"
 
@@ -81,245 +80,168 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 }
 
 // transcriptReader borrows the authoritative history until Close. It retains
-// only the current string fragment, never a rendered transcript or a copied
+// only the current message's fragments, never a rendered transcript or a copied
 // message slice. The pager owns its bounded line/window buffers. Searches and
 // deep offsets can still traverse history; byte pages also count its size.
 type transcriptReader struct {
 	ctx     context.Context
-	history []messages.ChatMessage
-	recall  recallStubs
-	next    func() (string, bool)
-	stop    func()
-	pending string
+	cursor  transcriptCursor
+	pending []string // the current message's fragments not yet read
 	release func()
 }
 
 func newTranscriptReader(ctx context.Context, history []messages.ChatMessage, recall recallStubs) *transcriptReader {
-	return &transcriptReader{ctx: ctx, history: history, recall: recall}
+	return &transcriptReader{ctx: ctx, cursor: transcriptCursor{history: history, recall: recall}}
 }
 
 func (r *transcriptReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if r.next == nil {
-		r.next, r.stop = iter.Pull(transcriptFragments(r.ctx, r.history, r.recall))
-	}
-	for r.pending == "" {
-		if err := r.ctx.Err(); err != nil {
-			return 0, err
-		}
-		var ok bool
-		r.pending, ok = r.next()
-		if !ok {
-			if err := r.ctx.Err(); err != nil {
-				return 0, err
+	n := 0
+	for n < len(p) {
+		if len(r.pending) == 0 {
+			if r.pending = r.cursor.next(); r.pending == nil {
+				break
 			}
-			return 0, io.EOF
+		}
+		copied := copy(p[n:], r.pending[0])
+		n += copied
+		if r.pending[0] = r.pending[0][copied:]; r.pending[0] == "" {
+			r.pending = r.pending[1:]
 		}
 	}
-	n := copy(p, r.pending)
-	r.pending = r.pending[n:]
+	if n == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
 	return n, nil
 }
 
 func (r *transcriptReader) Close() {
-	if r.stop != nil {
-		r.stop()
-	}
 	if r.release != nil {
 		r.release()
 		r.release = nil
 	}
-	r.history, r.recall, r.pending = nil, nil, ""
-	r.next, r.stop = nil, nil
 }
 
-// size counts canonical bytes without joining content, even for a message with
-// many parts or phased text blocks. It deliberately has no retained index to
-// invalidate on replacement, withdrawal or changes to registered recall tools.
+// size counts the view's canonical bytes, wherever the reader is. It
+// deliberately has no retained index to invalidate on replacement, withdrawal
+// or changes to registered recall tools.
 func (r *transcriptReader) size() (int64, error) {
 	var size int64
-	index := 0
-	for _, msg := range r.history {
+	count := transcriptCursor{history: r.cursor.history, recall: r.cursor.recall, counting: true}
+	for fragments := count.next(); fragments != nil; fragments = count.next() {
 		if err := r.ctx.Err(); err != nil {
 			return 0, err
 		}
-		if msg.Role == messages.MessageRoleInternal {
-			continue
-		}
-		index++
-		digits := 1
-		for n := index; n >= 10; n /= 10 {
-			digits++
-		}
-		size += int64(len("=== message :  ===\n") + digits + len(msg.Role))
-		if msg.ToolName != "" {
-			size += int64(1 + len(msg.ToolName))
-		}
-		if _, recall := r.recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && recall {
-			size += int64(len("[ result not rendered; reproducible by calling it again]\n") + len(msg.ToolName))
-			continue
-		}
-		last := ""
-		for text := range transcriptModelText(msg) {
-			if err := r.ctx.Err(); err != nil {
-				return 0, err
-			}
-			size += int64(len(text))
-			last = text
-		}
-		if last != "" && !strings.HasSuffix(last, "\n") {
-			size++
-		}
-		for _, call := range msg.ToolCalls {
-			size += int64(len("[tool call  ]\n") + len(call.Name) + len(call.Arguments))
+		for _, fragment := range fragments {
+			size += int64(len(fragment))
 		}
 	}
 	return size, nil
 }
 
-func transcriptFragments(ctx context.Context, history []messages.ChatMessage, recall recallStubs) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		index := 0
-		for _, msg := range history {
-			if ctx.Err() != nil {
-				return
-			}
-			if msg.Role == messages.MessageRoleInternal {
-				continue
-			}
-			index++
-			if !yield("=== message ") || !yield(strconv.Itoa(index)) || !yield(": ") || !yield(msg.Role) {
-				return
-			}
-			if msg.ToolName != "" && (!yield(" ") || !yield(msg.ToolName)) {
-				return
-			}
-			if !yield(" ===\n") {
-				return
-			}
-			if _, isRecall := recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && isRecall {
-				if !yield("[") || !yield(msg.ToolName) || !yield(" result not rendered; reproducible by calling it again]\n") {
-					return
-				}
-				continue
-			}
-			last := ""
-			for text := range transcriptModelText(msg) {
-				if !yield(text) {
-					return
-				}
-				last = text
-			}
-			if last != "" && !strings.HasSuffix(last, "\n") && !yield("\n") {
-				return
-			}
-			for _, call := range msg.ToolCalls {
-				if !yield("[tool call ") || !yield(call.Name) || !yield(" ") || !yield(call.Arguments) || !yield("]\n") {
-					return
-				}
-			}
-		}
-	}
-}
-
-// transcriptModelText streams ModelText's exact projection without joining
-// parts/blocks. In particular, stale blocks must not override edited Content.
-func transcriptModelText(msg messages.ChatMessage) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		if transcriptHasTextBlocks(msg) {
-			first := true
-			for _, block := range msg.TextBlocks {
-				if block.Text == "" {
-					continue
-				}
-				if !first && !yield("\n\n") {
-					return
-				}
-				if !yield(block.Text) {
-					return
-				}
-				first = false
-			}
-		} else if msg.Content != "" {
-			yield(msg.Content)
-		} else {
-			for _, part := range msg.Parts {
-				if part.Type == "text" && part.Text != "" && !yield(part.Text) {
-					return
-				}
-			}
-		}
-	}
-}
-
-// Equivalent to HasTextBlocks, but compare the answer projection in place
-// instead of allocating another potentially oversized answer string.
-func transcriptHasTextBlocks(msg messages.ChatMessage) bool {
-	if msg.Role != messages.MessageRoleAssistant || len(msg.TextBlocks) == 0 {
-		return false
-	}
-	for _, part := range msg.Parts {
-		switch part.Type {
-		case "text", "image_url", "image_base64", "image_artifact":
-			return false
-		}
-	}
-	remaining, first := msg.Content, true
-	for _, block := range msg.TextBlocks {
-		if block.Phase == messages.PhaseCommentary || block.Text == "" {
-			continue
-		}
-		if !first {
-			if !strings.HasPrefix(remaining, "\n\n") {
-				return false
-			}
-			remaining = remaining[2:]
-		}
-		if !strings.HasPrefix(remaining, block.Text) {
-			return false
-		}
-		remaining = remaining[len(block.Text):]
-		first = false
-	}
-	return remaining == ""
-}
-
-// renderTranscript is the durable transcript's canonical text form. Message
-// indexes count non-internal messages only and the transcript is append-only,
-// so a line found in one call pages the same in the next. Recall-tool results
-// are elided from the rendering: they are reproducible by calling the tool
+// transcriptCursor walks the durable transcript's canonical text form one
+// message at a time. It is the only definition of that form: the reader, the
+// byte count and renderTranscript all take its fragments, which reference
+// message content instead of joining or copying it.
+//
+// Message indexes count non-internal messages only and the transcript is
+// append-only, so a line found in one call pages the same in the next.
+// Recall-tool results are elided: they are reproducible by calling the tool
 // again, and inlining them would nest prior read_transcript output inside
 // later ones.
-func renderTranscript(history []messages.ChatMessage, recall recallStubs) string {
-	var b strings.Builder
-	index := 0
-	for _, msg := range history {
+type transcriptCursor struct {
+	history []messages.ChatMessage
+	recall  recallStubs
+	pos     int      // the next message in history
+	index   int      // the last rendered message's number
+	buf     []string // fragment storage, reused for each message
+	// counting is set by a caller that only adds up fragment lengths.
+	counting bool
+}
+
+// next returns the next rendered message's fragments, which stay valid until
+// the following call, or nil after the last message.
+func (c *transcriptCursor) next() []string {
+	for c.pos < len(c.history) {
+		msg := &c.history[c.pos]
+		c.pos++
 		if msg.Role == messages.MessageRoleInternal {
 			continue
 		}
-		index++
-		fmt.Fprintf(&b, "=== message %d: %s", index, msg.Role)
+		c.index++
+		f := append(c.buf[:0], "=== message ", c.number(), ": ", msg.Role)
 		if msg.ToolName != "" {
-			b.WriteString(" " + msg.ToolName)
+			f = append(f, " ", msg.ToolName)
 		}
-		b.WriteString(" ===\n")
-		if _, isRecall := recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && isRecall {
-			b.WriteString("[" + msg.ToolName + " result not rendered; reproducible by calling it again]\n")
-			continue
-		}
-		if content := msg.ModelText(); content != "" {
-			b.WriteString(content)
-			if !strings.HasSuffix(content, "\n") {
-				b.WriteByte('\n')
+		f = append(f, " ===\n")
+		if _, isRecall := c.recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && isRecall {
+			f = append(f, "[", msg.ToolName, " result not rendered; reproducible by calling it again]\n")
+		} else {
+			text := len(f)
+			f = appendModelText(f, msg)
+			if len(f) > text && !strings.HasSuffix(f[len(f)-1], "\n") {
+				f = append(f, "\n")
+			}
+			for _, call := range msg.ToolCalls {
+				f = append(f, "[tool call ", call.Name, " ", call.Arguments, "]\n")
 			}
 		}
-		for _, call := range msg.ToolCalls {
-			fmt.Fprintf(&b, "[tool call %s %s]\n", call.Name, call.Arguments)
+		c.buf = f
+		return f
+	}
+	return nil
+}
+
+// number is the current message's number as text. A counting cursor takes a
+// stand-in of the same length, so a byte count allocates nothing per message.
+func (c *transcriptCursor) number() string {
+	if !c.counting {
+		return strconv.Itoa(c.index)
+	}
+	digits := 1
+	for n := c.index; n >= 10; n /= 10 {
+		digits++
+	}
+	return "00000000000000000000"[:digits]
+}
+
+// appendModelText appends the non-empty pieces of ModelText's projection
+// without joining them.
+func appendModelText(dst []string, msg *messages.ChatMessage) []string {
+	switch {
+	case msg.HasTextBlocks():
+		first := true
+		for _, block := range msg.TextBlocks {
+			if block.Text == "" {
+				continue
+			}
+			if !first {
+				dst = append(dst, "\n\n")
+			}
+			dst = append(dst, block.Text)
+			first = false
+		}
+	case msg.Content != "":
+		dst = append(dst, msg.Content)
+	default:
+		for _, part := range msg.Parts {
+			if part.Type == "text" && part.Text != "" {
+				dst = append(dst, part.Text)
+			}
+		}
+	}
+	return dst
+}
+
+// renderTranscript is the canonical text form in one string.
+func renderTranscript(history []messages.ChatMessage, recall recallStubs) string {
+	var b strings.Builder
+	cursor := transcriptCursor{history: history, recall: recall}
+	for fragments := cursor.next(); fragments != nil; fragments = cursor.next() {
+		for _, fragment := range fragments {
+			b.WriteString(fragment)
 		}
 	}
 	return b.String()

@@ -103,6 +103,38 @@ func TestRuntimeStorageScaleArtifactPageOwnershipAndReset(t *testing.T) {
 	}
 }
 
+// joinedTranscript writes the canonical form the plain way, joining each
+// message's ModelText, as an oracle independent of transcriptCursor.
+func joinedTranscript(history []messages.ChatMessage, recall recallStubs) string {
+	var b strings.Builder
+	index := 0
+	for _, msg := range history {
+		if msg.Role == messages.MessageRoleInternal {
+			continue
+		}
+		index++
+		fmt.Fprintf(&b, "=== message %d: %s", index, msg.Role)
+		if msg.ToolName != "" {
+			b.WriteString(" " + msg.ToolName)
+		}
+		b.WriteString(" ===\n")
+		if _, isRecall := recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && isRecall {
+			b.WriteString("[" + msg.ToolName + " result not rendered; reproducible by calling it again]\n")
+			continue
+		}
+		if content := msg.ModelText(); content != "" {
+			b.WriteString(content)
+			if !strings.HasSuffix(content, "\n") {
+				b.WriteByte('\n')
+			}
+		}
+		for _, call := range msg.ToolCalls {
+			fmt.Fprintf(&b, "[tool call %s %s]\n", call.Name, call.Arguments)
+		}
+	}
+	return b.String()
+}
+
 func TestTranscriptStreamingCanonicalParity(t *testing.T) {
 	blocks := []messages.AssistantText{{Phase: messages.PhaseCommentary, Text: "thinking\n"}, {Text: "answer"}, {Text: ""}, {Text: "last"}}
 	history := []messages.ChatMessage{
@@ -122,7 +154,10 @@ func TestTranscriptStreamingCanonicalParity(t *testing.T) {
 		history = append(history, messages.ChatMessage{Role: messages.MessageRoleAssistant})
 	}
 	recall := builtinProjectionTools(false).recall
-	want := renderTranscript(history, recall) // independent full-render oracle
+	want := joinedTranscript(history, recall) // independent full-render oracle
+	if got := renderTranscript(history, recall); got != want {
+		t.Fatalf("canonical render: %q; want %q", got, want)
+	}
 	r := newTranscriptReader(context.Background(), history, recall)
 	defer r.Close()
 	size, err := r.size()
@@ -154,12 +189,8 @@ func TestTranscriptStreamingModelTextParity(t *testing.T) {
 			for _, content := range []string{"", "replacement", messages.AnswerText(blocks)} {
 				for _, partType := range []string{"", "text", "image_url", "image_base64", "image_artifact", "artifact"} {
 					msg := messages.ChatMessage{Role: role, Content: content, TextBlocks: blocks, Parts: []messages.ContentPart{{Type: partType, Text: "part"}, {Type: partType, Text: "suffix"}}}
-					var got strings.Builder
-					for text := range transcriptModelText(msg) {
-						got.WriteString(text)
-					}
-					if got.String() != msg.ModelText() || transcriptHasTextBlocks(msg) != msg.HasTextBlocks() {
-						t.Fatalf("streamed model text differs for %+v: %q != %q", msg, got.String(), msg.ModelText())
+					if got := strings.Join(appendModelText(nil, &msg), ""); got != msg.ModelText() {
+						t.Fatalf("streamed model text differs for %+v: %q != %q", msg, got, msg.ModelText())
 					}
 				}
 			}
