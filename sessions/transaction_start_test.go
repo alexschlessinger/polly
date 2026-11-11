@@ -58,7 +58,7 @@ func TestUncertainTransactionStartRollsBackBeforeConnectionReuse(t *testing.T) {
 			}
 			defer db.Close()
 			db.SetMaxOpenConns(1)
-			store := &SQLiteStore{db: db}
+			store := &SQLiteStore{db: db, turn: make(chan struct{}, 1)}
 			transaction := store.withRead
 			if write {
 				transaction = store.withWrite

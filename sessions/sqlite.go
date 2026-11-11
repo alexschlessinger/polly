@@ -66,8 +66,11 @@ var (
 // SQLiteStore is the common implementation used for both ephemeral and
 // persistent sessions.
 type SQLiteStore struct {
-	dbMu     sync.RWMutex // gates handle-preserving memory-to-disk promotion
-	db       *sql.DB
+	dbMu sync.RWMutex // gates handle-preserving memory-to-disk promotion
+	db   *sql.DB
+	// turn orders the callers that wait for the database's one connection.
+	// See enter.
+	turn     chan struct{}
 	mode     StoreMode
 	path     string
 	defaults *Metadata
@@ -283,6 +286,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
 		byID:     make(map[string]*sqliteSession),
+		turn:     make(chan struct{}, 1),
 
 		coordination: newCoordinationCache(),
 	}
@@ -1216,10 +1220,31 @@ func (s *SQLiteStore) withTransaction(ctx context.Context, begin string, fn func
 	return s.withTransactionNow(ctx, begin, fn)
 }
 
+// enter waits for the caller's turn at the database's one connection, and
+// leave ends it. database/sql hands a connection that comes free to one of
+// its waiters picked at random. With thousands of sessions waiting, each for
+// a fraction of a millisecond of work, that leaves a few of them waiting many
+// times longer than the rest, past what their callers allow. Turns are taken
+// in the order they were asked for.
+func (s *SQLiteStore) enter(ctx context.Context) error {
+	select {
+	case s.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *SQLiteStore) leave() { <-s.turn }
+
 // withTransactionNow is withTransaction without the wait, for the writer.
 func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
+	if err := s.enter(ctx); err != nil {
+		return err
+	}
+	defer s.leave()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -2099,6 +2124,10 @@ func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, erro
 	defer cleanup()
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
+	if err := s.store.enter(opCtx); err != nil {
+		return sessionSnapshot{}, s.mapError(ctx, err)
+	}
+	defer s.store.leave()
 	snap, err := scanSnapshotWhere(opCtx, s.store.db, `s.id = ? AND EXISTS (
 		SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken)
 	if errors.Is(err, sql.ErrNoRows) {
