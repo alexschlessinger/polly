@@ -320,13 +320,13 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 
 // syncSpy is a store whose Sync first shows the caller what is being synced.
 type syncSpy struct {
-	sessions.SessionStore
+	memberStore
 	before func()
 }
 
 func (s *syncSpy) Sync(ctx context.Context) error {
 	s.before()
-	if store, ok := s.SessionStore.(sessions.SyncStore); ok {
+	if store, ok := s.memberStore.(sessions.SyncStore); ok {
 		return store.Sync(ctx)
 	}
 	return nil
@@ -353,7 +353,7 @@ func TestReleaseSyncsItsMarkBeforeRemovingFiles(t *testing.T) {
 			// The runtime's goroutines read its store, so the wrapper goes in
 			// before the runtime that uses it starts.
 			r = rebuildRuntime(t, r, func(c *Config) {
-				c.Store = &syncSpy{SessionStore: c.Store, before: func() {
+				c.Store = &syncSpy{memberStore: c.Store.(memberStore), before: func() {
 					if copy == nil {
 						return
 					}

@@ -153,7 +153,7 @@ func TestRecoveryRequiresConfiguredWorktrees(t *testing.T) {
 	}
 }
 
-type hostOwnedStorage struct{ sessions.SessionStore }
+type hostOwnedStorage struct{ memberStore }
 
 func (hostOwnedStorage) Location() (sessions.StoreMode, string) {
 	panic("runtime must not discover storage")
@@ -167,7 +167,7 @@ func TestRuntimeUsesOnlyHostStorageConfiguration(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 1)
 	var promoted int
 	r = rebuildRuntime(t, r, func(c *Config) {
-		c.Store = hostOwnedStorage{c.Store}
+		c.Store = hostOwnedStorage{c.Store.(memberStore)}
 		c.PrivatePaths = []string{"host-private"}
 		c.Promote = func(context.Context) error { promoted++; return nil }
 	})

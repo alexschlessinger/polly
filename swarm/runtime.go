@@ -232,6 +232,9 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 	if !ok {
 		return nil, nil, errors.New("store does not support coordination")
 	}
+	if _, ok := c.Store.(memberStore); c.Store != nil && !ok {
+		return nil, nil, errors.New("store cannot create member sessions")
+	}
 	if c.Store == nil || c.Registry == nil || c.Client == nil || c.OpenTools == nil {
 		return nil, nil, errors.New("swarm requires a store, registry, model client and OpenTools")
 	}
@@ -1888,18 +1891,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		}
 		persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stop()
-		// A store that can note the outcome by itself does so without
-		// reading the session's settings or writing them back.
-		if recorder, ok := session.(sessions.SpawnOutcomeSession); ok {
-			runErr = errors.Join(runErr, recorder.RecordSpawnOutcome(persistCtx, outcome))
-			return
-		}
-		metadata, metadataErr := session.GetMetadata(persistCtx)
-		if metadataErr == nil && metadata.SpawnOutcome == "" {
-			metadata.SpawnOutcome = outcome
-			metadataErr = session.SetMetadata(persistCtx, metadata)
-		}
-		runErr = errors.Join(runErr, metadataErr)
+		runErr = errors.Join(runErr, session.RecordSpawnOutcome(persistCtx, outcome))
 	}()
 	_ = r.look(context.WithoutCancel(ctx), func(current *State) {
 		if current.Members[m.ID] == nil {

@@ -23,7 +23,7 @@ type turnWrite struct {
 // turnWriteStore hands the runtime member sessions that note what each of
 // their updates wrote and whether the member waited for it.
 type turnWriteStore struct {
-	sessions.SessionStore
+	memberStore
 	t      *testing.T
 	mu     sync.Mutex
 	writes []turnWrite
@@ -32,7 +32,7 @@ type turnWriteStore struct {
 }
 
 func (s *turnWriteStore) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
-	handle, err := s.SessionStore.Acquire(ctx, name, opts)
+	handle, err := s.memberStore.Acquire(ctx, name, opts)
 	if err != nil || !opts.ExistingOnly {
 		return handle, err
 	}
@@ -128,7 +128,7 @@ func memberTurnWrites(t *testing.T, tool, args string) []turnWrite {
 	// A disk store logs an update before it is safe from a crash, which is
 	// the wait a member makes or skips; a memory store has none to offer.
 	r = runtimeTestOn(t, sessions.StoreConfig{Mode: sessions.ModeDisk, Path: filepath.Join(t.TempDir(), "polly.db")}, model, 1, 1, nil)
-	store := &turnWriteStore{SessionStore: r.config.Store, t: t}
+	store := &turnWriteStore{memberStore: r.config.Store.(memberStore), t: t}
 	r.config.Store = store
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 	if err != nil {

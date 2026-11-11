@@ -7,9 +7,17 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
+// coordinatedSession is what the runtime needs of a member's session.
 type coordinatedSession interface {
 	sessions.Session
 	sessions.CoordinationSession
+	sessions.SpawnOutcomeSession
+}
+
+// memberStore is what the runtime needs of the store its members live in.
+type memberStore interface {
+	sessions.SessionStore
+	sessions.SessionCreator
 }
 
 // A parent with coordination support does not establish that every handle
@@ -28,42 +36,24 @@ func (r *Runtime) acquireCoordinatedSession(ctx context.Context, name string, op
 }
 
 // createMemberSession creates the session of a new member, described by
-// describe and titled title. A store that can create a session as it is to
-// start does so in one transaction; any other acquires it, resets it to the
-// description and titles it.
+// describe and titled title, in the one transaction the store creates it in.
 func (r *Runtime) createMemberSession(ctx context.Context, name string, options sessions.AcquireOptions, title string, describe func(*sessions.Metadata)) (coordinatedSession, error) {
-	if creator, ok := r.config.Store.(sessions.SessionCreator); ok {
-		session, err := creator.Create(ctx, name, options, func(meta *sessions.Metadata) {
-			describe(meta)
-			meta.Title, meta.TitleSource = title, sessions.TitleSourceAgent
-		})
-		if err != nil {
-			return nil, err
-		}
-		coordinated, ok := session.(coordinatedSession)
-		if !ok {
-			return nil, errors.Join(errors.New("member session does not support coordination"), session.Close())
-		}
-		return coordinated, nil
+	store, ok := r.config.Store.(memberStore)
+	if !ok {
+		return nil, errors.New("session store cannot create member sessions")
 	}
-	session, err := r.acquireCoordinatedSession(ctx, name, options)
+	session, err := store.Create(ctx, name, options, func(meta *sessions.Metadata) {
+		describe(meta)
+		meta.Title, meta.TitleSource = title, sessions.TitleSourceAgent
+	})
 	if err != nil {
 		return nil, err
 	}
-	meta, err := session.GetMetadata(ctx)
-	if err == nil {
-		describe(meta)
-		err = session.Reset(ctx, meta)
+	coordinated, ok := session.(coordinatedSession)
+	if !ok {
+		return nil, errors.Join(errors.New("member session does not support coordination"), session.Close())
 	}
-	if err == nil {
-		if setter, ok := session.(sessions.TitleSession); ok {
-			_, err = setter.SetTitle(ctx, title, sessions.TitleSourceAgent)
-		}
-	}
-	if err != nil {
-		return nil, errors.Join(err, session.Close())
-	}
-	return session, nil
+	return coordinated, nil
 }
 
 // Member names are cached display labels. If a handle changed, resolve the
