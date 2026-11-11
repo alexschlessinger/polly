@@ -154,7 +154,7 @@ func byteWindowArtifactText(ctx context.Context, r io.Reader, ref artifacts.Ref,
 
 type listArtifactsTool struct {
 	tools.NativeTool
-	list func() []artifacts.Ref
+	page func(offset, limit int) (refs []artifacts.Ref, total int)
 }
 
 func (t *listArtifactsTool) GetName() string { return "list_artifacts" }
@@ -180,25 +180,25 @@ func (t *listArtifactsTool) Execute(ctx context.Context, raw map[string]any) (st
 	if offset < 1 {
 		return "", fmt.Errorf("offset must be at least 1")
 	}
-	refs := t.list()
-	if len(refs) == 0 {
+	refs, total := t.page(offset, artifactListPageEntries)
+	if total == 0 {
 		return "No artifacts are referenced by this conversation.", nil
 	}
-	if offset > len(refs) {
-		return fmt.Sprintf("Artifact list has no entries at or after offset %d (total %d).", offset, len(refs)), nil
+	if offset > total {
+		return fmt.Sprintf("Artifact list has no entries at or after offset %d (total %d).", offset, total), nil
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "%d artifact(s) referenced by this conversation, in the order first referenced:\n", len(refs))
-	next := 0
-	for i := offset - 1; i < len(refs); i++ {
-		entry := artifactListEntry(i+1, refs[i])
-		if i-(offset-1) >= artifactListPageEntries || out.Len()+len(entry) > artifactListMaxBytes {
-			next = i + 1
+	fmt.Fprintf(&out, "%d artifact(s) referenced by this conversation, in the order first referenced:\n", total)
+	shown := 0
+	for _, ref := range refs {
+		entry := artifactListEntry(offset+shown, ref)
+		if out.Len()+len(entry) > artifactListMaxBytes {
 			break
 		}
 		out.WriteString(entry)
+		shown++
 	}
-	if next > 0 {
+	if next := offset + shown; next <= total {
 		fmt.Fprintf(&out, "[more entries; continue with offset=%d]", next)
 	}
 	return strings.TrimRight(out.String(), "\n"), nil
