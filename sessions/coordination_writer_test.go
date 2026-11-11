@@ -122,6 +122,51 @@ func TestCoordinationUpdatesAreWrittenBehind(t *testing.T) {
 	}
 }
 
+// A queued update hands its caller the wait for its write: once that returns,
+// the update's rows are in the table.
+func TestQueuedUpdateHandsBackTheWaitForItsWrite(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent := acquireNamed(t, store, "parent")
+	coord := parent.(CoordinationSession)
+	if err := coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	var state *CoordinationState
+	keeping := func(fn func(*CoordinationState) error) func(*CoordinationState) error {
+		return func(s *CoordinationState) error {
+			state = s
+			return fn(s)
+		}
+	}
+	updateFrom(t, coord, keeping(changeRecord("task", "a", `{"n":2}`, "one")))
+	if state.Written == nil {
+		t.Fatal("a queued update handed back no wait for its write")
+	}
+	if err := state.Written(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Read without the wait for the queue that every other transaction makes.
+	var stored []byte
+	var appended int
+	if err := store.withTransactionNow(ctx, "BEGIN", func(conn *sql.Conn) error {
+		if err := conn.QueryRowContext(ctx, `SELECT payload_json FROM swarm_records WHERE kind='task' AND id='a'`).Scan(&stored); err != nil {
+			return err
+		}
+		return conn.QueryRowContext(ctx, `SELECT count(*) FROM messages`).Scan(&appended)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != `{"n":2}` || appended != 1 {
+		t.Fatalf("stored once the wait returned = %q with %d messages", stored, appended)
+	}
+	// An update with nothing to queue is done when it returns.
+	updateFrom(t, coord, keeping(func(*CoordinationState) error { return nil }))
+	if state.Written != nil {
+		t.Fatal("an update that queued nothing handed back a wait")
+	}
+}
+
 // Sync covers updates that are still queued.
 func TestSyncWritesQueuedUpdates(t *testing.T) {
 	ctx := context.Background()
@@ -153,7 +198,8 @@ func TestSyncWritesQueuedUpdates(t *testing.T) {
 }
 
 // When accepted updates cannot be written the store stops taking more: the
-// callers were told they succeeded, and the database does not have them.
+// callers were told they were accepted, and the database does not have them.
+// A caller that waits for its write hears why.
 func TestCoordinationStopsWhenQueuedUpdatesCannotBeWritten(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openTestStore(t, ModeDisk, nil, 0)
@@ -177,8 +223,15 @@ func TestCoordinationStopsWhenQueuedUpdatesCannotBeWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	delta := coord.(CoordinationDeltaSession)
-	if err := delta.UpdateCoordinationFrom(ctx, revision, changeRecord("task", "a", `{"n":2}`)); err != nil {
+	var state *CoordinationState
+	if err := delta.UpdateCoordinationFrom(ctx, revision, func(s *CoordinationState) error {
+		state = s
+		return changeRecord("task", "a", `{"n":2}`)(s)
+	}); err != nil {
 		t.Fatalf("an update answered from memory: %v", err)
+	}
+	if err := state.Written(ctx); err == nil || !strings.Contains(err.Error(), "were not written") {
+		t.Fatalf("the wait for a write that failed = %v", err)
 	}
 	if err := store.Sync(ctx); err == nil || !strings.Contains(err.Error(), "were not written") {
 		t.Fatalf("Sync after a failed write = %v", err)

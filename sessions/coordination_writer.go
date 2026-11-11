@@ -40,14 +40,15 @@ type queuedUpdate struct {
 // callers: one goroutine takes everything queued and commits it in a single
 // transaction, in the order it was accepted. An update is therefore visible
 // to this store the moment it returns and reaches the database a moment
-// later; a process that dies in between loses it. Every other operation that
-// runs in a transaction first waits for the queue to empty, so it reads and
-// writes the rows the accepted updates produced. What reads the database
-// outside one does not wait: lease renewals, artifact reads and the store's
-// lease-free reads (List, Exists, GetMetadata, ListSummaries, GetLast). Of
-// the rows those read, an update here writes only a session's message count,
-// last-used time and transcript identity, which they can report as they were
-// before the next commit.
+// later; a process that dies in between loses it, which is why the update
+// hands its caller a wait for the write (CoordinationState.Written). Every
+// other operation that runs in a transaction first waits for the queue to
+// empty, so it reads and writes the rows the accepted updates produced. What
+// reads the database outside one does not wait: lease renewals, artifact
+// reads and the store's lease-free reads (List, Exists, GetMetadata,
+// ListSummaries, GetLast). Of the rows those read, an update here writes only
+// a session's message count, last-used time and transcript identity, which
+// they can report as they were before the next commit.
 //
 // A write that fails is tried once more. If it fails again the writer stops
 // and every later coordination update and wait reports the failure: updates
@@ -81,18 +82,19 @@ func (w *coordinationWriter) healthy() bool {
 	return w != nil && !w.stopped.Load()
 }
 
-// accept queues update, waiting while the queue is full.
-func (w *coordinationWriter) accept(ctx context.Context, update queuedUpdate) error {
+// accept queues update, waiting while the queue is full. It returns the
+// update's place among those accepted, which wait takes.
+func (w *coordinationWriter) accept(ctx context.Context, update queuedUpdate) (uint64, error) {
 	w.mu.Lock()
 	for {
 		if w.err != nil {
 			err := w.err
 			w.mu.Unlock()
-			return err
+			return 0, err
 		}
 		if w.closed {
 			w.mu.Unlock()
-			return ErrStoreClosed
+			return 0, ErrStoreClosed
 		}
 		if len(w.queue) < maxQueuedUpdates {
 			break
@@ -102,12 +104,13 @@ func (w *coordinationWriter) accept(ctx context.Context, update queuedUpdate) er
 		select {
 		case <-moved:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return 0, context.Cause(ctx)
 		}
 		w.mu.Lock()
 	}
 	w.queue = append(w.queue, update)
 	w.accepted++
+	place := w.accepted
 	if !w.started {
 		w.started = true
 		go w.run()
@@ -117,18 +120,15 @@ func (w *coordinationWriter) accept(ctx context.Context, update queuedUpdate) er
 	case w.wake <- struct{}{}:
 	default:
 	}
-	return nil
+	return place, nil
 }
 
-// settle returns once every update accepted before the call is written.
-func (w *coordinationWriter) settle(ctx context.Context) error {
-	if w == nil {
-		return nil
-	}
+// wait returns once the update accepted at place, and every one before it,
+// is written.
+func (w *coordinationWriter) wait(ctx context.Context, place uint64) error {
 	w.mu.Lock()
-	target := w.accepted
 	for {
-		if w.written >= target {
+		if w.written >= place {
 			w.mu.Unlock()
 			return nil
 		}
@@ -146,6 +146,17 @@ func (w *coordinationWriter) settle(ctx context.Context) error {
 		}
 		w.mu.Lock()
 	}
+}
+
+// settle returns once every update accepted before the call is written.
+func (w *coordinationWriter) settle(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	place := w.accepted
+	w.mu.Unlock()
+	return w.wait(ctx, place)
 }
 
 // close writes what is queued and stops the writer.

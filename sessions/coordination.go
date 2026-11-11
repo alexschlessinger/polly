@@ -44,9 +44,14 @@ type CoordinationState struct {
 	// Revision identifies the family's records within this store handle: two
 	// states with the same nonzero Revision hold the same Records. Zero means
 	// the store does not track it. After a successful UpdateCoordination the
-	// state passed to the callback carries the committed records' Revision,
-	// which is the one field a caller may read once the update returns.
+	// state passed to the callback carries the committed records' Revision.
+	// It and Written are the fields a caller may read once the update returns.
 	Revision uint64
+	// Written is set by an UpdateCoordinationFrom that returned before its
+	// changes reached the database. It returns once they have, or with the
+	// reason they never will; until then a crash of the process loses the
+	// update. Nil means the update was written before it returned.
+	Written func(context.Context) error
 	// Changes is how an UpdateCoordinationFrom callback reports its work,
 	// kind then id; a nil payload deletes the record. Records is nil there.
 	Changes map[string]map[string]json.RawMessage
@@ -251,6 +256,9 @@ type CoordinationDeltaSession interface {
 	// records at revision known. The callback receives no Records and reports
 	// the records it changed in Changes. When the family is no longer at
 	// known, it returns ErrCoordinationStale without invoking the callback.
+	// A store may answer before it has written the update: every later read
+	// sees it, and the callback's state carries Written for a caller that
+	// must not act on the update before a crash could no longer undo it.
 	UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*CoordinationState) error) error
 }
 
@@ -365,9 +373,9 @@ func (s *sqliteSession) writeRest(ctx context.Context, conn *sql.Conn, parent []
 // updateRemembered is UpdateCoordinationFrom answered from memory. The
 // callback sees what a transaction would have read. Its changes go to the
 // family in memory and to the writer's queue, and the update returns without
-// touching the database; an update that pins artifacts or registers members
-// has rows to check and is written before it returns. The caller holds the
-// cache.
+// touching the database, leaving the wait for its write in Written; an update
+// that pins artifacts or registers members has rows to check and is written
+// before it returns. The caller holds the cache.
 func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, family cachedFamily, fn func(*CoordinationState) error) error {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
@@ -418,9 +426,12 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 		if update.appended, err = encodeMessages(state.Append); err != nil {
 			return err
 		}
-		if err := s.store.writer.accept(opCtx, update); err != nil {
+		writer := s.store.writer
+		place, err := writer.accept(opCtx, update)
+		if err != nil {
 			return s.mapError(ctx, err)
 		}
+		state.Written = func(ctx context.Context) error { return writer.wait(ctx, place) }
 	}
 	s.coord.sequence = next
 	if changed {
