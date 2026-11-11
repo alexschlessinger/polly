@@ -461,14 +461,37 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 // editOn is edit through any session of the family, for a callback that also
 // sets what the transaction appends, pins or fences on raw. raw carries no
 // Records. The callback runs at most once.
+//
+// An edit that returns nil is in the database. The store may answer it from
+// memory and write it a moment later, together with the edits made
+// meanwhile; the caller is held until then, so what it does next never rests
+// on a change that a crash of the process could take back. Readers and the
+// members the edit pokes do not wait: the family in memory has the change as
+// soon as the store accepts it.
 func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) error {
+	poke, written, err := r.editFamily(ctx, session, fn)
 	// The pokes an edit owes are sent after it lets go of the family's state.
-	var poke func()
-	defer func() {
-		if poke != nil {
-			poke()
-		}
-	}()
+	if poke != nil {
+		poke()
+	}
+	if err != nil || written == nil {
+		return err
+	}
+	// The wait is not the caller's to cancel: the edit has happened, and an
+	// error here would tell the caller it had not.
+	if err := written(context.WithoutCancel(ctx)); err != nil {
+		// The store cannot write the edit. The family in memory has it all
+		// the same, so whoever waits on a change still hears of this one.
+		r.changed()
+		return err
+	}
+	return nil
+}
+
+// editFamily is editOn while it holds the family's state. It returns the
+// pokes the edit owes and, when the store answered before writing the edit,
+// the wait for that write; editOn sees to both once the state is let go.
+func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (poke func(), written func(context.Context) error, err error) {
 	delta, ok := session.(sessions.CoordinationDeltaSession)
 	// A family that keeps changing under an edit falls back to the update
 	// below, which reads and writes inside one transaction.
@@ -484,7 +507,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		shared, raw, revision := r.view.snapshot()
 		if shared == nil || revision == 0 || attempt > 0 {
 			if _, err := r.current(ctx); err != nil {
-				return err
+				return nil, nil, err
 			}
 			if shared, raw, revision = r.view.snapshot(); shared == nil || revision == 0 {
 				break
@@ -520,25 +543,22 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 			continue
 		}
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		if len(edited) > 0 {
 			slog.Warn("swarm_edit_without_own", "site", editSite(), "records", strings.Join(edited, ", "))
 			r.view.drop()
-			poke = r.pokeAll
-		} else {
-			prior := work.editing.prior
-			work.reindex()
-			r.view.advance(revision, committed.Revision, work, changed)
-			poke = r.pokesFor(prior, work)
+			return r.pokeAll, committed.Written, nil
 		}
-		return nil
+		prior := work.editing.prior
+		work.reindex()
+		r.view.advance(revision, committed.Revision, work, changed)
+		return r.pokesFor(prior, work), committed.Written, nil
 	}
-	err := rewrite(ctx, session, fn)
-	if err == nil {
-		poke = r.pokeAll
+	if err := rewrite(ctx, session, fn); err != nil {
+		return nil, nil, err
 	}
-	return err
+	return r.pokeAll, nil, nil
 }
 
 // editSite names the caller of the edit in progress, for its diagnostics.
@@ -549,7 +569,7 @@ func editSite() string {
 			break
 		}
 		name := runtime.FuncForPC(pc).Name()
-		if !strings.Contains(name, "pollytool/swarm.") || strings.Contains(name, ").editOn") || strings.HasSuffix(name, ").edit") {
+		if !strings.Contains(name, "pollytool/swarm.") || strings.Contains(name, ").editOn") || strings.Contains(name, ").editFamily") || strings.HasSuffix(name, ").edit") {
 			continue
 		}
 		return fmt.Sprintf("%s:%d", file[strings.LastIndex(file, "/")+1:], line)
