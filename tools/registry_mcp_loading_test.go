@@ -212,3 +212,112 @@ func TestLoadRegistryClosesConnectedServersOnFailure(t *testing.T) {
 		t.Fatalf("failed load leaked the connected server: closed=%d", closed.Load())
 	}
 }
+
+func TestMCPLoadRevalidatesBeforeInstallation(t *testing.T) {
+	for _, mutation := range []string{"close", "remove", "replace", "policy", "independent"} {
+		t.Run(mutation, func(t *testing.T) {
+			url, entered, unblock, armed, closed := lifecycleMCPGate(t, "tools/list")
+			registry := stubSandboxRegistry(t, sandbox.Config{})
+			defer registry.Close()
+			path := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
+			if _, err := registry.LoadMCPServer(path); err != nil {
+				t.Fatal(err)
+			}
+			old := registry.toolClients["srv__probe"]
+			armed.Store(true)
+			done := make(chan error, 1)
+			go func() { _, err := registry.RestartMCPServerContext(context.Background(), "srv"); done <- err }()
+			awaitLifecycle(t, entered)
+			switch mutation {
+			case "close":
+				registry.Close()
+			case "remove":
+				registry.Remove("srv__probe")
+			case "replace":
+				registry.Register(&testTool{name: "srv__probe"})
+			case "policy":
+				if _, err := registry.AppendBaseReadPaths(t.TempDir()); err != nil {
+					t.Fatal(err)
+				}
+			case "independent":
+				otherPath := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
+				if _, err := registry.LoadMCPServerWithNamespacePrefix(otherPath, "other"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			unblock()
+			if err := <-done; mutation == "independent" {
+				if err != nil {
+					t.Fatalf("independent load invalidated restart: %v", err)
+				}
+				if registry.toolClients["srv__probe"] == old || !old.Closed() {
+					t.Fatal("successful restart did not transfer ownership")
+				}
+			} else {
+				if err == nil {
+					t.Fatal("stale candidate was installed")
+				}
+				if closed.Load() == 0 {
+					t.Fatal("losing candidate was not closed")
+				}
+				if mutation == "close" || mutation == "remove" {
+					if _, exists := registry.Get("srv__probe"); exists {
+						t.Fatal("removed tool resurrected")
+					}
+				} else if registry.toolClients["srv__probe"] != old {
+					t.Fatal("failed replacement changed client ownership")
+				}
+			}
+		})
+	}
+}
+
+func TestNativeMCPBindingPreservesNamespaceOwnershipAndOutput(t *testing.T) {
+	url, _ := registryMCPServer(t, "alpha", "beta")
+	path := writeRegistryMCPConfig(t, MCPConfig{Transport: "streamable", URL: url, ContextIndependent: true})
+	source := NewToolRegistry(nil, WithNativeTools())
+	defer source.Close()
+	if _, err := source.LoadMCPServerWithNamespacePrefix(path, "skill"); err != nil {
+		t.Fatal(err)
+	}
+	original := source.toolClients["skill-srv__alpha"]
+	open := NativeOpenTools(source)
+	scope := ToolScope{Root: t.TempDir(), AllowedTools: []string{"skill-srv__alpha"}}
+	var previous *MCPClient
+	for range 2 {
+		ctx, cancel := context.WithCancel(context.Background())
+		binding, err := open(ctx, scope)
+		cancel() // Setup context is not the successful binding's lifetime.
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := binding.Registry.ValidateToolSelection(scope.AllowedTools, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := binding.Registry.toolClients["skill-srv__alpha"]
+		if client == nil || client == original || client == previous {
+			t.Fatal("binding reused a process/session")
+		}
+		if _, ok := binding.Registry.Get("skill-srv__beta"); ok {
+			t.Fatal("unselected tool exposed")
+		}
+		tool, ok := binding.Registry.Get("skill-srv__alpha")
+		if !ok {
+			t.Fatal("namespace lost during binding")
+		}
+		output, err := tool.(OutputTool).ExecuteOutput(context.Background(), nil)
+		if err != nil || len(output.Media) != 1 || output.Data == nil {
+			t.Fatalf("rich output=%+v err=%v", output, err)
+		}
+		if err := binding.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := binding.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !client.Closed() || original.Closed() {
+			t.Fatal("binding closed wrong owner")
+		}
+		previous = client
+	}
+}

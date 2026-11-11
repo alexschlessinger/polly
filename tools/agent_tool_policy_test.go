@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -123,7 +124,7 @@ func TestAgentToolBindingOmitsHiddenExecutable(t *testing.T) {
 		if _, err := registry.LoadShellTool(script); err == nil || !strings.Contains(err.Error(), "agent sandbox policy") {
 			t.Fatalf("late discovery ran hidden executable: %v", err)
 		}
-		if _, _, err := registry.prepareMCPServerTools(&MCPConfig{Command: script}, "probe", "probe", "", nil); err == nil || !strings.Contains(err.Error(), "agent sandbox policy") {
+		if _, _, err := registry.prepareMCPServerTools(context.Background(), &MCPConfig{Command: script}, "probe", "probe", "", nil); err == nil || !strings.Contains(err.Error(), "agent sandbox policy") {
 			t.Fatalf("late MCP ran hidden executable: %v", err)
 		}
 	}

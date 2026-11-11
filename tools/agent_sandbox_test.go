@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -124,7 +125,7 @@ func TestAgentSandboxInheritedCeiling(t *testing.T) {
 	if cfg.AllowNetwork || slices.Contains(cfg.PassEnv, "SECRET_TOKEN") {
 		t.Fatal("later tool overlay widened policy")
 	}
-	if _, _, err := bound.prepareMCPServerTools(&MCPConfig{Transport: "streamable", URL: "http://127.0.0.1:1"}, "remote", "remote", "", nil); err == nil || !strings.Contains(err.Error(), "network policy") {
+	if _, _, err := bound.prepareMCPServerTools(context.Background(), &MCPConfig{Transport: "streamable", URL: "http://127.0.0.1:1"}, "remote", "remote", "", nil); err == nil || !strings.Contains(err.Error(), "network policy") {
 		t.Fatalf("remote MCP bypassed network denial: %v", err)
 	}
 }

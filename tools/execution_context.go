@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -379,6 +380,80 @@ func (r *ToolRegistry) bindSkillTool(name string, catalog *skills.Catalog, ec Ex
 	return tool, nil
 }
 
+// executionSourceState fences the whole binding, including caller-supplied
+// instruction loading, without holding source locks across any constructors.
+// Version identities work for arbitrary Tool values (not only MCP pointers).
+type executionSourceState struct {
+	source   *ToolRegistry
+	policy   uint64
+	chain    []executionSourceRegistry
+	tools    []Tool
+	selected []string
+}
+
+type executionSourceRegistry struct {
+	registry   *ToolRegistry
+	generation uint64
+	versions   map[string]uint64
+}
+
+func (r *ToolRegistry) snapshotExecutionSource(allow []string) *executionSourceState {
+	state := &executionSourceState{source: r, policy: r.SandboxPolicyRevision()}
+	for current := r; current != nil; {
+		current.mu.RLock()
+		snapshot := executionSourceRegistry{registry: current, generation: current.closeGeneration, versions: make(map[string]uint64, len(current.tools))}
+		for name := range current.tools {
+			snapshot.versions[name] = current.toolVersions[name]
+		}
+		state.chain = append(state.chain, snapshot)
+		parent := current.parent
+		current.mu.RUnlock()
+		current = parent
+	}
+	state.tools = r.All()
+	for _, tool := range state.tools {
+		name := tool.GetName()
+		if allow == nil || matchesAnyToolPattern(allow, name) || r.isBuiltin(name) {
+			state.selected = append(state.selected, name)
+		}
+	}
+	return state
+}
+
+func (s *executionSourceState) validate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.policy != s.source.SandboxPolicyRevision() {
+		return errors.New("source sandbox policy changed during tool construction")
+	}
+	for _, snapshot := range s.chain {
+		snapshot.registry.mu.RLock()
+		changed := snapshot.generation != snapshot.registry.closeGeneration
+		snapshot.registry.mu.RUnlock()
+		if changed {
+			return errors.New("source registry closed during tool construction")
+		}
+	}
+	for _, name := range s.selected {
+		_, owner, version, _, allowed := s.source.resolveTool(name)
+		if !allowed {
+			return errors.New("source tool selection changed during tool construction")
+		}
+		matched := false
+		for _, snapshot := range s.chain {
+			if original, exists := snapshot.versions[name]; exists {
+				matched = owner == snapshot.registry && version == original
+				break
+			}
+		}
+		if !matched {
+			return errors.New("source tool changed during tool construction")
+		}
+	}
+	return nil
+}
+
 // BindExecutionContext owns fresh native tools and local MCP servers. It
 // never derives a live view of another member's registry. Required tool
 // patterns fail launch when no compatible tool can satisfy them; the
@@ -386,18 +461,33 @@ func (r *ToolRegistry) bindSkillTool(name string, catalog *skills.Catalog, ec Ex
 // NativeOpenTools is the same binding without the final selection check,
 // which its callers run once their own tools are registered.
 func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string) (*ToolRegistry, []string, error) {
-	bound, omitted, err := r.bindExecutionContext(ec, allow)
+	return r.BindExecutionContextWithContext(context.Background(), ec, allow)
+}
+
+// BindExecutionContextWithContext is BindExecutionContext with cancellable MCP
+// setup. Synchronous host-supplied ContextTool constructors must still return
+// before cancellation can be observed. The caller owns a successful binding.
+func (r *ToolRegistry) BindExecutionContextWithContext(ctx context.Context, ec ExecutionContext, allow []string) (*ToolRegistry, []string, error) {
+	state := r.snapshotExecutionSource(allow)
+	bound, omitted, err := r.bindExecutionContext(ctx, ec, allow, state)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := bound.ValidateToolSelection(allow, ec.BuiltinTools); err != nil {
-		bound.Close()
+		bound.discardConstruction()
+		return nil, omitted, err
+	}
+	if err := state.validate(ctx); err != nil {
+		bound.discardConstruction()
 		return nil, omitted, err
 	}
 	return bound, omitted, nil
 }
 
-func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string) (*ToolRegistry, []string, error) {
+func (r *ToolRegistry) bindExecutionContext(ctx context.Context, ec ExecutionContext, allow []string, state *executionSourceState) (*ToolRegistry, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if !r.native {
 		return nil, nil, ErrNativeToolsRequired
 	}
@@ -442,13 +532,18 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 	bound.processGroups = &processGroups{}
 	omitted := []string{}
 	// All already applies the parent chain's policies and allow-lists.
-	parentTools := r.All()
+	parentTools := state.tools
 	visible := map[string]bool{}
 	for _, tool := range parentTools {
 		visible[tool.GetName()] = true
 	}
-	loadedMCP := map[string]bool{}
+	type mcpBindingKey struct{ source, namespace string }
+	loadedMCP := map[mcpBindingKey]bool{}
 	for _, original := range parentTools {
+		if err := ctx.Err(); err != nil {
+			bound.discardConstruction()
+			return nil, omitted, err
+		}
 		name := original.GetName()
 		if bound.isBuiltin(name) {
 			// The bound registry's own native setup already serves it.
@@ -464,9 +559,11 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 		case *MCPTool:
 			// A server binds once for all of its tools; a launch that fails
 			// omits the rest of them without another attempt.
-			if !loadedMCP[t.Source] {
-				loadedMCP[t.Source] = true
-				_, err = bound.LoadMCPServer(rebindSourcePath(t.Source, ec.SourceRoot, ec.Root))
+			namespace, _, _ := splitNamespace(name)
+			key := mcpBindingKey{source: t.Source, namespace: namespace}
+			if !loadedMCP[key] {
+				loadedMCP[key] = true
+				err = bound.loadMCPServerAs(ctx, rebindSourcePath(t.Source, ec.SourceRoot, ec.Root), namespace)
 			}
 			if err == nil {
 				tool, _ = bound.Get(name)
@@ -490,6 +587,10 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 			bound.MarkBuiltin(name)
 		}
 	}
+	if err := state.validate(ctx); err != nil {
+		bound.discardConstruction()
+		return nil, omitted, err
+	}
 	// A relaunched MCP server may advertise more tools than requested.
 	// Built-ins stay; everything else must be both visible in the source
 	// and selected.
@@ -499,7 +600,7 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 			continue
 		}
 		if !visible[name] || allow != nil && !matchesAnyToolPattern(allow, name) {
-			delete(bound.tools, name)
+			bound.Remove(name)
 		}
 	}
 	// This filter also bounds later skill activation. Tools the owner
