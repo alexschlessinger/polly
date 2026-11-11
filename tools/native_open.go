@@ -41,6 +41,7 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 		if err := ctx.Err(); err != nil {
 			return ToolBinding{}, err
 		}
+		state := source.snapshotExecutionSource(scope.AllowedTools)
 		grant := scope.Grant
 		if scope.SourceRoot != "" {
 			grant.SourceRoot = scope.SourceRoot
@@ -50,7 +51,7 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 			return ToolBinding{}, err
 		}
 		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, scope.ReadPaths...)
-		bound, omitted, err := source.bindExecutionContext(ec, scope.AllowedTools)
+		bound, omitted, err := source.bindExecutionContext(ctx, ec, scope.AllowedTools, state)
 		if err != nil {
 			return ToolBinding{}, err
 		}
@@ -63,6 +64,10 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 		}
 		if o.instructions != nil {
 			binding.Instructions = strings.TrimSpace(o.instructions(bound))
+		}
+		if err := state.validate(ctx); err != nil {
+			bound.discardConstruction()
+			return ToolBinding{}, err
 		}
 		binding.Close = bound.Close
 		return binding, nil

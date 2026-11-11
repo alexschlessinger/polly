@@ -106,6 +106,14 @@ type ToolRegistry struct {
 	changeTracker ChangeTracker
 	mu            sync.RWMutex
 	tools         map[string]Tool
+	// Versions fence staged MCP installation against Close and changes to
+	// the names being replaced, without serializing unrelated construction.
+	closeGeneration uint64
+	closeDone       chan struct{} // concurrent Close calls await earlier cleanup outside locks
+	nextToolVersion uint64
+	toolVersions    map[string]uint64
+	mcpLoads        map[*mcpLoadState]struct{} // live optimistic reservations
+	retirements     map[chan struct{}]struct{} // detached cleanup still owned by this registry
 
 	// Native tool constructors, installed by WithNativeTools (see
 	// installNativeTools) or RegisterNative. Each is invoked with the
@@ -897,7 +905,7 @@ type stagedToolRecord struct {
 func closeStagedToolRecords(records []stagedToolRecord) {
 	for _, record := range records {
 		if record.client != nil {
-			record.client.Close()
+			record.client.discard()
 		}
 	}
 }
@@ -1100,6 +1108,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 	if name := registeredName(tool); name != "" {
 		slog.Debug("tool_registered", "tool_name", name)
 		r.tools[name] = tool
+		r.noteToolChangeLocked(name)
 	}
 }
 
@@ -1116,10 +1125,13 @@ func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, re
 			return false
 		}
 		r.tools["bash"] = candidate
+		r.noteToolChangeLocked("bash")
 		slog.Debug("tool_registered", "tool_name", "bash")
 	}
 	r.tools[activate.GetName()] = activate
 	r.tools[readFile.GetName()] = readFile
+	r.noteToolChangeLocked(activate.GetName())
+	r.noteToolChangeLocked(readFile.GetName())
 	r.alwaysAllowedTools[activate.GetName()] = true
 	r.alwaysAllowedTools[readFile.GetName()] = true
 	slog.Debug("tool_registered", "tool_name", activate.GetName())
@@ -1241,60 +1253,106 @@ func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowe
 	return tool, true, true
 }
 
-// setToolLocked installs tool under name with the MCP client backing it (nil
-// for non-MCP tools). If the entry it replaces was the last reference to a
-// different client, that client is closed: a reloaded server or a restored
-// filtered set must not strand the old transport or subprocess, which Close
-// only ever visits through these maps.
-func (r *ToolRegistry) setToolLocked(name string, tool Tool, client *MCPClient) {
+func (r *ToolRegistry) noteToolChangeLocked(name string) {
+	if r.toolVersions == nil {
+		r.toolVersions = make(map[string]uint64)
+	}
+	r.nextToolVersion++
+	r.toolVersions[name] = r.nextToolVersion
+}
+
+// noteToolRemovalLocked retains absence identity only while an in-flight load
+// might otherwise mistake it for the absence it originally observed.
+func (r *ToolRegistry) noteToolRemovalLocked(name string) {
+	if len(r.mcpLoads) == 0 {
+		delete(r.toolVersions, name)
+		return
+	}
+	r.noteToolChangeLocked(name)
+}
+
+// setToolLocked installs tool and transfers any orphaned previous client to
+// the caller to close outside r.mu. A client is owned only through these maps.
+func (r *ToolRegistry) setToolLocked(name string, tool Tool, client *MCPClient) *MCPClient {
 	old := r.toolClients[name]
 	r.tools[name] = tool
+	r.noteToolChangeLocked(name)
 	if client != nil {
 		r.toolClients[name] = client
 	} else {
 		delete(r.toolClients, name)
 	}
 	if old != nil && old != client {
-		r.closeIfOrphanedLocked(old)
+		return r.orphanedClientLocked(old)
 	}
+	return nil
 }
 
 // installStagedLocked publishes prepared records: each tool under its name
 // with its client, and each server's tool list. Caller must hold r.mu.
-func (r *ToolRegistry) installStagedLocked(records []stagedToolRecord) {
+func (r *ToolRegistry) installStagedLocked(records []stagedToolRecord) []*MCPClient {
+	var retired []*MCPClient
 	for _, record := range records {
-		r.setToolLocked(record.name, record.tool, record.client)
+		retired = append(retired, r.setToolLocked(record.name, record.tool, record.client))
 		if record.serverSpec != "" {
 			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
 		}
 		slog.Debug("tool_registered", "tool_name", record.name)
 	}
+	return retired
 }
 
-// closeIfOrphanedLocked closes client once no live or pending tool refers to
-// it.
-func (r *ToolRegistry) closeIfOrphanedLocked(client *MCPClient) {
+// orphanedClientLocked transfers an unreferenced client's ownership to the
+// caller, which must close it after unlocking. Retired clients are never reused.
+func (r *ToolRegistry) orphanedClientLocked(client *MCPClient) *MCPClient {
 	for _, c := range r.toolClients {
 		if c == client {
-			return
+			return nil
 		}
 	}
 	for _, c := range r.pendingToolClients {
 		if c == client {
-			return
+			return nil
 		}
 	}
-	slog.Debug("mcp_client_closed", "reason", "no_remaining_tools")
-	client.Close()
+	return client
+}
+
+// retireClientsLocked records detached ownership before unlocking, so a later
+// Close can join it. The returned cleanup must run outside BOTH registry locks.
+func (r *ToolRegistry) retireClientsLocked(clients []*MCPClient) func() {
+	if !slices.ContainsFunc(clients, func(c *MCPClient) bool { return c != nil }) {
+		return func() {}
+	}
+	if r.retirements == nil {
+		r.retirements = make(map[chan struct{}]struct{})
+	}
+	done := make(chan struct{})
+	r.retirements[done] = struct{}{}
+	return func() {
+		closeMCPClients(clients)
+		r.mu.Lock()
+		delete(r.retirements, done)
+		close(done)
+		r.mu.Unlock()
+	}
+}
+
+func closeMCPClients(clients []*MCPClient) {
+	for _, client := range clients {
+		if client != nil {
+			_ = client.Close()
+		}
+	}
 }
 
 // dropServerToolsLocked removes a server's previous registration so a fresh
 // load of the same spec replaces it rather than leaving stale tools behind,
 // closing the previous client once nothing refers to it.
-func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) {
+func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) []*MCPClient {
 	names := r.serverTools[serverSpec]
 	if len(names) == 0 {
-		return
+		return nil
 	}
 	delete(r.serverTools, serverSpec)
 	var clients []*MCPClient
@@ -1303,20 +1361,29 @@ func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) {
 			clients = append(clients, c)
 		}
 		delete(r.tools, name)
+		r.noteToolRemovalLocked(name)
 		delete(r.toolClients, name)
 		slog.Debug("mcp_tool_removed", "tool_name", name)
 	}
+	var retired []*MCPClient
 	for _, c := range clients {
-		r.closeIfOrphanedLocked(c)
+		retired = append(retired, r.orphanedClientLocked(c))
 	}
+	return retired
 }
 
 // Remove removes a tool by namespaced name from the registry
 func (r *ToolRegistry) Remove(namespacedName string) {
+	var retired []*MCPClient
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer func() {
+		cleanup := r.retireClientsLocked(retired)
+		r.mu.Unlock()
+		cleanup()
+	}()
 
 	tool, exists := r.tools[namespacedName]
+	r.noteToolRemovalLocked(namespacedName)
 	if !exists {
 		return
 	}
@@ -1349,7 +1416,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 		}
 
 		// Close client if no other tools use it
-		r.closeIfOrphanedLocked(client)
+		retired = append(retired, r.orphanedClientLocked(client))
 	}
 }
 
@@ -1480,11 +1547,16 @@ func (r *ToolRegistry) CommitPendingChanges() {
 		return
 	}
 
+	var retired []*MCPClient
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer func() {
+		cleanup := r.retireClientsLocked(retired)
+		r.mu.Unlock()
+		cleanup()
+	}()
 
 	for name, tool := range r.pendingTools {
-		r.setToolLocked(name, tool, r.pendingToolClients[name])
+		retired = append(retired, r.setToolLocked(name, tool, r.pendingToolClients[name]))
 	}
 	for serverSpec, toolNames := range r.pendingServerTools {
 		r.serverTools[serverSpec] = appendUniqueStrings(r.serverTools[serverSpec], toolNames)
@@ -1508,7 +1580,14 @@ func (r *ToolRegistry) CommitPendingChanges() {
 // LoadMCPServer connects to an MCP server and registers its tools with namespace
 // For multi-server configs (mcpServers format), loads ALL servers
 func (r *ToolRegistry) LoadMCPServer(serverSpec string) (LoadResult, error) {
-	return r.LoadMCPServerWithNamespacePrefix(serverSpec, "")
+	return r.LoadMCPServerContext(context.Background(), serverSpec)
+}
+
+// LoadMCPServerContext connects, initializes and discovers using ctx. Failed or
+// cancelled construction releases partial clients; success transfers ownership
+// to the registry, independently of ctx's subsequent cancellation.
+func (r *ToolRegistry) LoadMCPServerContext(ctx context.Context, serverSpec string) (LoadResult, error) {
+	return r.LoadMCPServerWithNamespacePrefixContext(ctx, serverSpec, "")
 }
 
 // LoadShellTool loads a single shell tool from a file path with the default namespace.
@@ -1525,9 +1604,9 @@ func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadR
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.installStagedLocked([]stagedToolRecord{record})
+	cleanup := r.retireClientsLocked(r.installStagedLocked([]stagedToolRecord{record}))
+	r.mu.Unlock()
+	cleanup()
 	return result, nil
 }
 
@@ -1603,13 +1682,24 @@ func joinNamespacePrefix(prefix, name string) string {
 }
 
 func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
+	var retired []*MCPClient
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer func() {
+		cleanup := r.retireClientsLocked(retired)
+		r.mu.Unlock()
+		cleanup()
+	}()
 
 	for _, record := range records {
+		old := r.pendingToolClients[record.name]
 		r.pendingTools[record.name] = record.tool
 		if record.client != nil {
 			r.pendingToolClients[record.name] = record.client
+		} else {
+			delete(r.pendingToolClients, record.name)
+		}
+		if old != nil && old != record.client {
+			retired = append(retired, r.orphanedClientLocked(old))
 		}
 		if record.serverSpec != "" {
 			r.pendingServerTools[record.serverSpec] = appendUniqueStrings(r.pendingServerTools[record.serverSpec], []string{record.name})
@@ -1635,13 +1725,13 @@ func restrictiveSandboxDeclaration(config *MCPConfig) sandbox.Declaration {
 	return sandbox.DeclareConfig(restrictiveSandboxConfig(*overlay))
 }
 
-func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
+func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(ctx context.Context, jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	config, err := r.contextMCPConfig(serverName, config)
 	if err != nil {
 		return nil, nil, err
 	}
 	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
-	return r.prepareMCPServerTools(config, serverName, namespace, serverSpec, nil)
+	return r.prepareMCPServerToolsContext(ctx, config, serverName, namespace, serverSpec, nil)
 }
 
 // contextMCPConfig binds a server config to the registry's execution context,
@@ -1697,6 +1787,13 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 // Callers own config rebinding, source spelling, and registration semantics.
 // A nil allowlist includes every tool; a non-nil empty one includes none.
 func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
+	return r.prepareMCPServerToolsContext(context.Background(), config, serverName, namespace, serverSpec, allowed)
+}
+
+func (r *ToolRegistry) prepareMCPServerToolsContext(ctx context.Context, config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	localProcess := config.Transport == "" || config.Transport == "stdio"
 	if !localProcess && len(r.executionSandboxPresets) != 0 {
 		// Remote transports run in the harness rather than its process
@@ -1736,17 +1833,25 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 		sbCfg = &effective
 	}
 
-	client, err := newMCPClientFromConfig(config, sb, sbCfg)
+	client, err := newMCPClientFromConfigContext(ctx, config, sb, sbCfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	client.serverSpec = serverSpec
 
-	serverTools, err := client.ListTools()
+	stop := func() bool { return true }
+	if client.abort != nil {
+		stop = context.AfterFunc(ctx, client.abort)
+	}
+	serverTools, err := client.ListToolsContext(ctx)
+	stop()
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
-		client.Close()
-		return nil, nil, err
+		client.discard()
+		return nil, nil, errors.Join(err, ctx.Err())
 	}
 
 	var records []stagedToolRecord
@@ -1775,13 +1880,20 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 	}
 
 	if len(records) == 0 {
-		client.Close()
+		client.discard()
 	}
 
 	return records, toolNames, nil
 }
 
 func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
+	return r.prepareMCPServerWithNamespacePrefixContext(context.Background(), serverSpec, namespacePrefix)
+}
+
+func (r *ToolRegistry) prepareMCPServerWithNamespacePrefixContext(ctx context.Context, serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, LoadResult{}, err
+	}
 	jsonFile, serverName := ParseServerSpec(serverSpec)
 
 	configs, err := LoadMCPConfigFile(jsonFile)
@@ -1793,7 +1905,7 @@ func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespace
 	result := LoadResult{Type: "mcp"}
 	appendServer := func(name string, config MCPConfig) error {
 		namespace := joinNamespacePrefix(namespacePrefix, name)
-		serverRecords, toolNames, err := r.prepareSingleMCPServerWithNamespace(jsonFile, name, namespace, &config)
+		serverRecords, toolNames, err := r.prepareSingleMCPServerWithNamespace(ctx, jsonFile, name, namespace, &config)
 		if err != nil {
 			return err
 		}
@@ -1826,16 +1938,109 @@ func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespace
 
 // LoadMCPServerWithNamespacePrefix loads all servers from a config file with an explicit namespace prefix.
 func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) (LoadResult, error) {
-	records, result, err := r.prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix)
+	return r.LoadMCPServerWithNamespacePrefixContext(context.Background(), serverSpec, namespacePrefix)
+}
+
+// LoadMCPServerWithNamespacePrefixContext is the cancellable namespace loader.
+func (r *ToolRegistry) LoadMCPServerWithNamespacePrefixContext(ctx context.Context, serverSpec, namespacePrefix string) (LoadResult, error) {
+	state := r.snapshotMCPLoad()
+	defer r.releaseMCPLoad(state)
+	records, result, err := r.prepareMCPServerWithNamespacePrefixContext(ctx, serverSpec, namespacePrefix)
 	if err != nil {
 		return LoadResult{}, err
 	}
+	if err := r.commitMCPLoad(ctx, state, records, ""); err != nil {
+		return LoadResult{}, err
+	}
+	return result, nil
+}
 
+// mcpLoadState is an optimistic reservation, not a lock held during I/O. Only
+// names an installation replaces are checked, so independent loads can commit.
+// Removed names survive only until every reservation predating their mutation
+// has finished. New reservations need only a high-water mark, not tombstones.
+type mcpLoadState struct {
+	generation, policy uint64
+	version            uint64
+	servers            map[string][]string
+}
+
+func (r *ToolRegistry) snapshotMCPLoad() *mcpLoadState {
+	owner := r.sandboxPolicyOwner()
+	owner.sandboxConfigMu.Lock()
+	defer owner.sandboxConfigMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	state := &mcpLoadState{generation: r.closeGeneration, policy: owner.sandboxPolicyRevision, version: r.nextToolVersion, servers: make(map[string][]string, len(r.serverTools))}
+	for spec, names := range r.serverTools {
+		state.servers[spec] = slices.Clone(names)
+	}
+	if r.mcpLoads == nil {
+		r.mcpLoads = make(map[*mcpLoadState]struct{})
+	}
+	r.mcpLoads[state] = struct{}{}
+	return state
+}
 
-	r.installStagedLocked(records)
-	return result, nil
+func (r *ToolRegistry) releaseMCPLoad(state *mcpLoadState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.mcpLoads, state)
+	oldest := r.nextToolVersion
+	for pending := range r.mcpLoads {
+		if pending.generation == r.closeGeneration && pending.version < oldest {
+			oldest = pending.version
+		}
+	}
+	for name, version := range r.toolVersions {
+		if _, exists := r.tools[name]; !exists && version <= oldest {
+			delete(r.toolVersions, name)
+		}
+	}
+}
+
+// commitMCPLoad transfers ownership only after revalidation. Both discarded
+// candidates and retired clients close outside the map and policy locks.
+func (r *ToolRegistry) commitMCPLoad(ctx context.Context, state *mcpLoadState, records []stagedToolRecord, replaceSpec string) error {
+	var retired []*MCPClient
+	owner := r.sandboxPolicyOwner()
+	owner.sandboxConfigMu.Lock()
+	r.mu.Lock()
+	err := ctx.Err()
+	if err == nil && (state.generation != r.closeGeneration || state.policy != owner.sandboxPolicyRevision) {
+		err = errors.New("registry closed or sandbox policy changed during MCP construction")
+	}
+	checkName := func(name string) {
+		if err == nil && r.toolVersions[name] > state.version {
+			err = fmt.Errorf("tool %s changed during MCP construction", name)
+		}
+	}
+	for _, record := range records {
+		checkName(record.name)
+	}
+	if replaceSpec != "" {
+		if err == nil && !slices.Equal(state.servers[replaceSpec], r.serverTools[replaceSpec]) {
+			err = errors.New("server selection changed during MCP construction")
+		}
+		for _, name := range state.servers[replaceSpec] {
+			checkName(name)
+		}
+	}
+	if err == nil {
+		if replaceSpec != "" {
+			retired = r.dropServerToolsLocked(replaceSpec)
+		}
+		retired = append(retired, r.installStagedLocked(records)...)
+	}
+	cleanup := r.retireClientsLocked(retired)
+	r.mu.Unlock()
+	owner.sandboxConfigMu.Unlock()
+	if err != nil {
+		closeStagedToolRecords(records)
+		return err
+	}
+	cleanup()
+	return nil
 }
 
 // LoadToolAuto attempts to load a tool, auto-detecting if it's native, shell tool, or MCP server
@@ -1916,18 +2121,26 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 // in place. Only a server this registry loaded itself restarts, and callers
 // serialize a restart with calls to the server's tools.
 func (r *ToolRegistry) RestartMCPServer(namespace string) (LoadResult, error) {
+	return r.RestartMCPServerContext(context.Background(), namespace)
+}
+
+// RestartMCPServerContext is RestartMCPServer with cancellable construction.
+// Calls to the old server still need caller serialization; shutdown after a
+// successful swap is synchronous, outside registry locks.
+func (r *ToolRegistry) RestartMCPServerContext(ctx context.Context, namespace string) (LoadResult, error) {
+	state := r.snapshotMCPLoad()
+	defer r.releaseMCPLoad(state)
 	spec, names, err := r.loadedMCPServer(namespace)
 	if err != nil {
 		return LoadResult{}, err
 	}
-	records, toolNames, err := r.prepareMCPServerRestart(spec, namespace, names)
+	records, toolNames, err := r.prepareMCPServerRestart(ctx, spec, namespace, names)
 	if err != nil {
 		return LoadResult{}, fmt.Errorf("start MCP server %s again, keeping the running one: %w", namespace, err)
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.dropServerToolsLocked(spec)
-	r.installStagedLocked(records)
+	if err := r.commitMCPLoad(ctx, state, records, spec); err != nil {
+		return LoadResult{}, err
+	}
 	return LoadResult{Type: "mcp", Servers: []ServerResult{{Name: namespace, ToolNames: toolNames}}}, nil
 }
 
@@ -1959,7 +2172,7 @@ func (r *ToolRegistry) loadedMCPServer(namespace string) (string, []string, erro
 
 // prepareMCPServerRestart starts the server spec names again under its
 // current config and the registry's policy, offering only the tools named.
-func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []string) ([]stagedToolRecord, []string, error) {
+func (r *ToolRegistry) prepareMCPServerRestart(ctx context.Context, spec, namespace string, names []string) ([]stagedToolRecord, []string, error) {
 	config, serverName, err := loadMCPServerConfig(ParseServerSpec(spec))
 	if err != nil {
 		return nil, nil, err
@@ -1972,7 +2185,7 @@ func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []s
 	for _, name := range names {
 		allowed[name] = true
 	}
-	records, toolNames, err := r.prepareMCPServerTools(bound, serverName, namespace, spec, allowed)
+	records, toolNames, err := r.prepareMCPServerToolsContext(ctx, bound, serverName, namespace, spec, allowed)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1985,6 +2198,17 @@ func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []s
 // LoadMCPServerWithFilter connects to an MCP server and only registers specified tools
 // serverSpec format: "path/to/config.json#servername"
 func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools []string) error {
+	return r.LoadMCPServerWithFilterContext(context.Background(), serverSpec, allowedTools)
+}
+
+// LoadMCPServerWithFilterContext is the cancellable restoration loader. Like
+// the convenience method, it uses the saved config without context rebinding.
+func (r *ToolRegistry) LoadMCPServerWithFilterContext(ctx context.Context, serverSpec string, allowedTools []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state := r.snapshotMCPLoad()
+	defer r.releaseMCPLoad(state)
 	config, namespace, err := loadMCPServerConfig(ParseServerSpec(serverSpec))
 	if err != nil {
 		return err
@@ -2000,44 +2224,69 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		allowed[name] = true
 	}
 
-	records, toolNames, err := r.prepareMCPServerTools(&config, namespace, namespace, serverSpec, allowed)
+	records, toolNames, err := r.prepareMCPServerToolsContext(ctx, &config, namespace, namespace, serverSpec, allowed)
 	if err != nil {
 		return err
 	}
 
 	// Register only allowed tools, replacing any earlier registration of the
 	// same server so its client is not stranded.
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.dropServerToolsLocked(serverSpec)
-	r.installStagedLocked(records)
+	if err := r.commitMCPLoad(ctx, state, records, serverSpec); err != nil {
+		return err
+	}
 	if len(toolNames) == 0 {
 		slog.Debug("mcp_server_closed", "server_spec", serverSpec, "reason", "no_allowed_tools")
 	}
 	return nil
 }
 
-// Close cleans up all resources
+// discardConstruction releases a fresh, unpublished binding. It never touches
+// borrowed source clients: only clients installed in this registry are owned.
+func (r *ToolRegistry) discardConstruction() {
+	r.mu.RLock()
+	var clients []*MCPClient
+	for _, client := range r.toolClients {
+		clients = append(clients, client)
+	}
+	for _, client := range r.pendingToolClients {
+		clients = append(clients, client)
+	}
+	r.mu.RUnlock()
+	for _, client := range clients {
+		if client.abort != nil {
+			client.abort()
+		}
+	}
+	_ = r.Close()
+}
+
+// Close detaches owned resources before shutting them down. External shutdown
+// can block its caller, but never holds the tool-map or shared policy lock.
 func (r *ToolRegistry) Close() error {
 	owner := r.sandboxPolicyOwner()
 	owner.sandboxConfigMu.Lock()
-	defer owner.sandboxConfigMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	// Process groups the binding's commands left running die with the
-	// binding unless a caller detached them first.
-	r.processGroups.kill()
-	// Close every MCP client; Close is idempotent, so a client shared by
-	// several tools needs no bookkeeping.
+	// Detach ownership atomically, then do all external cleanup after unlock.
+	// A load begun before Close cannot publish into a reused registry.
+	r.closeGeneration++
+	previousClose := r.closeDone
+	done := make(chan struct{})
+	r.closeDone = done
+	var retired []*MCPClient
 	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {
 		for _, client := range clients {
-			client.Close()
+			retired = append(retired, client)
 		}
+	}
+	groups := r.processGroups.detach()
+	pendingRetirements := make([]chan struct{}, 0, len(r.retirements))
+	for done := range r.retirements {
+		pendingRetirements = append(pendingRetirements, done)
 	}
 
 	// Clear maps
+	r.toolVersions = nil
 	r.tools = make(map[string]Tool)
 	r.toolClients = make(map[string]*MCPClient)
 	r.serverTools = make(map[string][]string)
@@ -2056,7 +2305,18 @@ func (r *ToolRegistry) Close() error {
 	r.parent = nil
 	r.viewAllowed = nil
 	delete(owner.sandboxDependents, r)
+	r.mu.Unlock()
+	owner.sandboxConfigMu.Unlock()
 
+	defer close(done)
+	KillProcessGroups(groups)
+	closeMCPClients(retired)
+	for _, done := range pendingRetirements {
+		<-done
+	}
+	if previousClose != nil {
+		<-previousClose
+	}
 	return nil
 }
 
