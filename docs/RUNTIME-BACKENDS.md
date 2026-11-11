@@ -124,8 +124,9 @@ Resolve a tool before approval, then invoke that handle with the approved
 arguments. Recheck allowance after waiting for the gate. Reject foreign/replaced
 handles rather than substituting another tool under the same name.
 
-Preserve `ExclusiveTool`, `UntimedTool`, `RecallTool`, `CoordinationTool`, and
-whole-batch `CommitPendingChanges`, including inherited skill activation.
+Preserve `ExclusiveTool`, `UntimedTool`, `RecallTool`, `ReadOnlyTool`,
+`CoordinationTool`, and whole-batch `CommitPendingChanges`, including inherited
+skill activation.
 Tool implementations do not get a separate loop or checkpoint sequence.
 
 ## Application assembly

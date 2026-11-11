@@ -566,7 +566,7 @@ Providers may charge for attempts that fail partway through generation.
 | `OnRetry` | Observe HTTP/stream backoff: source, reason, retry count, delay, next time; `Waiting` is false when the wait ends or is canceled, with `WaitError` if another attempt could not start. May run on the provider goroutine; must be concurrency-safe. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `OnCompactionUsage` | Observe what a compaction summary spent, on its model; empty when the request's model made it |
-| `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
+| `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent. A batch whose tools all implement `ReadOnlyTool` is not journaled |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
 
 `ApproveToolCalls` returns exactly one decision per call, in order. An error
@@ -650,6 +650,7 @@ A tool can opt into more behavior by implementing any of these:
 | `OutputTool` | Return `ToolOutput{Text, Data, Media}`; wrappers must preserve all three |
 | `UntimedTool` | Exempt a long call from the per-tool timeout, not cancellation |
 | `ExclusiveTool` | Require the call to be alone in its model batch |
+| `ReadOnlyTool` | Declare that calls only read, so a batch made only of such tools needs no recovery journal |
 | `RecallTool` | Supply a stub for results reproducible on demand |
 | `CoordinationTool` | Declare trusted orchestration behavior at the execution gate |
 | `ContextTool` | Bind implementation and authority to another execution context |
@@ -1354,11 +1355,11 @@ A few rules of thumb:
   the database; the swarm runtime waits on it before an edit returns, so a
   crash of the process loses nothing an edit returned from. The exception is
   a member's checkpoint before a model request, which returns at once: the
-  journal of the next tool batch, or the last checkpoint of the slice, waits
-  for that write too, so no tool runs and no result is reported on a
-  transcript a crash could take back. One store handle owns a family: a
-  second handle on the same database that writes the same family is noticed
-  within a tenth of a second, not at once.
+  journal of the next tool batch that can act, or the last checkpoint of the
+  slice, waits for that write too, so nothing is changed and no result is
+  reported on a transcript a crash could take back. One store handle owns a
+  family: a second handle on the same database that writes the same family
+  is noticed within a tenth of a second, not at once.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
   result and before it writes to the source tree, and after recording a
