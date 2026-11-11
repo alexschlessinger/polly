@@ -20,6 +20,7 @@ type readTranscriptTool struct {
 }
 
 func (t *readTranscriptTool) GetName() string { return "read_transcript" }
+func (t *readTranscriptTool) ReadsOnly() bool { return true }
 func (t *readTranscriptTool) RecallStub() string {
 	return "[read_transcript result elided to save space; the call above shows its arguments. Call read_transcript again to re-read.]"
 }

@@ -229,6 +229,8 @@ type AgentCallbacks struct {
 	BeforeToolBatch func(context.Context, []messages.ChatMessageToolCall) error
 	// JournalToolBatch stores an in-flight prefix separately from replayable
 	// history so recovery can report uncertain effects without re-running them.
+	// It is not called for a batch whose tools all only read (see
+	// tools.ReadOnlyTool): such a batch leaves no effect to be uncertain of.
 	JournalToolBatch func(context.Context, AgentCheckpoint) error
 	// AfterToolBatch may park an execution at a provider-valid boundary.
 	AfterToolBatch func(context.Context) error
@@ -1619,7 +1621,11 @@ func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessa
 			return abort(err)
 		}
 	}
-	if cb != nil && cb.JournalToolBatch != nil {
+	// Resolve every handle before the journal and approval: the journal is
+	// decided on, and the approved arguments run against, the tools the batch
+	// was resolved with, never a replacement.
+	handles := a.resolveTools(calls)
+	if cb != nil && cb.JournalToolBatch != nil && !readsOnly(handles) {
 		if err := cb.JournalToolBatch(ctx, AgentCheckpoint{Generated: generated, Iterations: iterations}); err != nil {
 			return abort(err)
 		}
@@ -1628,7 +1634,7 @@ func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessa
 	if cb != nil && cb.OnToolStart != nil {
 		cb.OnToolStart(calls)
 	}
-	results, err := a.executeToolsParallel(ctx, calls, cb, inline)
+	results, err := a.executeToolsParallel(ctx, calls, handles, cb, inline)
 	if err != nil {
 		results = completeAbortedToolBatch(calls, results)
 	}
@@ -1812,6 +1818,17 @@ func (a *Agent) resolveTool(name string) resolvedTool {
 	var handle resolvedTool
 	handle.tool, handle.exists, handle.allowed = a.tools.GetIfAllowed(name)
 	return handle
+}
+
+// readsOnly reports whether every handle is a tool that only reads. A call to
+// a tool that does not exist is not one.
+func readsOnly(handles []resolvedTool) bool {
+	for _, handle := range handles {
+		if !handle.exists || !tools.ReadsOnly(handle.tool) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) resolveTools(calls []messages.ChatMessageToolCall) []resolvedTool {
@@ -2065,15 +2082,11 @@ func (a *Agent) lookupArtifact(id string) (artifacts.Ref, bool) {
 
 // executeToolsParallel executes multiple tool calls concurrently and returns results in order.
 // If context is cancelled, all running tools are notified via their context.
-func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks, inline int) ([]messages.ChatMessage, error) {
+func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, handles []resolvedTool, cb *AgentCallbacks, inline int) ([]messages.ChatMessage, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
 	results := make([]messages.ChatMessage, len(toolCalls))
-
-	// Resolve every handle before approval: the approved arguments run
-	// against the tool the batch was resolved with, never a replacement.
-	handles := a.resolveTools(toolCalls)
 
 	// Determine which tools are approved
 	approved := make([]bool, len(toolCalls))
