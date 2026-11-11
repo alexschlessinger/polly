@@ -24,24 +24,32 @@ func (i *TranscriptIdentity) validate() error {
 	return nil
 }
 
+// writeTranscriptIdentity binds the session's conversation, as it ends at
+// sequence, to identity; nil removes the binding. The binding is one key of
+// the stored settings, which SQLite replaces where it sits: nothing else in
+// them is read, decoded or written.
 func writeTranscriptIdentity(ctx context.Context, conn *sql.Conn, id []byte, identity *TranscriptIdentity, sequence int64) error {
-	_, metadata, err := loadMetadata(ctx, conn, id)
-	if err != nil {
-		return err
-	}
-	metadata.Transcript = nil
+	change, args := "json_remove(CAST(settings_json AS TEXT), '$.transcript')", []any{}
 	if identity != nil {
 		if err := identity.validate(); err != nil {
 			return err
 		}
-		copy := *identity
-		copy.Sequence = sequence
-		metadata.Transcript = &copy
+		bound := *identity
+		bound.Sequence = sequence
+		data, err := json.Marshal(bound)
+		if err != nil {
+			return err
+		}
+		change, args = "json_set(CAST(settings_json AS TEXT), '$.transcript', json(?))", []any{string(data)}
 	}
-	settings, err := json.Marshal(metadata)
+	result, err := conn.ExecContext(ctx, "UPDATE sessions SET settings_json = CAST("+change+" AS BLOB), "+touchSQL+" WHERE id = ?",
+		append(args, time.Now().UnixNano(), id)...)
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, "UPDATE sessions SET settings_json = ?, "+touchSQL+" WHERE id = ?", settings, time.Now().UnixNano(), id)
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		err = sql.ErrNoRows
+	}
 	return err
 }
