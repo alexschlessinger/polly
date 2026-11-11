@@ -2114,46 +2114,57 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		}
 	}
 
+	execute := func(ctx context.Context, idx int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
+		if err == nil {
+			results[idx] = result
+		}
+		return err
+	}
+
 	// A single worker executes in request order, preserving dependencies
-	// between calls without launching goroutines that race for the semaphore.
+	// between calls without launching competing goroutines.
 	parallelism := a.effectiveParallelism(len(approvedIndices))
 	if parallelism == 1 {
 		for _, idx := range approvedIndices {
-			if err := ctx.Err(); err != nil {
+			if err := execute(ctx, idx); err != nil {
 				return results, err
 			}
-			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
-			if err != nil {
-				return results, err
-			}
-			results[idx] = result
 		}
 		return results, nil
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
-
-	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, parallelism)
-
-	for _, idx := range approvedIndices {
-		tc, handle := toolCalls[idx], handles[idx]
-		g.Go(func() error {
-			// Acquire semaphore (respects context cancellation)
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			result, err := a.executeTool(ctx, tc, handle, cb, inline)
-			if err != nil {
-				return err
-			}
-			results[idx] = result
-			return nil
-		})
+	if a.config.MaxParallelTools <= 0 {
+		// Unlimited mode still starts one goroutine per approved call.
+		for _, idx := range approvedIndices {
+			g.Go(func() error { return execute(ctx, idx) })
+		}
+	} else {
+		// Queue positions, not goroutines. The batch already owns the calls,
+		// handles and ordered result slots; only active workers need stacks.
+		var queueMu sync.Mutex
+		next := 0
+		for range parallelism {
+			g.Go(func() error {
+				for {
+					queueMu.Lock()
+					if next == len(approvedIndices) {
+						queueMu.Unlock()
+						return nil
+					}
+					idx := approvedIndices[next]
+					next++
+					queueMu.Unlock()
+					if err := execute(ctx, idx); err != nil {
+						return err
+					}
+				}
+			})
+		}
 	}
 
 	if err := g.Wait(); err != nil {
