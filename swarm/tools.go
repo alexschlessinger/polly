@@ -141,8 +141,9 @@ func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 // execution from queued to running is not a transition, and labels never are.
 func coordinationEntries(s *State) (entries map[string]any, controlled map[string]bool) {
 	entries, controlled = map[string]any{}, map[string]bool{}
+	notices := resultNotices(s)
 	for id, t := range s.Tasks {
-		notice := resultNotice(s, t)
+		notice := notices[id]
 		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int

@@ -196,10 +196,11 @@ func New(c Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	holds := memberHolds(state)
 	for _, c := range state.Contexts {
 		// Shutdown may interrupt a scheduled pass before its mark commit.
 		// Retry eligible copies as well as already-marked releases on open.
-		eligible, _ := releaseEligible(state, c, r.active, func(string) bool { return false })
+		eligible, _ := releaseEligibleHeld(state, c, r.active, func(string) bool { return false }, holds)
 		if c.Release == WorkspaceReleasing || eligible {
 			r.scheduleRelease()
 			break
@@ -770,15 +771,22 @@ func (r *Runtime) runtimeDirectory() (string, error) {
 // make allocation deterministic and reclaimable, and policy hides the whole
 // scratch root rather than denying these names one by one.
 func (r *Runtime) liveScratchSlots(dir string) []string {
-	max := r.config.MaxWorktrees
-	if max <= 0 {
-		max = 512
-	}
-	slots := make([]string, max)
+	slots := make([]string, r.liveScratchCount())
 	for n := range slots {
-		slots[n] = filepath.Join(dir, fmt.Sprintf("live-%04d", n))
+		slots[n] = liveScratchSlot(dir, n)
 	}
 	return slots
+}
+
+func (r *Runtime) liveScratchCount() int {
+	if r.config.MaxWorktrees > 0 {
+		return r.config.MaxWorktrees
+	}
+	return 512
+}
+
+func liveScratchSlot(dir string, n int) string {
+	return filepath.Join(dir, fmt.Sprintf("live-%04d", n))
 }
 
 // liveScratch claims the private scratch directory of a context observing a
@@ -799,11 +807,11 @@ func (r *Runtime) liveScratch(root, id string) (string, error) {
 	// Start after the last slot claimed: the ones before it are usually
 	// still taken, and trying each costs a system call. The search wraps, so
 	// a released slot is found again.
-	slots := r.liveScratchSlots(dir)
-	start := int(r.scratchNext.Load()) % len(slots)
-	for n := range slots {
-		at := (start + n) % len(slots)
-		claimed, err := scratch.Reserve(slots[at])
+	count := r.liveScratchCount()
+	start := int(r.scratchNext.Load()) % count
+	for n := range count {
+		at := (start + n) % count
+		claimed, err := scratch.Reserve(liveScratchSlot(dir, at))
 		if err == nil {
 			r.scratchNext.Store(int64(at + 1))
 			return claimed, nil
@@ -1554,14 +1562,15 @@ func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []stri
 	if own != nil {
 		return own, others, nil
 	}
-	s, err := r.read(ctx)
-	if err != nil {
+	if err := r.look(ctx, func(s *State) {
+		if m := s.Members[i.member]; m != nil {
+			others = otherRoots(s, s.Contexts[m.Context])
+		}
+	}); err != nil {
 		return nil, nil, err
 	}
-	if m := s.Members[i.member]; m != nil {
-		others = otherRoots(s, s.Contexts[m.Context])
-	}
-	return s, others, nil
+	s, err := r.read(ctx)
+	return s, others, err
 }
 
 // executeMemberSlice runs one slice. s is sliceState's: it holds the whole

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -252,6 +253,78 @@ type State struct {
 	// mailTo names each member's mail, on the state a Runtime's edits keep
 	// current; any other state finds mail by looking at all of it.
 	mailTo map[string]map[string]struct{}
+	// rootUse counts the contexts on each root, kept the same way.
+	rootUse map[string]int
+	// mailOn names the mail about each task, kept the same way.
+	mailOn map[string]map[string]struct{}
+	// lazy is set on a state a reader keeps, which never changes: it builds
+	// mailOn for itself the first time it is asked.
+	lazy *lazyIndex
+}
+
+type lazyIndex struct {
+	once   sync.Once
+	mailOn map[string]map[string]struct{}
+}
+
+func indexTaskMail(s *State) map[string]map[string]struct{} {
+	index := map[string]map[string]struct{}{}
+	for id, mail := range s.Messages {
+		if mail.Task == "" {
+			continue
+		}
+		if index[mail.Task] == nil {
+			index[mail.Task] = map[string]struct{}{}
+		}
+		index[mail.Task][id] = struct{}{}
+	}
+	return index
+}
+
+// mailAbout returns the mail that names a task, in no order.
+func (s *State) mailAbout(task string) []*Mail {
+	index := s.mailOn
+	if index == nil && s.lazy != nil {
+		s.lazy.once.Do(func() { s.lazy.mailOn = indexTaskMail(s) })
+		index = s.lazy.mailOn
+	}
+	var out []*Mail
+	if index == nil {
+		for _, mail := range s.Messages {
+			if mail.Task == task {
+				out = append(out, mail)
+			}
+		}
+		return out
+	}
+	// As in mailFor, the mail an edit in progress touched is looked at
+	// directly.
+	var touched map[string]struct{}
+	if s.editing != nil {
+		touched = s.editing.touched["mail"]
+	}
+	for id := range index[task] {
+		if _, ok := touched[id]; ok {
+			continue
+		}
+		if mail := s.Messages[id]; mail != nil {
+			out = append(out, mail)
+		}
+	}
+	for id := range touched {
+		if mail := s.Messages[id]; mail != nil && mail.Task == task {
+			out = append(out, mail)
+		}
+	}
+	return out
+}
+
+func indexRoots(s *State) map[string]int {
+	index := map[string]int{}
+	for _, c := range s.Contexts {
+		index[c.Root]++
+	}
+	return index
 }
 
 func indexMail(s *State) map[string]map[string]struct{} {
@@ -298,10 +371,20 @@ func (s *State) mailFor(to string) []*Mail {
 	return out
 }
 
-// reindexMail brings the index up to date with the mail an edit touched.
-func (s *State) reindexMail() {
+// reindex brings the indexes up to date with the records an edit touched.
+func (s *State) reindex() {
 	if s.mailTo == nil || s.editing == nil {
 		return
+	}
+	for id := range s.editing.touched["context"] {
+		if old, _ := s.editing.prior["context"][id].(*ExecutionContext); old != nil {
+			if s.rootUse[old.Root]--; s.rootUse[old.Root] <= 0 {
+				delete(s.rootUse, old.Root)
+			}
+		}
+		if c := s.Contexts[id]; c != nil {
+			s.rootUse[c.Root]++
+		}
 	}
 	for id := range s.editing.touched["mail"] {
 		if old, _ := s.editing.prior["mail"][id].(*Mail); old != nil {
@@ -309,8 +392,17 @@ func (s *State) reindexMail() {
 			if len(s.mailTo[old.To]) == 0 {
 				delete(s.mailTo, old.To)
 			}
+			if delete(s.mailOn[old.Task], id); len(s.mailOn[old.Task]) == 0 {
+				delete(s.mailOn, old.Task)
+			}
 		}
 		if mail := s.Messages[id]; mail != nil {
+			if mail.Task != "" {
+				if s.mailOn[mail.Task] == nil {
+					s.mailOn[mail.Task] = map[string]struct{}{}
+				}
+				s.mailOn[mail.Task][id] = struct{}{}
+			}
 			if s.mailTo[mail.To] == nil {
 				s.mailTo[mail.To] = map[string]struct{}{}
 			}
@@ -548,22 +640,30 @@ func member(s *State, parent, actor string) error {
 // the members working right now. Finished members are counted, not listed;
 // swarm_read shows agent history and status on demand.
 func compactRoster(s *State) string {
+	// Every member is counted from its own record and execution; only the
+	// listed ones, the first by id, get the full presentation.
+	const listed = 32
 	working, idle, paused := 0, 0, 0
-	var lines []string
-	for _, id := range sortedInspectionIDs(s.Members) {
-		m := s.Members[id]
-		p := MemberState(s, m)
-		switch {
-		case p.Busy:
+	var first []string
+	for id, m := range s.Members {
+		switch lifecycle, _ := memberLifecycle(m, s.Executions[m.Execution]); lifecycle {
+		case LifecycleActive, LifecycleWaiting:
 			working++
-			if len(lines) < 32 {
-				lines = append(lines, fmt.Sprintf("%s · %s · %s · task %s", agentName(m), m.Label, p.Display, m.Task))
+			if at, _ := slices.BinarySearch(first, id); at < listed {
+				if first = slices.Insert(first, at, id); len(first) > listed {
+					first = first[:listed]
+				}
 			}
-		case p.Lifecycle == LifecyclePaused:
+		case LifecyclePaused:
 			paused++
 		default:
 			idle++
 		}
+	}
+	var lines []string
+	for _, id := range first {
+		m := s.Members[id]
+		lines = append(lines, fmt.Sprintf("%s · %s · %s · task %s", agentName(m), m.Label, MemberState(s, m).Display, m.Task))
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Roster at assignment start (use list_agents to refresh): %d members: %d working, %d idle, %d paused", working+idle+paused, working, idle, paused)
@@ -706,7 +806,7 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.mailTo = indexMail(s)
+	s.mailTo, s.rootUse, s.mailOn = indexMail(s), indexRoots(s), indexTaskMail(s)
 	c.raw, c.revision, c.state, c.lent, c.cloned = raw.Records, raw.Revision, s, nil, nil
 	return s, nil
 }
@@ -738,7 +838,7 @@ func (c *StateCache) check() {
 	}
 	fresh, err := decodeState(&sessions.CoordinationState{Records: c.raw})
 	if err == nil {
-		fresh.mailTo = indexMail(fresh)
+		fresh.mailTo, fresh.rootUse, fresh.mailOn = indexMail(fresh), indexRoots(fresh), indexTaskMail(fresh)
 	}
 	if err != nil || reflect.DeepEqual(fresh, c.state) {
 		return
@@ -1234,6 +1334,14 @@ func otherRoots(s *State, c *ExecutionContext) []string {
 		return nil
 	}
 	var roots []string
+	if s.rootUse != nil && s.editing == nil {
+		for root := range s.rootUse {
+			if root != c.Root {
+				roots = append(roots, root)
+			}
+		}
+		return roots
+	}
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
 			roots = append(roots, other.Root)

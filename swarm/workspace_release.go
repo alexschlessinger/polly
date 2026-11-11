@@ -12,6 +12,12 @@ import (
 // releaseEligible only judges saved obligations and runtime reservations.
 // Filesystem evidence is checked separately while holding the context lock.
 func releaseEligible(s *State, c *ExecutionContext, active map[string]*invocation, reserved func(string) bool) (bool, string) {
+	return releaseEligibleHeld(s, c, active, reserved, memberHolds(s))
+}
+
+// releaseEligibleHeld is releaseEligible for a caller judging many contexts
+// of one state, which reads the members' obligations once.
+func releaseEligibleHeld(s *State, c *ExecutionContext, active map[string]*invocation, reserved func(string) bool, holds map[string]string) (bool, string) {
 	if c == nil || c.Release != "" {
 		return false, "workspace is already releasing or retained"
 	}
@@ -19,7 +25,7 @@ func releaseEligible(s *State, c *ExecutionContext, active map[string]*invocatio
 	if m == nil || m.Context != c.ID || c.Owner != m.ID {
 		return false, "workspace is not the member's current workspace"
 	}
-	if ok, why := memberReleaseEligible(s, m, active); !ok {
+	if ok, why := memberFree(s, m, active, holds); !ok {
 		return false, why
 	}
 	if m.Controller != "" && reserved(m.Controller) {
@@ -29,6 +35,32 @@ func releaseEligible(s *State, c *ExecutionContext, active map[string]*invocatio
 }
 
 func memberReleaseEligible(s *State, m *Member, active map[string]*invocation) (bool, string) {
+	return memberFree(s, m, active, memberHolds(s))
+}
+
+// memberHolds gives, for each member with an open task or an unresolved
+// integration, that reason to keep its workspace.
+func memberHolds(s *State) map[string]string {
+	holds := map[string]string{}
+	for _, t := range s.Tasks {
+		if t.Status != "done" && t.Status != "canceled" {
+			holds[t.Owner] = "member has an open task"
+		}
+	}
+	for _, a := range s.Applies {
+		if a.Status != "applying" && a.Status != "recovery_required" {
+			continue
+		}
+		for _, ref := range a.Tasks {
+			if t := s.Tasks[ref.Task]; t != nil && holds[t.Owner] == "" {
+				holds[t.Owner] = "member has an unresolved integration"
+			}
+		}
+	}
+	return holds
+}
+
+func memberFree(s *State, m *Member, active map[string]*invocation, holds map[string]string) (bool, string) {
 	if active[m.ID] != nil {
 		return false, "member is executing"
 	}
@@ -38,20 +70,8 @@ func memberReleaseEligible(s *State, m *Member, active map[string]*invocation) (
 			return false, "member has an active or paused execution"
 		}
 	}
-	for _, t := range s.Tasks {
-		if t.Owner == m.ID && t.Status != "done" && t.Status != "canceled" {
-			return false, "member has an open task"
-		}
-	}
-	for _, a := range s.Applies {
-		if a.Status != "applying" && a.Status != "recovery_required" {
-			continue
-		}
-		for _, ref := range a.Tasks {
-			if t := s.Tasks[ref.Task]; t != nil && t.Owner == m.ID {
-				return false, "member has an unresolved integration"
-			}
-		}
+	if why := holds[m.ID]; why != "" {
+		return false, why
 	}
 	return true, ""
 }
@@ -72,9 +92,13 @@ func explicitReleaseEligible(s *State, c *ExecutionContext, controller string, a
 
 // releaseEligibleNow judges c against the live invocations and workflows.
 func (r *Runtime) releaseEligibleNow(s *State, c *ExecutionContext) (bool, string) {
+	return r.releaseEligibleHeldNow(s, c, memberHolds(s))
+}
+
+func (r *Runtime) releaseEligibleHeldNow(s *State, c *ExecutionContext, holds map[string]string) (bool, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
+	return releaseEligibleHeld(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil }, holds)
 }
 
 // explicitReleaseEligibleNow is releaseEligibleNow for a workflow's own release.
@@ -260,12 +284,13 @@ func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int
 			r.notifyRelease(id)
 		}
 	}()
+	holds := memberHolds(s)
 	for _, id := range sortedInspectionIDs(s.Contexts) {
 		if only != "" && id != only {
 			continue
 		}
 		c := s.Contexts[id]
-		if ok, _ := r.releaseEligibleNow(s, c); !ok && c.Release != WorkspaceReleasing {
+		if ok, _ := r.releaseEligibleHeldNow(s, c, holds); !ok && c.Release != WorkspaceReleasing {
 			continue
 		}
 		lock := r.contextMutex(id)
@@ -295,12 +320,13 @@ func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int
 	}
 	var marked []*ExecutionContext
 	err = r.edit(ctx, func(s *State) error {
+		holds := memberHolds(s)
 		for _, proof := range verified {
 			c := s.Contexts[proof.ID]
 			if c == nil {
 				continue
 			}
-			if ok, _ := r.releaseEligibleNow(s, c); ok || c.Release == WorkspaceReleasing {
+			if ok, _ := r.releaseEligibleHeldNow(s, c, holds); ok || c.Release == WorkspaceReleasing {
 				c = s.ownContext(proof.ID)
 				c.Release = WorkspaceReleasing
 				c.Reason = ""

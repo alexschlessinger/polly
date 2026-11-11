@@ -579,7 +579,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 			poke = r.pokeAll
 		} else {
 			touched, prior := work.editing.touched, work.editing.prior
-			work.reindexMail()
+			work.reindex()
 			r.view.advance(revision, committed.Revision, work, changed)
 			poke = r.pokesFor(touched, work, prior)
 		}
@@ -685,7 +685,7 @@ func (c *StateCache) lend(s *State) *State {
 	}
 	if c.lent == nil {
 		lent := *s
-		lent.mailTo = nil
+		lent.mailTo, lent.rootUse, lent.mailOn, lent.lazy = nil, nil, nil, &lazyIndex{}
 		c.lent, c.cloned = &lent, nil
 	}
 	return c.lent

@@ -134,12 +134,32 @@ func deliveringTask(s *State, t *Task) bool {
 	return e != nil && e.Status == "completed" && e.Member == t.Owner && e.Result != nil && e.Result.Task == t.ID && e.Result.Execution == e.ID && e.Result.Revision == t.Revision
 }
 
+// resultNotice is the mail that announces a task's current result: the first
+// by ID, should there be more than one.
 func resultNotice(s *State, t *Task) *Mail {
-	for _, id := range sortedInspectionIDs(s.Messages) {
-		m := s.Messages[id]
-		if m.Task == t.ID && m.Revision == t.Revision && m.Execution == t.Execution {
-			return m
+	var notice *Mail
+	for _, m := range s.mailAbout(t.ID) {
+		if m.Revision == t.Revision && m.Execution == t.Execution && (notice == nil || m.ID < notice.ID) {
+			notice = m
 		}
 	}
-	return nil
+	return notice
+}
+
+// resultNotices is resultNotice for every task, from one pass over the mail.
+func resultNotices(s *State) map[string]*Mail {
+	notices := map[string]*Mail{}
+	for id, m := range s.Messages {
+		if m.Task == "" {
+			continue
+		}
+		t := s.Tasks[m.Task]
+		if t == nil || m.Revision != t.Revision || m.Execution != t.Execution {
+			continue
+		}
+		if notice := notices[t.ID]; notice == nil || id < notice.ID {
+			notices[t.ID] = m
+		}
+	}
+	return notices
 }

@@ -137,6 +137,31 @@ func memberControlled(s *State, m *Member) bool {
 	return w != nil && w.Status == "running"
 }
 
+// memberLifecycle is a member's lifecycle and what qualifies it, from its own
+// record and its execution alone.
+func memberLifecycle(m *Member, e *Execution) (Lifecycle, string) {
+	switch {
+	case m.Control == MemberControlStopped:
+		return LifecyclePaused, "stopped"
+	case e == nil || e.Status == "completed":
+		return LifecycleIdle, ""
+	case e.Status == "queued":
+		return LifecycleActive, "queued"
+	case e.Status == "running":
+		return LifecycleActive, ""
+	case e.Status == "waiting":
+		return LifecycleWaiting, ""
+	case e.Status == "failed":
+		return LifecyclePaused, "failed"
+	case e.RetryPause != nil:
+		return LifecyclePaused, "retry budget exhausted"
+	case e.StopReason == messages.StopReasonMaxIterations:
+		return LifecyclePaused, fmt.Sprintf("iteration limit (%d/%d)", e.Iterations, e.Request.MaxIterations)
+	default:
+		return LifecyclePaused, "interrupted"
+	}
+}
+
 // MemberState derives a member's presentation. Reading never repairs records,
 // accepts tasks or claims an execution.
 func MemberState(s *State, m *Member) AgentPresentation {
@@ -159,25 +184,8 @@ func MemberState(s *State, m *Member) AgentPresentation {
 		p.Delivering = deliveringTask(s, t) && !p.Deferred
 		open = t.Status != "done" && t.Status != "canceled"
 	}
-	switch {
-	case p.Control == MemberControlStopped:
-		p.Lifecycle, p.Detail = LifecyclePaused, "stopped"
-	case e == nil || e.Status == "completed":
-		p.Lifecycle, p.Detail = LifecycleIdle, p.TaskStatus
-	case e.Status == "queued":
-		p.Lifecycle, p.Detail = LifecycleActive, "queued"
-	case e.Status == "running":
-		p.Lifecycle = LifecycleActive
-	case e.Status == "waiting":
-		p.Lifecycle = LifecycleWaiting
-	case e.Status == "failed":
-		p.Lifecycle, p.Detail = LifecyclePaused, "failed"
-	case e.RetryPause != nil:
-		p.Lifecycle, p.Detail = LifecyclePaused, "retry budget exhausted"
-	case e.StopReason == messages.StopReasonMaxIterations:
-		p.Lifecycle, p.Detail = LifecyclePaused, fmt.Sprintf("iteration limit (%d/%d)", e.Iterations, e.Request.MaxIterations)
-	default:
-		p.Lifecycle, p.Detail = LifecyclePaused, "interrupted"
+	if p.Lifecycle, p.Detail = memberLifecycle(m, e); p.Lifecycle == LifecycleIdle {
+		p.Detail = p.TaskStatus
 	}
 	p.Busy = p.Lifecycle == LifecycleActive || p.Lifecycle == LifecycleWaiting
 	p.Attention = !p.Deferred && !p.Busy && !p.Delivering && open
