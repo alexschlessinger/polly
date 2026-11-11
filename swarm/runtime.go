@@ -1071,11 +1071,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return nil, err
 		}
 		name := "agent-" + ids.New()[:12]
-		session, err := r.acquireCoordinatedSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
-		if err != nil {
-			return nil, err
-		}
-		identity := session.ViewID()
 		model, modelHost := req.Model, req.ModelHost
 		if model == "" {
 			model = defaults.request.Model
@@ -1083,28 +1078,22 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 				modelHost = defaults.request.ModelHost
 			}
 		}
-		meta, err := session.GetMetadata(ctx)
-		if err == nil {
+		describe := func(meta *sessions.Metadata) {
 			meta.Description = req.Label
 			meta.SpawnCallID = req.CallID
 			meta.SwarmID = r.ID
 			meta.ExecutionContext = c.ID
-			// Acquire may have seeded the store's launch-time system prompt.
-			// New members compose their own prompt from the current parent
+			// The store's defaults carry its launch-time system prompt. New
+			// members compose their own prompt from the current parent
 			// instructions when their first request is ready to be sent.
 			meta.SystemPrompt = ""
 			meta.Model, meta.ModelHost = model, modelHost
-			err = session.Reset(ctx, meta)
 		}
-		if err == nil {
-			if setter, ok := session.(sessions.TitleSession); ok {
-				_, err = setter.SetTitle(ctx, req.Label, sessions.TitleSourceAgent)
-			}
-		}
+		session, err := r.createMemberSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName}, req.Label, describe)
 		if err != nil {
-			session.Close()
 			return nil, err
 		}
+		identity := session.ViewID()
 		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, SandboxPresets: sandboxPresets(c.SandboxPresets), ReadOnly: c.ReadOnly}
 		m.AgentName = "/root/" + req.TaskName
 		if req.TaskName == "" {
