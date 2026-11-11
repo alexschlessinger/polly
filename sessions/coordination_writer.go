@@ -445,9 +445,13 @@ func (w *coordinationWriter) settleFamily(ctx context.Context, root []byte) erro
 // took back with restoreSession if it does not write it.
 func (w *coordinationWriter) takeSession(ctx context.Context, id []byte) (*pendingSession, error) {
 	w.mu.Lock()
+	// older is what the caller takes out of the checkpoint under way. What a
+	// transaction of the checkpoint wrote while the caller waited for it is
+	// in the database, and no longer pending.
 	var older *pendingSession
 	for w.applying != nil {
-		if older = w.applying.sessions[string(id)]; older == nil {
+		session := w.applying.sessions[string(id)]
+		if session == nil {
 			break
 		}
 		if w.applyErr != nil {
@@ -455,9 +459,10 @@ func (w *coordinationWriter) takeSession(ctx context.Context, id []byte) (*pendi
 			w.mu.Unlock()
 			return nil, err
 		}
-		if !older.writing {
+		if !session.writing {
 			// The checkpoint has not come to the session, and now will not.
 			delete(w.applying.sessions, string(id))
+			older = session
 			break
 		}
 		moved := w.appliedMoved
@@ -477,9 +482,9 @@ func (w *coordinationWriter) takeSession(ctx context.Context, id []byte) (*pendi
 
 func (w *coordinationWriter) restoreSession(session *pendingSession) {
 	w.mu.Lock()
-	if w.window.sessions[string(session.id)] == nil {
-		w.window.sessions[string(session.id)] = session
-	}
+	// What was accepted for the session meanwhile comes after what is given
+	// back.
+	w.window.sessions[string(session.id)] = joinPending(session, w.window.sessions[string(session.id)])
 	// The window is pending again even if it was empty: its place is one
 	// the database already claims, which a checkpoint then makes true.
 	if w.window.last == 0 {

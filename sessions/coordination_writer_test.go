@@ -436,3 +436,68 @@ func TestSessionTakesItsPendingOutOfACheckpointUnderWay(t *testing.T) {
 		t.Fatalf("transcript after the session wrote again = %q", got)
 	}
 }
+
+// A session that finds a checkpoint's transaction writing its messages waits
+// for that transaction. What it then takes is what was accepted since: the
+// messages the transaction wrote are in the database, and no longer pending.
+// Given back, what it took goes ahead of what was accepted meanwhile.
+func TestSessionWaitingOnACheckpointTakesOnlyWhatCameAfter(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	w := store.writer
+	id, token := []byte("0123456789abcdef"), []byte("fedcba9876543210")
+	payload := func(text string) []byte { return []byte(`{"role":"user","content":"` + text + `"}`) }
+	written := &pendingSession{id: id, token: token, start: 0, tail: [][]byte{payload("one"), payload("two")}, writing: true}
+	later := &pendingSession{id: id, token: token, start: 2, tail: [][]byte{payload("three")}}
+	w.mu.Lock()
+	w.applying = newPendingWindow()
+	w.applying.sessions[string(id)] = written
+	w.window.sessions[string(id)] = later
+	w.mu.Unlock()
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.applying, w.window = nil, newPendingWindow()
+		w.mu.Unlock()
+	})
+
+	taken := make(chan *pendingSession, 1)
+	go func() {
+		pending, err := w.takeSession(context.Background(), id)
+		if err != nil {
+			t.Error(err)
+		}
+		taken <- pending
+	}()
+	select {
+	case pending := <-taken:
+		t.Fatalf("the session took %+v from under the transaction writing it", pending)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The transaction commits, and with it the checkpoint ends.
+	w.mu.Lock()
+	written.writing = false
+	delete(w.applying.sessions, string(id))
+	w.applying = nil
+	announce(&w.appliedMoved)
+	w.mu.Unlock()
+	var pending *pendingSession
+	select {
+	case pending = <-taken:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the session never took its pending messages")
+	}
+	if pending == nil || pending.start != 2 || len(pending.tail) != 1 {
+		t.Fatalf("the session took %+v, want the one message accepted after the checkpoint's", pending)
+	}
+
+	newest := &pendingSession{id: id, token: token, start: 3, tail: [][]byte{payload("four")}}
+	w.mu.Lock()
+	w.window.sessions[string(id)] = newest
+	w.mu.Unlock()
+	w.restoreSession(pending)
+	w.mu.Lock()
+	restored := w.window.sessions[string(id)]
+	w.mu.Unlock()
+	if restored == nil || restored.start != 2 || len(restored.tail) != 2 {
+		t.Fatalf("given back, the pending messages are %+v, want both in order", restored)
+	}
+}

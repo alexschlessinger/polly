@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -221,6 +222,11 @@ func endLease(ctx context.Context, conn *sql.Conn, held lease, pending *pendingS
 		return false, nil
 	}
 	if err != nil || owned == 0 {
+		if err == nil && pending != nil && len(pending.tail) > 0 {
+			// Someone else has the session now and has gone on from what
+			// the database held.
+			slog.Warn("coordination_updates_dropped", "session", hex.EncodeToString(held.id), "messages", len(pending.tail))
+		}
 		return false, err
 	}
 	if pending != nil {
