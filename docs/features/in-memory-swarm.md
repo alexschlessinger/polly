@@ -170,7 +170,9 @@ execution is bounded by cores through the tool limiter, not by agent count.
    whose task or one of its dependencies changed, and every active member
    when a publication changed. A parked member rechecks its wake conditions
    only then. The pokes are sent once the edit has let go of the family's
-   state. The parent's waits still hear every change.
+   state. The parent's waits still hear every change and then compare the
+   whole family with what they saw before; that comparison is one pass over
+   the records.
 5. **Writer done; the interface is unchanged.** The SQLite store answers an
    `UpdateCoordinationFrom` from memory: it checks the session's lease by its
    expiry, applies the changed records to the family it holds, queues the
@@ -197,12 +199,12 @@ execution is bounded by cores through the tool limiter, not by agent count.
 
 | Store | Agents | Model calls/s | Spawn per agent |
 |---|---|---|---|
-| memory | 100 | 2442 | 2.1 ms |
-| memory | 1000 | 2021 | 1.4 ms |
-| memory | 5000 | 1332 | 2.1 ms |
-| disk | 100 | 1878 | 2.4 ms |
-| disk | 1000 | 1465 | 2.7 ms |
-| disk | 5000 | 907 | 3.4 ms |
+| memory | 100 | 2371 | 1.4 ms |
+| memory | 1000 | 2440 | 1.4 ms |
+| memory | 5000 | 2143 | 1.5 ms |
+| disk | 100 | 1719 | 2.5 ms |
+| disk | 1000 | 1570 | 2.8 ms |
+| disk | 5000 | 1065 | 3.2 ms |
 
 With one transaction per edit and a flush to disk on every commit
 (`synchronous=FULL`), 100 agents on disk managed 44.
@@ -213,17 +215,35 @@ second it is busy about a quarter of the time. Most of that is the queued
 writes, about five updates a call at some 50 µs each, a quarter of it
 rereading and rewriting the session's settings to record the transcript's
 identity. The rest is what a slice does directly. A slice reads the member's
-whole transcript, and it acquires and releases the member's session unless
+whole transcript: the connection is held for the read alone and the
+messages are decoded after it is let go. It acquires and releases the member's session unless
 it follows a yield within a second: a parked member keeps its session that
 long, which is shorter than a lease heartbeat, so a prompt wake reuses it
 and a long wait costs no renewal. Acquiring a parked member's session from
 elsewhere waits out that second. With 5000 agents in step a member is parked
 for longer than that, which is why the hold helps the smaller runs only.
 
-What still grows with the family: a first slice lists the working members
-for its prompt, the workspace release pass compares every member with every
-task, and a kept state (`State`) makes the next edit copy the maps it
-writes.
+Those transcripts are a few kilobytes. `SCALE_CONTEXT` makes each agent
+take that many bytes of tool output in its first round and carry them from
+then on. With 1000 agents in memory over ten rounds, 200 KB of transcript
+each brings 2584 calls a second down to 1808: every slice still reads and
+decodes its transcript, which costs about a core and keeps the connection
+some 0.1 ms a read. Transcripts are not cached between slices; that would
+hold every live transcript in memory a second time to save that.
+
+What still grows with the family: a first slice counts every member for
+its prompt, though it reads only the 32 it lists in full, the workspace
+release pass visits every context and every task once, and a kept state
+(`State`) makes the next edit copy the maps it writes. The family's state
+indexes the roots its contexts use, as it does mail, so a slice names its
+siblings' roots without looking at every context.
+
+`SCALE_PARENT` adds a parent that waits on the swarm throughout, as
+`wait_agent` does. With 5000 agents it takes about half a core rechecking
+after each change and costs the members nothing measurable (2155 calls a
+second); settling over the finished swarm takes 5 ms. Both find a task's
+result notice through an index of mail by task, which the family's state
+keeps and a kept state builds once for itself.
 
 Every agent, read-only or not, claims a scratch directory, and those share
 the worktree cap (512 by default), so a larger swarm has to raise
