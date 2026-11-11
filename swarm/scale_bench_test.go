@@ -128,7 +128,9 @@ func (m *scaleRing) reply(ctx context.Context, req *llm.CompletionRequest) messa
 // as repeated swarm_help calls, and carries in its transcript from then on
 // (default 0; context-KB reports what a request ended up carrying),
 // SCALE_PARENT, when set, a parent that waits on the swarm throughout and SCALE_LIMIT how long one swarm may take
-// before the run fails (default 2m).
+// before the run fails (default 2m). SCALE_DB_DIR names a directory for the
+// disk store's database; the default is the test's temporary directory, which
+// on many machines is held in memory and so costs nothing to write.
 func BenchmarkSwarmAgents(b *testing.B) {
 	rounds := 3
 	if v, err := strconv.Atoi(os.Getenv("SCALE_ROUNDS")); err == nil && v > 0 {
@@ -166,7 +168,15 @@ func runScaleRing(b *testing.B, mode sessions.StoreMode, agents, rounds int, lat
 	defer cancel()
 	config := sessions.StoreConfig{Mode: mode}
 	if mode == sessions.ModeDisk {
-		config.Path = filepath.Join(b.TempDir(), "polly.db")
+		dir := b.TempDir()
+		if chosen := os.Getenv("SCALE_DB_DIR"); chosen != "" {
+			var err error
+			if dir, err = os.MkdirTemp(chosen, "scale"); err != nil {
+				b.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+		}
+		config.Path = filepath.Join(dir, "polly.db")
 	}
 	store, err := sessions.OpenStore(config)
 	if err != nil {
