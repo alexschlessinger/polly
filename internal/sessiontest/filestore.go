@@ -176,9 +176,25 @@ func freshConversation(name, parent string) *conversation {
 }
 
 func (s *fileStore) Acquire(ctx context.Context, name string, o sessions.AcquireOptions) (sessions.Session, error) {
+	return s.acquire(ctx, name, o, false, nil)
+}
+
+// Create is Acquire for a session that must not exist yet, stored as
+// configure leaves its metadata.
+func (s *fileStore) Create(ctx context.Context, name string, o sessions.AcquireOptions, configure func(*sessions.Metadata)) (sessions.Session, error) {
+	if o.ExistingOnly || o.ExpectedID != "" {
+		return nil, errors.New("a session to create cannot be an existing one")
+	}
+	return s.acquire(ctx, name, o, true, configure)
+}
+
+func (s *fileStore) acquire(ctx context.Context, name string, o sessions.AcquireOptions, create bool, configure func(*sessions.Metadata)) (sessions.Session, error) {
 	var out *fileSession
 	err := s.transact(ctx, true, func(v *snapshot) error {
 		id, c := byName(v, name)
+		if c != nil && create {
+			return fmt.Errorf("%w: %s", sessions.ErrSessionExists, name)
+		}
 		if c == nil {
 			if o.ExistingOnly || o.ExpectedID != "" {
 				return sessions.ErrSessionNotFound
@@ -192,6 +208,12 @@ func (s *fileStore) Acquire(ctx context.Context, name string, o sessions.Acquire
 			}
 			id = ids.New()
 			c = freshConversation(name, parent)
+			if configure != nil {
+				fresh := c.Metadata
+				configure(&c.Metadata)
+				c.Metadata.Name, c.Metadata.Created, c.Metadata.LastUsed = fresh.Name, fresh.Created, fresh.LastUsed
+				c.Metadata.Parent, c.Metadata.Transcript = fresh.Parent, nil
+			}
 			v.Sessions[id] = c
 		}
 		if o.ExpectedID != "" && id != o.ExpectedID {
@@ -442,6 +464,23 @@ func (s *fileSession) settings(ctx context.Context, m *sessions.Metadata, reset 
 		if reset {
 			clear(c)
 		} else {
+			touch(c)
+		}
+		return nil
+	})
+}
+
+// RecordSpawnOutcome notes how the session's first run ended; a session
+// that has an outcome keeps it and is not touched.
+func (s *fileSession) RecordSpawnOutcome(ctx context.Context, outcome sessions.ReportStatus) error {
+	switch outcome {
+	case sessions.ReportFinished, sessions.ReportCanceled, sessions.ReportFailed, sessions.ReportPaused:
+	default:
+		return fmt.Errorf("unknown spawn outcome %q", outcome)
+	}
+	return s.transact(ctx, true, func(_ *snapshot, c *conversation) error {
+		if c.Metadata.SpawnOutcome == "" {
+			c.Metadata.SpawnOutcome = outcome
 			touch(c)
 		}
 		return nil

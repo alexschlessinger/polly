@@ -165,6 +165,65 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			t.Fatal("view created a row")
 		}
 	})
+	t.Run("create_stores_the_session_as_configured", func(t *testing.T) {
+		t.Parallel()
+		s := newFixture(t).Open()
+		acquire(t, s, "parent", "")
+		creator, ok := s.(sessions.SessionCreator)
+		if !ok {
+			t.Fatal("missing SessionCreator")
+		}
+		child, err := creator.Create(t.Context(), "child", sessions.AcquireOptions{Parent: "parent"}, func(md *sessions.Metadata) {
+			md.Description, md.SpawnCallID = "a task", "call"
+			md.Title, md.TitleSource = "A title", sessions.TitleSourceAgent
+			md.Name, md.Parent = "ignored", "ignored"
+		})
+		must(t, err)
+		t.Cleanup(func() { child.Close() })
+		md, err := child.GetMetadata(t.Context())
+		must(t, err)
+		if md.Name != "child" || md.Parent != "parent" || md.Description != "a task" || md.SpawnCallID != "call" ||
+			md.Title != "A title" || md.TitleSource != sessions.TitleSourceAgent {
+			t.Fatalf("created session = %+v", md)
+		}
+		if _, ok := child.(sessions.CoordinationSession); !ok {
+			t.Fatal("created session is missing CoordinationSession")
+		}
+		if _, err := creator.Create(t.Context(), "child", sessions.AcquireOptions{}, nil); !errors.Is(err, sessions.ErrSessionExists) {
+			t.Fatalf("creating a session that exists = %v", err)
+		}
+		if _, err := creator.Create(t.Context(), "other", sessions.AcquireOptions{ExistingOnly: true}, nil); err == nil {
+			t.Fatal("Create took a session that must exist")
+		}
+	})
+
+	t.Run("spawn_outcome_is_recorded_once", func(t *testing.T) {
+		t.Parallel()
+		s := newFixture(t).Open()
+		acquire(t, s, "parent", "")
+		child := acquire(t, s, "child", "parent")
+		recorder, ok := child.(sessions.SpawnOutcomeSession)
+		if !ok {
+			t.Fatal("missing SpawnOutcomeSession")
+		}
+		must(t, recorder.RecordSpawnOutcome(t.Context(), sessions.ReportPaused))
+		must(t, recorder.RecordSpawnOutcome(t.Context(), sessions.ReportFinished))
+		md, err := child.GetMetadata(t.Context())
+		must(t, err)
+		if md.SpawnOutcome != sessions.ReportPaused {
+			t.Fatalf("outcome = %q, want the first one recorded", md.SpawnOutcome)
+		}
+		if err := recorder.RecordSpawnOutcome(t.Context(), "done"); err == nil {
+			t.Fatal("an unknown outcome was recorded")
+		}
+		must(t, child.Close())
+		stored, err := s.GetMetadata(t.Context(), "child")
+		must(t, err)
+		if stored.SpawnOutcome != sessions.ReportPaused {
+			t.Fatalf("stored outcome = %q", stored.SpawnOutcome)
+		}
+	})
+
 	t.Run("lease_loss_fences_every_operation", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
