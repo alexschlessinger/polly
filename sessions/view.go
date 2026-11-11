@@ -93,6 +93,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		if err != nil {
 			return err
 		}
+		view.InUse = view.InUse && !s.keeps(id)
 		view.Metadata, err = metadataFromSnapshot(snap)
 		if err != nil {
 			return err

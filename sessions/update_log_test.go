@@ -49,11 +49,6 @@ func crashStore(t *testing.T, store *SQLiteStore) {
 	store.closed.Store(true)
 	store.cancel(ErrStoreClosed)
 	store.wg.Wait()
-	store.mu.Lock()
-	for session := range store.open {
-		<-session.heartbeatDone
-	}
-	store.mu.Unlock()
 	if log != nil {
 		if err := log.close(false); err != nil {
 			t.Fatal(err)
@@ -360,8 +355,9 @@ func TestTakingOverALeaseRecoversTheLogFirst(t *testing.T) {
 	}
 }
 
-// A session reads its transcript over what is pending for it, and closing it
-// writes its own pending messages without a checkpoint of everything else.
+// A session reads its transcript over what is pending for it. A member that
+// closes leaves its pending messages with its lease, which the store keeps.
+// Giving the lease up writes them, without a checkpoint of everything else.
 func TestSessionReadsAndClosesOverItsPendingMessages(t *testing.T) {
 	ctx := context.Background()
 	holdCheckpoints(t)
@@ -390,16 +386,21 @@ func TestSessionReadsAndClosesOverItsPendingMessages(t *testing.T) {
 	if err := child.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := storedMessages(t, store); got != 3 {
-		t.Fatalf("%d messages in the table after the session closed", got)
+	if got := storedMessages(t, store); got != 1 {
+		t.Fatalf("%d messages in the table after the member closed", got)
 	}
-	// The family's records wait for the checkpoint, or for the root to close.
-	if got := storedRecord(t, store, "task", "a"); got != `{"n":1}` {
-		t.Fatalf("closing a member wrote the family's record: %q", got)
-	}
+	// Asked for by name alone, the session is taken in the database, so the
+	// store gives up the lease it kept.
 	again, err := store.Acquire(ctx, "child", AcquireOptions{ExistingOnly: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := storedMessages(t, store); got != 3 {
+		t.Fatalf("%d messages in the table after the kept lease was given up", got)
+	}
+	// The family's records wait for the checkpoint, or for the root to close.
+	if got := storedRecord(t, store, "task", "a"); got != `{"n":1}` {
+		t.Fatalf("giving up a member's lease wrote the family's record: %q", got)
 	}
 	if got := historyText(t, again); got != "stored,pending one,pending two" {
 		t.Fatalf("transcript after acquiring again = %q", got)

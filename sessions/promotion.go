@@ -70,6 +70,14 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 			if _, err := extendLease(ctx, conn, session.id, session.ownerToken, now.UnixNano(), expiry); err != nil {
 				return err
 			}
+			// The copy renamed a session whose name the destination had.
+			session.name.Store(nil)
+		}
+		for _, kept := range s.kept {
+			if _, err := extendLease(ctx, conn, kept.id, kept.token, now.UnixNano(), expiry); err != nil {
+				return err
+			}
+			kept.name = nil
 		}
 		return nil
 	})

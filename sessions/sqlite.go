@@ -86,6 +86,9 @@ type SQLiteStore struct {
 	open   map[*sqliteSession]struct{}
 	// byID finds the open handle on a session, which holds its lease.
 	byID map[string]*sqliteSession
+	// kept holds, by session id, the leases on sessions whose handle closed
+	// and whose next handle the store expects soon.
+	kept map[string]*keptLease
 
 	coordination *coordinationCache
 	writer       *coordinationWriter
@@ -100,7 +103,9 @@ type sqliteSession struct {
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 
-	heartbeatDone chan struct{}
+	// name is the name the session was acquired under or last renamed to,
+	// nil once it may have changed some other way.
+	name atomic.Pointer[string]
 	// closeDone is closed after closeErr is set; a later Close waits on it
 	// and reads the result.
 	closeDone chan struct{}
@@ -286,6 +291,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
 		byID:     make(map[string]*sqliteSession),
+		kept:     make(map[string]*keptLease),
 		turn:     make(chan struct{}, 1),
 
 		coordination: newCoordinationCache(),
@@ -321,8 +327,9 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		store.writer.finish()
 		return fail(fmt.Errorf("expire sessions at startup: %w", err))
 	}
-	store.wg.Add(1)
+	store.wg.Add(2)
 	go store.cleanupLoop()
+	go store.leaseLoop()
 	return store, nil
 }
 
@@ -1291,6 +1298,8 @@ func (s *SQLiteStore) track(session *sqliteSession) bool {
 	}
 	s.open[session] = struct{}{}
 	s.byID[string(session.id)] = session
+	// A lease taken in the database replaced whichever one was kept.
+	delete(s.kept, string(session.id))
 	return true
 }
 
@@ -1344,6 +1353,9 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 			return nil, fmt.Errorf("parent: %w", err)
 		}
 	}
+	if session := s.retake(name, options.ExpectedID); session != nil {
+		return session, nil
+	}
 	owner, err := randomBytes(16)
 	if err != nil {
 		return nil, fmt.Errorf("generate session lease owner: %w", err)
@@ -1379,21 +1391,15 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				continue
 			}
 		}
+		if err == nil && busy && s.yieldKept(waitCtx, id) {
+			// The lease was this store's own, kept for a handle that would
+			// have asked for the session by the name and id it had.
+			continue
+		}
 		if err == nil && !busy {
-			sessionCtx, sessionCancel := context.WithCancelCause(s.ctx)
-			session := &sqliteSession{
-				store:         s,
-				id:            id,
-				ownerToken:    owner,
-				ctx:           sessionCtx,
-				cancel:        sessionCancel,
-				heartbeatDone: make(chan struct{}),
-				closeDone:     make(chan struct{}),
-			}
-			session.artifacts = &sqliteArtifactStore{session: session}
-			session.leaseExpiry.Store(expiry)
+			session := s.newSession(id, owner, name, expiry)
 			if !s.track(session) {
-				sessionCancel(ErrStoreClosed)
+				session.cancel(ErrStoreClosed)
 				_ = s.releaseLease(context.Background(), id, owner)
 				return nil, ErrStoreClosed
 			}
@@ -1403,7 +1409,6 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 			s.coordination.held <- struct{}{}
 			s.coordination.forget(id)
 			<-s.coordination.held
-			go session.heartbeatLoop()
 			return session, nil
 		}
 		if err != nil && !isSQLiteBusy(err) {
@@ -1472,7 +1477,8 @@ func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...a
 	return true, garbageCollectArtifacts(ctx, conn)
 }
 
-// tryAcquire takes the lease on name once. It does not settle: no pending
+// tryAcquire takes the lease on name once, or reports the session busy: its
+// lease is somebody's. It does not settle: no pending
 // update touches a row it reads or writes. A lease that ran out may be all
 // that is left of a store whose update log still holds the session's last
 // messages, so unless recovered says the log was just recovered, tryAcquire
@@ -1537,11 +1543,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 		if err != nil {
 			return err
 		}
-		if changed == 0 {
-			busy = true
-			return nil
-		}
-		id = storedID
+		id, busy = storedID, changed == 0
 		return nil
 	})
 	return id, busy, err
@@ -1640,6 +1642,8 @@ func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
 	if err := validateSessionName(name); err != nil {
 		return err
 	}
+	// A lease this store only keeps is no use of the session.
+	s.yieldKeptNamed(ctx, name)
 	nowNS := time.Now().UTC().UnixNano()
 	deleted := false
 	err := s.withWrite(ctx, func(conn *sql.Conn) error {
@@ -1753,7 +1757,7 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 		if err != nil {
 			return err
 		}
-		result = append(result, SessionSummary{ID: hex.EncodeToString(snap.id), ParentID: hex.EncodeToString(snap.parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
+		result = append(result, SessionSummary{ID: hex.EncodeToString(snap.id), ParentID: hex.EncodeToString(snap.parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse && !s.keeps(snap.id)})
 		return nil
 	})
 	return result, err
@@ -1864,6 +1868,11 @@ func (s *SQLiteStore) Close() error {
 			closeErr = errors.Join(closeErr, err)
 		}
 	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := s.releaseKept(releaseCtx, nil); err != nil && !isClosedDatabaseError(err) {
+		closeErr = errors.Join(closeErr, err)
+	}
+	cancel()
 	s.writer.finish()
 	s.dbMu.Lock()
 	defer s.dbMu.Unlock()
@@ -1932,48 +1941,6 @@ func garbageCollectArtifacts(ctx context.Context, conn *sql.Conn) error {
 
 func (s *sqliteSession) Context() context.Context {
 	return s.ctx
-}
-
-func (s *sqliteSession) heartbeatLoop() {
-	defer close(s.heartbeatDone)
-	ticker := time.NewTicker(leaseHeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(s.ctx, leaseHeartbeatInterval)
-			owned, err := s.renewLease(ctx)
-			cancel()
-			if err == nil && owned {
-				continue
-			}
-			if err == nil && !owned {
-				s.cancel(ErrSessionLeaseLost)
-				return
-			}
-			if s.ctx.Err() != nil {
-				return
-			}
-			// Waiting for the store's sole pooled connection can outlive the
-			// stale threshold during a legitimate long transaction. Only an
-			// owner-token mismatch proves that this process lost the lease.
-		}
-	}
-}
-
-// renewLease extends this session's lease with one autocommit statement; a
-// single UPDATE needs no transaction around it.
-func (s *sqliteSession) renewLease(ctx context.Context) (bool, error) {
-	now, expiresNS := leaseWindow()
-	s.store.dbMu.RLock()
-	defer s.store.dbMu.RUnlock()
-	owned, err := extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
-	if err == nil && owned {
-		s.leaseExpiry.Store(expiresNS)
-	}
-	return owned, err
 }
 
 // leaseFresh reports whether this handle certainly still holds its lease:
@@ -2434,7 +2401,7 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		return err
 	}
 	now := time.Now().UTC()
-	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
 		snap, metadata, err := loadMetadata(ctx, conn, s.id)
 		if err != nil {
 			return err
@@ -2462,6 +2429,10 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 			WHERE id = ?`, newName, now.UnixNano(), snap.ttlNS, settings, s.id)
 		return err
 	})
+	if err == nil {
+		s.name.Store(&newName)
+	}
+	return err
 }
 
 func (s *sqliteSession) GetMetadata(ctx context.Context) (*Metadata, error) {
@@ -2524,8 +2495,10 @@ func (s *sqliteSession) close(cause error) error {
 		<-s.closeDone
 		return s.closeErr
 	}
+	// A handle closed for no other reason than that its work is done may
+	// leave its lease with the store.
+	orderly := cause == context.Canceled && s.ctx.Err() == nil
 	s.cancel(cause)
-	<-s.heartbeatDone
 	defer s.store.untrack(s)
 	var result error
 	defer func() {
@@ -2543,66 +2516,22 @@ func (s *sqliteSession) close(cause error) error {
 	// A family this session rooted is no longer the store's to answer for
 	// from memory, where it may hold values that were never written.
 	cache.forget(s.id)
+	kept := &keptLease{
+		lease:    lease{id: s.id, token: s.ownerToken},
+		name:     s.name.Load(),
+		root:     string(s.coord.parent),
+		expiry:   s.leaseExpiry.Load(),
+		since:    time.Now(),
+		sequence: s.coord.sequence,
+		known:    s.coord.known && s.coord.writers == 0,
+	}
 	<-cache.held
-	// The lease is what lets a checkpoint write this session's pending
-	// updates, so they are written before it goes: the family's, when this
-	// is its root, by a checkpoint, and the session's own here.
-	writer := s.store.writer
-	err := writer.settleFamily(ctx, s.id)
-	var pending *pendingSession
-	if err == nil {
-		pending, err = writer.takeSession(ctx, s.id)
+	if orderly && s.store.keep(s, kept) {
+		return nil
 	}
-	if err != nil {
-		result = err
-		return result
-	}
-	deleted := false
-	err = s.store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
-		var retention string
-		var hasTurn int
-		var owned int
-		err := conn.QueryRowContext(ctx, `
-			SELECT sessions.retention,sessions.has_turn,
-			       COALESCE(session_leases.owner_token = ?, 0)
-			FROM sessions
-			LEFT JOIN session_leases ON session_leases.session_id = sessions.id
-			WHERE sessions.id = ?`, s.ownerToken, s.id).Scan(&retention, &hasTurn, &owned)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if owned == 0 {
-			return nil
-		}
-		if pending != nil {
-			if err := writePendingSession(ctx, conn, pending, false); err != nil {
-				return err
-			}
-			if len(pending.tail) > 0 {
-				hasTurn = 1
-			}
-		}
-
-		if retention == retentionAuto && hasTurn == 0 {
-			deleted, err = deleteSessions(ctx, conn, "id = ? AND NOT "+swarmPinnedSQL, s.id)
-			if err != nil || deleted {
-				return err
-			}
-		}
-		_, err = conn.ExecContext(ctx,
-			"DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", s.id, s.ownerToken)
-		return err
-	})
-	if deleted {
-		s.store.incrementalVacuum(ctx)
-	}
-	if err != nil && pending != nil {
-		// The lease stays with the failure, so a checkpoint can still write this.
-		writer.restoreSession(pending)
-	}
+	// The members of a family this session rooted are nobody's to wake now.
+	err := s.store.releaseKept(ctx, func(member *keptLease) bool { return member.root == string(s.id) })
+	err = errors.Join(err, s.store.release(ctx, kept.lease))
 	if s.store.closed.Load() && isClosedDatabaseError(err) {
 		err = nil
 	}

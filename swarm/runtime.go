@@ -1471,7 +1471,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 
 // park returns once the yielded member i has something to wake for, or its
 // wait runs out. A member that wakes soon runs its next slice on the session
-// it holds; one that stays parked gives the lease up.
+// it holds; one that stays parked closes it.
 func (r *Runtime) park(ctx context.Context, i *invocation) error {
 	held := time.NewTimer(parkedSessionHold)
 	defer held.Stop()
@@ -1511,10 +1511,10 @@ func (r *Runtime) park(ctx context.Context, i *invocation) error {
 	}
 }
 
-// parkedSessionHold is how long a parked member keeps its session's lease,
-// which is shorter than the lease's heartbeat: a member that wakes within it
-// saves releasing and acquiring the session, and one that does not costs no
-// renewal.
+// parkedSessionHold is how long a parked member keeps its session open: a
+// member that wakes within it runs its next slice on the handle it has. After
+// that the session closes, and a store that keeps the lease of a member it
+// drives hands it back to the next slice.
 const parkedSessionHold = time.Second
 
 // releaseSession gives up the session a yielded slice kept.

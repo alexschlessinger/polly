@@ -52,6 +52,7 @@ type AcquireOptions struct {
 // durable messages currently stored for the session. InUse reports a live,
 // unexpired lease on the session, whether this process or another one holds
 // it; a picker can mark or refuse such sessions instead of waiting on Acquire.
+// A lease the store itself would hand to the next Acquire does not count.
 type SessionSummary struct {
 	// ID is the stable ViewTarget identity, independent of the session name.
 	ID string
