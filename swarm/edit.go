@@ -498,9 +498,10 @@ func (r *Runtime) editAhead(ctx context.Context, session sessions.CoordinationSe
 	return written, err
 }
 
-// editFamily is editOn while it holds the family's state. It returns the
+// editFamily is an edit while it holds the family's state. It returns the
 // pokes the edit owes and, when the store answered before writing the edit,
-// the wait for that write; editOn sees to both once the state is let go.
+// the wait for that write. Once the state is let go editAhead sends the
+// pokes, and editOn waits.
 func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (poke func(), written func(context.Context) error, err error) {
 	delta, ok := session.(sessions.CoordinationDeltaSession)
 	// A family that keeps changing under an edit falls back to the update
