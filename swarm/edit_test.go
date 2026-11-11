@@ -143,7 +143,7 @@ func TestEditFallsBackToUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.parent = hiddenDelta{r.parent}
+	setParent(r, hiddenDelta{r.parent})
 	if err := r.edit(ctx, func(s *State) error {
 		if s.editing != nil {
 			t.Error("fallback handed out a shared state")
@@ -456,7 +456,7 @@ func TestEditReturnsOnceItsChangeIsWritten(t *testing.T) {
 			watcher := &invocation{poke: make(chan struct{}, 1)}
 			r.watchTasks(watcher, []string{task.ID})
 			held := &heldWrite{CoordinationSession: r.parent, waiting: make(chan struct{}), release: make(chan struct{}), fail: fail}
-			r.parent = held
+			setParent(r, held)
 			r.mu.Lock()
 			notify := r.notify
 			r.mu.Unlock()

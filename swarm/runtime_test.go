@@ -95,6 +95,15 @@ func runtimeTestOn(t testing.TB, config sessions.StoreConfig, model llm.LLM, con
 	return r
 }
 
+// setParent has the runtime reach its family through parent from here on.
+// The runtime reads the session under its edit lock, also from the wake that
+// follows a member's last slice, so a test changes it there.
+func setParent(r *Runtime, parent sessions.CoordinationSession) {
+	r.editing.Lock()
+	defer r.editing.Unlock()
+	r.parent = parent
+}
+
 func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	t.Parallel()
 	var r *Runtime

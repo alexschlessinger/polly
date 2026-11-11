@@ -307,7 +307,7 @@ func TestPublishNotifiesReadersAfterCommit(t *testing.T) {
 			pending, resume := make(chan struct{}), make(chan struct{})
 			release := sync.OnceFunc(func() { close(resume) })
 			defer release()
-			r.parent = &refreshStoreFault{
+			setParent(r, &refreshStoreFault{
 				CoordinationSession: parent.(sessions.CoordinationSession),
 				match: func(before, after *State) bool {
 					return len(after.Publications) > len(before.Publications)
@@ -323,7 +323,7 @@ func TestPublishNotifiesReadersAfterCommit(t *testing.T) {
 						return ctx.Err()
 					}
 				},
-			}
+			})
 			r.mu.Lock()
 			notify := r.notify
 			r.mu.Unlock()

@@ -145,7 +145,7 @@ func TestRetryPauseCheckpointSurvivesMissingFinish(t *testing.T) {
 	}), 1, 1)
 	path := promoteRetryTest(t, r)
 	var failed atomic.Bool
-	r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: func(before, _ *State) bool {
+	setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: func(before, _ *State) bool {
 		for _, e := range before.Executions {
 			if e.RetryPause != nil {
 				return true
@@ -155,7 +155,7 @@ func TestRetryPauseCheckpointSurvivesMissingFinish(t *testing.T) {
 	}, before: func(*State) error {
 		failed.Store(true)
 		return errors.New("crashed before finish commit")
-	}}
+	}})
 	request := AgentRequest{Label: "Worker", Task: "inspect", ReadOnly: true, CallID: "saved-call"}
 	result, err := r.Agent(ctx, "", request)
 	if err == nil || !failed.Load() || errors.Is(err, subagent.ErrRetryPaused) {
@@ -210,14 +210,14 @@ func TestRetryPauseStopAfterCheckpointClearsRecoveryAuthority(t *testing.T) {
 			}
 		}}
 	}}
-	r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
+	setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
 		for _, m := range after.Members {
 			if m.Control == MemberControlStopped {
 				return true
 			}
 		}
 		return false
-	}, after: func() error { close(stopped); return nil }}
+	}, after: func() error { close(stopped); return nil }})
 	i, err := r.start(ctx, "", AgentRequest{Label: "Worker", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)

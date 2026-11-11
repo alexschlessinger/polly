@@ -254,7 +254,7 @@ func TestCloseJoinsTargetedReleaseReceipt(t *testing.T) {
 	}
 	admitParent(t, r)
 	gate := &releaseReceiptGate{CoordinationSession: r.parent, entered: make(chan struct{}), resume: make(chan struct{})}
-	r.parent = gate
+	setParent(r, gate)
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(gate.resume) }) }
 	defer unblock()

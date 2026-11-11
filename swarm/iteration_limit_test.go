@@ -413,7 +413,7 @@ func TestIterationResumeSerializesAssignmentAndStop(t *testing.T) {
 			}), 1, 2)
 			defer close(releaseModel)
 			gate := &grantCommitGate{CoordinationSession: r.parent, committed: make(chan struct{}), release: make(chan struct{})}
-			r.parent = gate
+			setParent(r, gate)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, MaxIterations: 1})
