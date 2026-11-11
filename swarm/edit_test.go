@@ -211,9 +211,8 @@ func TestStateMapsAreWrittenThroughPutAndDrop(t *testing.T) {
 	}
 }
 
-// An edit that is not being confirmed shares its maps with the shared state
-// and copies one when it first writes it, so the shared state never changes
-// under its readers.
+// An edit writes the family's own maps, and copies one that a reader may
+// still hold before it first writes it, so no reader's state changes.
 func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	t.Parallel()
 	shared := &State{
@@ -224,7 +223,7 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	if err := encodeState(raw, shared); err != nil {
 		t.Fatal(err)
 	}
-	work := shared.editable(raw.Records, false)
+	work := shared.editable(raw.Records, false, nil)
 	if reflect.ValueOf(work.Tasks).Pointer() != reflect.ValueOf(shared.Tasks).Pointer() {
 		t.Fatal("an edit copied a map before writing it")
 	}
@@ -244,5 +243,195 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	tasks := changed["task"]
 	if len(changed) != 1 || len(tasks) != 3 || tasks["gone"] != nil || !strings.Contains(string(tasks["edited"]), `"done"`) || tasks["added"] == nil {
 		t.Fatalf("changes: %s", changed)
+	}
+}
+
+// A map no reader holds is written where it is, and a failed edit puts every
+// record back.
+func TestEditWritesInPlaceAndTakesBackAFailure(t *testing.T) {
+	t.Parallel()
+	family := &State{
+		Tasks:    map[string]*Task{"kept": {ID: "kept", Status: "pending"}, "gone": {ID: "gone"}, "edited": {ID: "edited", Status: "pending"}},
+		Messages: map[string]*Mail{},
+	}
+	raw := &sessions.CoordinationState{Records: map[string]map[string]json.RawMessage{}}
+	if err := encodeState(raw, family); err != nil {
+		t.Fatal(err)
+	}
+	edited, gone := family.Tasks["edited"], family.Tasks["gone"]
+	work := family.editable(raw.Records, false, map[string]bool{"task": true})
+	work.ownTask("edited").Status = "done"
+	drop(work, "task", &work.Tasks, "gone")
+	put(work, "task", &work.Tasks, "added", &Task{ID: "added"})
+	put(work, "mail", &work.Messages, "mail", &Mail{ID: "mail"})
+	if reflect.ValueOf(work.Tasks).Pointer() != reflect.ValueOf(family.Tasks).Pointer() {
+		t.Fatal("an edit copied a map no reader holds")
+	}
+	if reflect.ValueOf(work.Messages).Pointer() == reflect.ValueOf(family.Messages).Pointer() {
+		t.Fatal("an edit wrote a map a reader may hold")
+	}
+	if family.Tasks["edited"].Status != "done" || family.Tasks["gone"] != nil || family.Tasks["added"] == nil {
+		t.Fatalf("the edit did not write the family's tasks: %+v", family.Tasks)
+	}
+	work.revert()
+	if family.Tasks["edited"] != edited || edited.Status != "pending" || family.Tasks["gone"] != gone || family.Tasks["added"] != nil || len(family.Tasks) != 3 {
+		t.Fatalf("a failed edit left its changes: %+v", family.Tasks)
+	}
+	if len(work.Messages) != 0 || len(family.Messages) != 0 {
+		t.Fatalf("a failed edit left its mail: %+v", work.Messages)
+	}
+}
+
+// A failed edit through the runtime leaves the family as stored, and the next
+// edit still works from it.
+func TestFailedEditLeavesTheFamilyAsStored(t *testing.T) {
+	t.Parallel()
+	r := runtimeTest(t, idleModel(), 1, 1)
+	ctx := context.Background()
+	task, err := r.CreateTask(ctx, "task", "criteria", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A first edit takes the maps for the family, so the failing one writes
+	// them in place.
+	if err := r.edit(ctx, func(s *State) error { s.ownTask(task.ID).Feedback = "first"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("refused")
+	if err := r.edit(ctx, func(s *State) error {
+		s.ownTask(task.ID).Description = "changed"
+		put(s, "task", &s.Tasks, "added", &Task{ID: "added"})
+		put(s, "mail", &s.Messages, "mail", &Mail{ID: "mail", To: "nobody"})
+		return failure
+	}); !errors.Is(err, failure) {
+		t.Fatalf("edit: %v", err)
+	}
+	if s := sameAsStored(t, r); s.Tasks[task.ID].Description != "task" || s.Tasks["added"] != nil || s.Messages["mail"] != nil {
+		t.Fatalf("a failed edit changed the family: %+v", s.Tasks)
+	}
+	if err := r.edit(ctx, func(s *State) error { s.ownTask(task.ID).Description = "later"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s := sameAsStored(t, r); s.Tasks[task.ID].Description != "later" || s.Tasks[task.ID].Feedback != "first" {
+		t.Fatalf("an edit after a failed one: %+v", s.Tasks[task.ID])
+	}
+}
+
+// A state a reader keeps does not change under later edits, and readers share
+// one until an edit changes something.
+func TestKeptStateDoesNotChangeUnderLaterEdits(t *testing.T) {
+	t.Parallel()
+	r := runtimeTest(t, idleModel(), 1, 1)
+	ctx := context.Background()
+	task, err := r.CreateTask(ctx, "task", "criteria", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := r.State(ctx); again != kept {
+		t.Fatal("two reads of an unchanged family did not share a state")
+	}
+	for round := range 3 {
+		if _, err := r.CreateTask(ctx, fmt.Sprintf("more %d", round), "criteria", nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.edit(ctx, func(s *State) error { s.ownTask(task.ID).Description = fmt.Sprintf("round %d", round); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(kept.Tasks) != 1 || kept.Tasks[task.ID].Description != "task" {
+		t.Fatalf("a kept state changed under later edits: %+v", kept.Tasks)
+	}
+	if s := sameAsStored(t, r); len(s.Tasks) != 4 || s.Tasks[task.ID].Description != "round 2" || s == kept {
+		t.Fatalf("a read after edits: %+v", s.Tasks)
+	}
+}
+
+// look sees the family as the last edit left it, and finds a member's mail
+// through the index the edits keep.
+func TestLookFindsMailThroughTheIndex(t *testing.T) {
+	t.Parallel()
+	r := runtimeTest(t, idleModel(), 1, 1)
+	ctx := context.Background()
+	for _, text := range []string{"one", "two"} {
+		if _, err := r.Send(ctx, r.ID, r.ID, "info", "", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var first string
+	if err := r.look(ctx, func(s *State) {
+		if s.mailTo == nil {
+			t.Error("the family's state has no mail index")
+		}
+		if mail := inbox(s, r.ID, true); len(mail) != 2 || len(inbox(s, "nobody", true)) != 0 {
+			t.Errorf("inbox through the index: %d", len(mail))
+		} else {
+			first = mail[0].ID
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.edit(ctx, func(s *State) error {
+		drop(s, "mail", &s.Messages, first)
+		// The edit's own view already leaves the dropped mail out.
+		if len(inbox(s, r.ID, true)) != 1 {
+			t.Error("an edit did not see its own change to the mail")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.look(ctx, func(s *State) {
+		if mail := inbox(s, r.ID, true); len(mail) != 1 || mail[0].ID == first {
+			t.Errorf("inbox after a drop: %d", len(mail))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sameAsStored(t, r)
+}
+
+// A task change pokes the parked members whose wake depends on that task, and
+// no others.
+func TestTaskChangePokesOnlyItsWatchers(t *testing.T) {
+	t.Parallel()
+	r := runtimeTest(t, idleModel(), 1, 1)
+	owner, other := &invocation{poke: make(chan struct{}, 1)}, &invocation{poke: make(chan struct{}, 1)}
+	s := &State{
+		Members: map[string]*Member{"owner": {ID: "owner", Task: "task"}, "other": {ID: "other", Task: "elsewhere"}},
+		Tasks:   map[string]*Task{"task": {ID: "task", Dependencies: []string{"dependency"}}},
+	}
+	r.watchTasks(owner, waitTasks(s, "owner"))
+	r.watchTasks(other, waitTasks(s, "other"))
+	poked := func(i *invocation) bool {
+		select {
+		case <-i.poke:
+			return true
+		default:
+			return false
+		}
+	}
+	for _, id := range []string{"task", "dependency"} {
+		r.pokesFor(map[string]map[string]struct{}{"task": {id: {}}}, s, nil)()
+		if !poked(owner) || poked(other) {
+			t.Fatalf("a change to %s poked the wrong members", id)
+		}
+	}
+	if poke := r.pokesFor(map[string]map[string]struct{}{"task": {"unwatched": {}}}, s, nil); poke != nil {
+		poke()
+	}
+	if poked(owner) || poked(other) {
+		t.Fatal("a task nobody waits on poked a member")
+	}
+	r.watchTasks(owner, nil)
+	r.watchTasks(other, nil)
+	r.mu.Lock()
+	left := len(r.watchers)
+	r.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d tasks still watched after their members woke", left)
 	}
 }

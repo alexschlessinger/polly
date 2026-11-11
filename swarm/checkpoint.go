@@ -26,11 +26,8 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			}
 		}
 	}
-	cb.AdmitInput = func(ctx context.Context) ([]messages.ChatMessage, error) {
-		s, raw, err := r.stateThrough(ctx, session)
-		if err != nil {
-			return nil, err
-		}
+	// admit builds the input a boundary admits from the family's state.
+	admit := func(s *State, raw *sessions.CoordinationState) []messages.ChatMessage {
 		pending := inbox(s, raw.ActorID, true)
 		// A member also reads what its run's teammates published since its
 		// last boundary, and the parent the host facts its workers published.
@@ -41,7 +38,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			publications = pendingPublications(s, raw.ActorID, e.Run)
 		}
 		if len(pending) == 0 && len(publications) == 0 {
-			return nil, nil
+			return nil
 		}
 		var text strings.Builder
 		ids := make([]string, 0, len(pending))
@@ -72,7 +69,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			text.WriteString(body)
 		}
 		if len(ids) == 0 && len(published) == 0 {
-			return nil, nil
+			return nil
 		}
 		text.WriteString("</peer_messages>")
 		metadata := map[string]any{messages.MetadataKeyAgentSynthetic: true}
@@ -82,7 +79,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		if len(published) > 0 {
 			metadata[messages.MetadataKeySwarmPublications] = published
 		}
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: metadata}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: metadata}}
+	}
+	cb.AdmitInput = func(ctx context.Context) (input []messages.ChatMessage, err error) {
+		err = r.lookThrough(ctx, session, func(s *State, raw *sessions.CoordinationState) { input = admit(s, raw) })
+		return input, err
 	}
 	cb.Checkpoint = func(ctx context.Context, checkpoint llm.AgentCheckpoint) error {
 		if len(checkpoint.Generated) < persisted {
@@ -245,12 +246,14 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		}
 		// A batch may start only while this execution still owns its member.
 		// JournalToolBatch records the intent itself once the calls are known.
-		s, raw, err := r.stateThrough(ctx, session)
-		if err != nil {
+		fenced := false
+		if err := r.lookThrough(ctx, session, func(s *State, raw *sessions.CoordinationState) {
+			e := s.Executions[execution]
+			fenced = e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running"
+		}); err != nil {
 			return err
 		}
-		e := s.Executions[execution]
-		if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running" {
+		if fenced {
 			return errors.New("execution intent was fenced")
 		}
 		return nil

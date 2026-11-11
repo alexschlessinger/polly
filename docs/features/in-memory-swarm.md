@@ -143,13 +143,19 @@ execution is bounded by cores through the tool limiter, not by agent count.
    when a reader edits one, and a running process checks about once a second
    and returns to the stored records with a warning.
 3. **Done.** An update pays for the records it touches. `edit` hands its
-   callback the shared state; the callback takes each record it changes
+   callback the family's own state; the callback takes each record it changes
    through an `own` method, which gives it a private copy, and adds and
-   deletes records with `put` and `drop`. Those calls copy a map the first
-   time the edit writes it and note the record, so the edit ends by encoding
-   the noted records alone. The store writes them (`UpdateCoordinationFrom`)
-   and the shared state moves forward by the same set. A runtime's edits take
-   turns, so they never find each other's changes unexpected. Nothing else
+   deletes records with `put` and `drop`. Those calls write the family's maps
+   where they are and note what each record was, so the edit ends by encoding
+   the noted records alone and a failed edit puts them back. The store writes
+   them (`UpdateCoordinationFrom`). A runtime's edits take turns, and nothing
+   reads the family's state during one. A reader has two ways in. `State`
+   returns a state to keep: it shares the family's maps, so the next edit
+   copies each map it writes before writing it. `look` runs a function on the
+   family's own state between edits and costs later edits nothing; the reads
+   a member makes on every model call go through it. The family's state also
+   indexes mail by recipient, which the edits keep current, so finding a
+   member's mail does not look at everyone's. Nothing else
    may write a `State` map: a test reads the package source for such writes,
    and every edit in a test also compares the whole family and fails on a
    change it was not told about. A running process makes that comparison
@@ -160,9 +166,11 @@ execution is bounded by cores through the tool limiter, not by agent count.
    family, and as what `edit` falls back to against a store that cannot write
    a set of changes.
 4. **Done for members.** An edit pokes the members its records concern: a
-   mail's recipient, a member whose own record changed, and every active
-   member when a task or publication changed. A parked member rechecks its
-   wake conditions only then. The parent's waits still hear every change.
+   mail's recipient, a member whose own record changed, the parked members
+   whose task or one of its dependencies changed, and every active member
+   when a publication changed. A parked member rechecks its wake conditions
+   only then. The pokes are sent once the edit has let go of the family's
+   state. The parent's waits still hear every change.
 5. **Writer done; the interface is unchanged.** The SQLite store answers an
    `UpdateCoordinationFrom` from memory: it checks the session's lease by its
    expiry, applies the changed records to the family it holds, queues the
@@ -189,23 +197,33 @@ execution is bounded by cores through the tool limiter, not by agent count.
 
 | Store | Agents | Model calls/s | Spawn per agent |
 |---|---|---|---|
-| memory | 100 | 1803 | 1.8 ms |
-| memory | 1000 | 1344 | 1.5 ms |
-| memory | 5000 | 860 | 2.0 ms |
-| disk | 100 | 1182 | 2.3 ms |
-| disk | 1000 | 910 | 2.7 ms |
-| disk | 5000 | 573 | 3.7 ms |
+| memory | 100 | 2442 | 2.1 ms |
+| memory | 1000 | 2021 | 1.4 ms |
+| memory | 5000 | 1332 | 2.1 ms |
+| disk | 100 | 1878 | 2.4 ms |
+| disk | 1000 | 1465 | 2.7 ms |
+| disk | 5000 | 907 | 3.4 ms |
 
-Before the writer, with one transaction per edit, the same runs gave 493
-calls a second at 5000 agents in memory and about 360 on disk, where most
-agents then failed: their final edits queued for longer than the five seconds
-each allows itself. With a flush to disk on every commit
+With one transaction per edit and a flush to disk on every commit
 (`synchronous=FULL`), 100 agents on disk managed 44.
 
-Each model call costs about six edits and a runtime's edits are one at a
-time, so edits per second is the ceiling. What still grows with the family is
-that every edit copies each map it writes; removing that needs maps that
-share structure between versions, or smaller families.
+The store's one SQLite connection sets the ceiling: a model call puts
+roughly half a millisecond of work on it, so at the target of 500 calls a
+second it is busy about a quarter of the time. Most of that is the queued
+writes, about five updates a call at some 50 µs each, a quarter of it
+rereading and rewriting the session's settings to record the transcript's
+identity. The rest is what a slice does directly. A slice reads the member's
+whole transcript, and it acquires and releases the member's session unless
+it follows a yield within a second: a parked member keeps its session that
+long, which is shorter than a lease heartbeat, so a prompt wake reuses it
+and a long wait costs no renewal. Acquiring a parked member's session from
+elsewhere waits out that second. With 5000 agents in step a member is parked
+for longer than that, which is why the hold helps the smaller runs only.
+
+What still grows with the family: a first slice lists the working members
+for its prompt, the workspace release pass compares every member with every
+task, and a kept state (`State`) makes the next edit copy the maps it
+writes.
 
 Every agent, read-only or not, claims a scratch directory, and those share
 the worktree cap (512 by default), so a larger swarm has to raise

@@ -249,6 +249,74 @@ type State struct {
 
 	// editing is set on the state an edit hands its callback.
 	editing *editBase
+	// mailTo names each member's mail, on the state a Runtime's edits keep
+	// current; any other state finds mail by looking at all of it.
+	mailTo map[string]map[string]struct{}
+}
+
+func indexMail(s *State) map[string]map[string]struct{} {
+	index := map[string]map[string]struct{}{}
+	for id, mail := range s.Messages {
+		if index[mail.To] == nil {
+			index[mail.To] = map[string]struct{}{}
+		}
+		index[mail.To][id] = struct{}{}
+	}
+	return index
+}
+
+// mailFor returns the mail addressed to a member, in no order.
+func (s *State) mailFor(to string) []*Mail {
+	var out []*Mail
+	if s.mailTo == nil {
+		for _, mail := range s.Messages {
+			if mail.To == to {
+				out = append(out, mail)
+			}
+		}
+		return out
+	}
+	// The index is as the edit in progress found it: the mail that edit
+	// touched is looked at directly.
+	var touched map[string]struct{}
+	if s.editing != nil {
+		touched = s.editing.touched["mail"]
+	}
+	for id := range s.mailTo[to] {
+		if _, ok := touched[id]; ok {
+			continue
+		}
+		if mail := s.Messages[id]; mail != nil {
+			out = append(out, mail)
+		}
+	}
+	for id := range touched {
+		if mail := s.Messages[id]; mail != nil && mail.To == to {
+			out = append(out, mail)
+		}
+	}
+	return out
+}
+
+// reindexMail brings the index up to date with the mail an edit touched.
+func (s *State) reindexMail() {
+	if s.mailTo == nil || s.editing == nil {
+		return
+	}
+	for id := range s.editing.touched["mail"] {
+		if old, _ := s.editing.prior["mail"][id].(*Mail); old != nil {
+			delete(s.mailTo[old.To], id)
+			if len(s.mailTo[old.To]) == 0 {
+				delete(s.mailTo, old.To)
+			}
+		}
+		if mail := s.Messages[id]; mail != nil {
+			if s.mailTo[mail.To] == nil {
+				s.mailTo[mail.To] = map[string]struct{}{}
+			}
+			s.mailTo[mail.To][id] = struct{}{}
+		}
+	}
 }
 
 func decodeState(raw *sessions.CoordinationState) (*State, error) {
@@ -514,10 +582,37 @@ func compactRoster(s *State) string {
 	return b.String()
 }
 
-// State is the display's read, and parked members'. Successive calls share
-// one decode until a record changes, and a changed family shares every record
-// that did not, so treat the result as read-only.
+// State is the family's state for a caller that keeps it, such as a display.
+// Successive calls share one state until a record changes, and a changed
+// family shares every record that did not, so treat the result as read-only.
 func (r *Runtime) State(ctx context.Context) (*State, error) {
+	r.editing.RLock()
+	defer r.editing.RUnlock()
+	s, err := r.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.view.lend(s), nil
+}
+
+// look runs fn on the family's state while no edit can change it. It costs
+// later edits nothing, where State makes the next one copy the maps it
+// writes. fn must not keep s or a map of it, and must not read or edit the
+// family again; the records it finds are its to keep, read-only.
+func (r *Runtime) look(ctx context.Context, fn func(s *State)) error {
+	r.editing.RLock()
+	defer r.editing.RUnlock()
+	s, err := r.current(ctx)
+	if err != nil {
+		return err
+	}
+	fn(s)
+	return nil
+}
+
+// current returns the family's own state, which an edit changes in place: the
+// caller holds r.editing, and lends the state before letting go of it.
+func (r *Runtime) current(ctx context.Context) (*State, error) {
 	parent := r.parent
 	if revisions, ok := parent.(sessions.CoordinationRevisionSession); ok {
 		revision, err := revisions.CoordinationRevision(ctx)
@@ -535,26 +630,30 @@ func (r *Runtime) State(ctx context.Context) (*State, error) {
 	return r.view.decode(raw)
 }
 
-// stateThrough is State for a caller holding any session of the family: the
-// session's lease is checked, and the shared state answers when the store can
-// say so without handing over the records. raw carries the session's identity
-// and no Records then. Treat the state as read-only.
-func (r *Runtime) stateThrough(ctx context.Context, session sessions.CoordinationSession) (*State, *sessions.CoordinationState, error) {
+// lookThrough is look for a caller holding any session of the family: the
+// session's lease is checked, and the family's state answers when the store
+// can say so without handing over the records. raw carries the session's
+// identity and no Records then.
+func (r *Runtime) lookThrough(ctx context.Context, session sessions.CoordinationSession, fn func(s *State, raw *sessions.CoordinationState)) error {
 	revisions, ok := session.(sessions.CoordinationRevisionSession)
 	identity, named := session.(sessions.ViewIdentity)
 	if _, shared := r.parent.(sessions.CoordinationRevisionSession); ok && named && shared {
 		if _, err := revisions.CoordinationRevision(ctx); err != nil {
-			return nil, nil, err
+			return err
 		}
-		s, err := r.State(ctx)
-		return s, &sessions.CoordinationState{ActorID: identity.ViewID(), ParentID: r.ID}, err
+		raw := &sessions.CoordinationState{ActorID: identity.ViewID(), ParentID: r.ID}
+		return r.look(ctx, func(s *State) { fn(s, raw) })
 	}
 	raw, err := session.ReadCoordination(ctx)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	s, err := decodeState(raw)
-	return s, raw, err
+	if err != nil {
+		return err
+	}
+	fn(s, raw)
+	return nil
 }
 
 // StateCache hands back the previous decode whenever a fresh read finds every
@@ -565,8 +664,14 @@ type StateCache struct {
 	mu       sync.Mutex
 	raw      map[string]map[string]json.RawMessage
 	revision uint64
-	state    *State
-	checked  time.Time
+	// state is the family's own: a Runtime's edits change its maps in place.
+	// lent is the state readers were handed, which shares those maps, and
+	// cloned names the kinds whose map has been copied since, so that no
+	// reader holds it.
+	state   *State
+	lent    *State
+	cloned  map[string]bool
+	checked time.Time
 	// confirmed is when an edit last checked the records it left alone.
 	confirmed time.Time
 }
@@ -601,7 +706,8 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.raw, c.revision, c.state = raw.Records, raw.Revision, s
+	s.mailTo = indexMail(s)
+	c.raw, c.revision, c.state, c.lent, c.cloned = raw.Records, raw.Revision, s, nil, nil
 	return s, nil
 }
 
@@ -631,6 +737,9 @@ func (c *StateCache) check() {
 		c.checked = time.Now()
 	}
 	fresh, err := decodeState(&sessions.CoordinationState{Records: c.raw})
+	if err == nil {
+		fresh.mailTo = indexMail(fresh)
+	}
 	if err != nil || reflect.DeepEqual(fresh, c.state) {
 		return
 	}
@@ -638,7 +747,7 @@ func (c *StateCache) check() {
 		panic("swarm: a State returned by a read was modified; change records inside update: " + differingRecords(fresh, c.state))
 	}
 	slog.Warn("swarm_shared_state_modified", "records", differingRecords(fresh, c.state))
-	c.state = fresh
+	c.state, c.lent, c.cloned = fresh, nil, nil
 }
 
 // differingRecords names the records two states disagree on, for check.
@@ -646,7 +755,7 @@ func differingRecords(a, b *State) string {
 	var out []string
 	left, right := reflect.ValueOf(a).Elem(), reflect.ValueOf(b).Elem()
 	for i := range left.NumField() {
-		if left.Field(i).Kind() != reflect.Map {
+		if left.Field(i).Kind() != reflect.Map || !left.Type().Field(i).IsExported() {
 			continue
 		}
 		name := left.Type().Field(i).Name
@@ -663,6 +772,9 @@ func differingRecords(a, b *State) string {
 		}
 	}
 	sort.Strings(out)
+	if len(out) == 0 {
+		return "none; the index of mail by recipient is out of date"
+	}
 	return strings.Join(out, ", ")
 }
 
@@ -1015,8 +1127,8 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 }
 func inbox(s *State, to string, pending bool) []*Mail {
 	out := []*Mail{}
-	for _, m := range s.Messages {
-		if m.To == to && (!pending || !m.Delivered) {
+	for _, m := range s.mailFor(to) {
+		if !pending || !m.Delivered {
 			if f := s.Followups[m.ID]; pending && f != nil && f.Refresh && f.Phase != "launched" {
 				continue // preparation is not an assignment or an input intent
 			}
@@ -1113,6 +1225,26 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // user's Git configuration stay readable; filesystem isolation is not
 // source-code secrecy.
 func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContext) (tools.ToolScope, error) {
+	return r.scopeOf(ctx, c, otherRoots(s, c))
+}
+
+// otherRoots lists the root of every context that does not share c's.
+func otherRoots(s *State, c *ExecutionContext) []string {
+	if c == nil {
+		return nil
+	}
+	var roots []string
+	for _, other := range s.Contexts {
+		if other.Root != c.Root {
+			roots = append(roots, other.Root)
+		}
+	}
+	return roots
+}
+
+// scopeOf is contextScope for a caller that already holds the other
+// contexts' roots.
+func (r *Runtime) scopeOf(ctx context.Context, c *ExecutionContext, others []string) (tools.ToolScope, error) {
 	if c == nil || c.Release != "" {
 		return tools.ToolScope{}, fail("context_denied", "execution context is releasing")
 	}
@@ -1132,11 +1264,7 @@ func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContex
 	// the private home directory and hides them all when the runtime directory
 	// lives elsewhere; the member's own root is granted back inside it.
 	denied = append(denied, dir)
-	for _, other := range s.Contexts {
-		if other.Root != c.Root {
-			denied = append(denied, other.Root)
-		}
-	}
+	denied = append(denied, others...)
 	if c.Checkout != nil {
 		denied = append(denied, r.config.Root)
 	}
