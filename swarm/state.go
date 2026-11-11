@@ -161,6 +161,14 @@ type Publication struct {
 // Iterations and Usage count the model calls that have been answered. They
 // trail by at most the call whose tool batch is running, and a request in
 // flight is not yet counted.
+//
+// What the record says of the moment is volatile: that its member is queued
+// or running, and the count of a call whose tools only read. The runtime's
+// own readers see those at once, and the store writes them with the record's
+// next change. A stored record therefore says what the member was doing when
+// it last saved something else, and counts the calls up to then; the member's
+// transcript is saved with the counts at every boundary, and Uncounted marks
+// a record a restart found live, whose next slice takes them from there.
 type Execution struct {
 	Workspace  string `json:"workspace,omitempty"`
 	Base       string `json:"base,omitempty"`
@@ -170,6 +178,7 @@ type Execution struct {
 	InputSaved bool                   `json:"inputSaved"`
 	Intent     []messages.ChatMessage `json:"intent,omitempty"`
 	IntentAt   int64                  `json:"intentAt,omitempty"`
+	Uncounted  bool                   `json:"uncounted,omitempty"`
 	Usage      Usage                  `json:"usage"`
 	ID         string                 `json:"id"`
 	Run        string                 `json:"run"`

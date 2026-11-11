@@ -117,6 +117,12 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
+			// The store writes behind the member, so this connection waits
+			// its turn like any other process's would.
+			db.SetMaxOpenConns(1)
+			if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 10000"); err != nil {
+				t.Fatal(err)
+			}
 			// Simulate another process taking over an expired lease, without
 			// sleeping for the production 20-second expiry and heartbeat.
 			if _, err := db.ExecContext(ctx, "UPDATE session_leases SET owner_token=zeroblob(16) WHERE session_id=(SELECT id FROM sessions WHERE name=?)", name); err != nil {

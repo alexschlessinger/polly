@@ -159,6 +159,16 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 						if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
 							e.Status = "waiting"
 						}
+						// A request after a batch that only read changes the
+						// record's counts and nothing else. They are for whoever
+						// watches: the transcript's boundary carries them too, so
+						// the record need not be written for them.
+						if !checkpoint.Final && structured == nil && pause == nil {
+							volatile(raw, "execution", execution)
+						}
+					}
+					if raw.Transcript != nil {
+						raw.Transcript.Counts = countsNote(e)
 					}
 				}
 				if execution == "" {

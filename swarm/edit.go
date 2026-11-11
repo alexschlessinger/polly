@@ -458,6 +458,44 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 	return err
 }
 
+// editLive is edit for a change to one execution's record that says what its
+// member is doing at the moment: queued for a slot, or running. Such a change
+// is for whoever watches this runtime. It is volatile: the store keeps it in
+// memory and writes it with the record's next change, so the stored record
+// says what the member was doing when it last saved something. The record
+// gets status unless it has it already or allowed, when given, says no.
+func (r *Runtime) editLive(ctx context.Context, execution, status string, allowed func(*Execution) bool) error {
+	if err := r.prepare(ctx); err != nil {
+		return err
+	}
+	err := r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
+		e := s.Executions[execution]
+		if e == nil || e.Status == status || allowed != nil && !allowed(e) {
+			return nil
+		}
+		s.ownExecution(execution).Status = status
+		volatile(raw, "execution", execution)
+		return nil
+	})
+	if err == nil {
+		r.changed()
+	}
+	return err
+}
+
+// volatile marks the change an edit makes to record id of kind as one the
+// store need not write: see sessions.CoordinationState.Volatile. The edit
+// must change nothing in the record that has to outlive the process.
+func volatile(raw *sessions.CoordinationState, kind, id string) {
+	if raw.Volatile == nil {
+		raw.Volatile = map[string]map[string]bool{}
+	}
+	if raw.Volatile[kind] == nil {
+		raw.Volatile[kind] = map[string]bool{}
+	}
+	raw.Volatile[kind][id] = true
+}
+
 // editOn is edit through any session of the family, for a callback that also
 // sets what the transaction appends, pins or fences on raw. raw carries no
 // Records. The callback runs at most once.

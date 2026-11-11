@@ -16,7 +16,7 @@ import (
 // turnWrite is one update a member made through its own session.
 type turnWrite struct {
 	appended  int
-	execution bool // the update wrote the member's execution record
+	execution bool // the update changed the member's execution record for keeps
 	waited    bool // the member waited for the update to be safe from a crash
 }
 
@@ -66,7 +66,11 @@ func (s *turnWriteSession) UpdateCoordinationFrom(ctx context.Context, known uin
 	store, written := s.store, state.Written
 	store.mu.Lock()
 	index, earlier := len(store.writes), store.waits
-	store.writes = append(store.writes, turnWrite{appended: len(state.Append), execution: len(state.Changes["execution"]) > 0})
+	execution := false
+	for id := range state.Changes["execution"] {
+		execution = execution || !state.Volatile["execution"][id]
+	}
+	store.writes = append(store.writes, turnWrite{appended: len(state.Append), execution: execution})
 	store.waits = append(store.waits, written)
 	store.mu.Unlock()
 	if written == nil {
@@ -171,12 +175,14 @@ func TestRequestAfterJournaledBatchLeavesTheExecutionRecordAlone(t *testing.T) {
 
 // A batch whose tools all only read has no effect a crash could leave
 // uncertain, so the member neither journals it nor waits before it runs. The
-// request that follows carries the count and usage instead, unwaited, and the
-// member waits only for its assignment and for the end of its slice.
+// request that follows appends to the transcript, whose boundary carries the
+// count and usage, and changes the record only for whoever is watching: the
+// record is written for keeps with the assignment and at the end of the
+// slice, which are also the only writes the member waits for.
 func TestBatchThatOnlyReadsIsNotJournaled(t *testing.T) {
 	t.Parallel()
 	wantTurnWrites(t, memberTurnWrites(t, "list_agents", `{}`),
-		[]turnWrite{{2, true, true}, {0, false, false}, {2, true, false}, {2, true, false}, {1, true, true}})
+		[]turnWrite{{2, true, true}, {0, false, false}, {2, false, false}, {2, false, false}, {1, true, true}})
 }
 
 // A journal is the batch a slice was running. One the transcript has moved

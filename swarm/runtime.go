@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -413,6 +414,9 @@ func (r *Runtime) prepare(ctx context.Context) error {
 				e.Generation++
 				e.Status = "paused"
 				e.Error = "process interrupted; explicit resume required"
+				// The process that ran it may have ended with calls counted
+				// only in its memory.
+				e.Uncounted = true
 			}
 		}
 		for id, f := range s.Followups {
@@ -1437,11 +1441,8 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 		}
 		// A wake re-queues the same execution: the record says queued while
 		// the invocation waits for a slot and running once the slice starts.
-		if err := r.edit(ctx, func(s *State) error {
-			if e := s.Executions[i.id]; e != nil && e.Generation == i.generation && e.Status == "waiting" {
-				s.ownExecution(i.id).Status = "queued"
-			}
-			return nil
+		if err := r.editLive(ctx, i.id, "queued", func(e *Execution) bool {
+			return e.Generation == i.generation && e.Status == "waiting"
 		}); err != nil {
 			i.err = err
 			r.finish(i)
@@ -1656,10 +1657,12 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		return AgentResult{}, err
 	}
 	cb := &local
-	if err = r.edit(ctx, func(s *State) error {
-		s.ownExecution(i.id).Status = "running"
-		return nil
-	}); err != nil {
+	if e.Uncounted {
+		if e, err = r.recount(ctx, session, e); err != nil {
+			return AgentResult{}, err
+		}
+	}
+	if err = r.editLive(ctx, i.id, "running", nil); err != nil {
 		return AgentResult{}, err
 	}
 	history, err := session.GetHistory(ctx)
@@ -1723,7 +1726,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 					raw.Append = append(raw.Append, initial...)
 				}
 				raw.Append = append(raw.Append, input)
-				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation}
+				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation, Counts: countsNote(current)}
 				current.InputSaved = true
 				return nil
 			})
@@ -1993,6 +1996,54 @@ func chainToolContext(prior func(context.Context, messages.ChatMessageToolCall, 
 		return next(ctx)
 	}
 }
+
+// executionCounts is what an execution notes of itself at each boundary of
+// its member's transcript it saves: the model calls answered so far and their
+// usage. The record is not written for a call whose tools only read, so after
+// a crash this note is what still counts it.
+type executionCounts struct {
+	Iterations int   `json:"iterations"`
+	Usage      Usage `json:"usage"`
+}
+
+func countsNote(e *Execution) string {
+	data, err := json.Marshal(executionCounts{e.Iterations, e.Usage})
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// recount brings e's record up to the counts its member's transcript was last
+// saved with, for an execution a restart found live, and returns the record
+// as it then stands.
+func (r *Runtime) recount(ctx context.Context, session coordinatedSession, e *Execution) (*Execution, error) {
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var saved executionCounts
+	if note := metadata.Transcript; note != nil && note.Execution == e.ID && note.Counts != "" {
+		if err := json.Unmarshal([]byte(note.Counts), &saved); err != nil {
+			return nil, fmt.Errorf("decode saved execution counts: %w", err)
+		}
+	}
+	var counted Execution
+	err = r.editOn(ctx, session, func(_ *sessions.CoordinationState, s *State) error {
+		current := s.ownExecution(e.ID)
+		if current == nil || current.Generation != e.Generation {
+			return errors.New("execution changed before its slice began")
+		}
+		if saved.Iterations > current.Iterations {
+			current.Iterations, current.Usage = saved.Iterations, saved.Usage
+		}
+		current.Uncounted = false
+		counted = *current
+		return nil
+	})
+	return &counted, err
+}
+
 func usageOf(msgs []messages.ChatMessage) Usage {
 	u := Usage{}
 	add := func(target **int, m messages.ChatMessage, key string, n int) {
