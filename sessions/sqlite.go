@@ -80,6 +80,8 @@ type SQLiteStore struct {
 	closed atomic.Bool
 	mu     sync.Mutex
 	open   map[*sqliteSession]struct{}
+
+	coordination *coordinationCache
 }
 
 type sqliteSession struct {
@@ -256,6 +258,8 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
+
+		coordination: newCoordinationCache(),
 	}
 	if store.defaults == nil {
 		store.defaults = &Metadata{}
