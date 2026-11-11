@@ -1995,19 +1995,20 @@ func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error
 }
 
 func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage, error) {
-	var history []messages.ChatMessage
+	var payloads [][]byte
 	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
 		next, err := nextSequence(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
-		history, err = readHistory(ctx, conn, s.id, next)
+		payloads, err = readHistoryPayloads(ctx, conn, s.id, next)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return history, nil
+	// Decoding is the larger part of the cost and needs no connection.
+	return decodeHistory(payloads)
 }
 
 func nextSequence(ctx context.Context, conn rowQuerier, id []byte) (int64, error) {
