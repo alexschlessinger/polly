@@ -1504,6 +1504,9 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 				err = sql.ErrNoRows
 			}
 		}
+		if err == nil && options.create {
+			return fmt.Errorf("%w: %s", ErrSessionExists, name)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			if options.ExistingOnly || options.ExpectedID != "" {
 				return ErrSessionNotFound
@@ -1554,6 +1557,9 @@ func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name st
 		return nil, err
 	}
 	metadata := cloneMetadata(s.defaults)
+	if err := configureNew(metadata, options.configure); err != nil {
+		return nil, err
+	}
 	metadata.Name = name
 	metadata.Created = now
 	metadata.LastUsed = now
@@ -2389,6 +2395,11 @@ func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byt
 }
 
 func (s *sqliteSession) GetName(ctx context.Context) (string, error) {
+	// Only this handle renames the session while its lease stands, so the
+	// name it knows is the stored one.
+	if name := s.name.Load(); name != nil && s.leaseFresh() {
+		return *name, s.alive(ctx)
+	}
 	snap, err := s.readSnapshot(ctx)
 	return snap.name, err
 }
@@ -2398,6 +2409,8 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		return err
 	}
 	now := time.Now().UTC()
+	// Unknown until the rename is known to have landed.
+	s.name.Store(nil)
 	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
 		snap, metadata, err := loadMetadata(ctx, conn, s.id)
 		if err != nil {

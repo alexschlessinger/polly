@@ -22,7 +22,9 @@ import (
 // not need to construct a swarm. Updates are fenced by the caller's lease.
 // Managed execution requires this capability on both parent and child handles.
 // UpdateCoordination invokes its callback at most once. Records, transcript
-// appends, member retention and artifact pins commit together or not at all.
+// appends, member retention and artifact pins commit together or not at all,
+// except that a store answering from memory may register members ahead of the
+// rest: a member can then be retained by a family that holds no record of it.
 // An error may represent an uncertain commit; callers must inspect durable
 // receipts rather than blindly retrying the callback or its external effects.
 type CoordinationSession interface {
@@ -466,9 +468,10 @@ func (s *sqliteSession) writeRest(ctx context.Context, conn *sql.Conn, parent []
 // callback sees what a transaction would have read. Its changes go to the
 // family in memory and to the writer, and the update returns without
 // touching the database, leaving in Written the wait for the update to be
-// safe from a crash; an update that pins artifacts or registers members has
-// rows to check and is written before it returns. root is the handle on the
-// family's root. The caller holds the cache.
+// safe from a crash. An update that pins artifacts has rows to check and is
+// written before it returns; one that only registers members writes the
+// registration first and queues the rest. root is the handle on the family's
+// root. The caller holds the cache.
 func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, family cachedFamily, root *sqliteSession, fn func(*CoordinationState) error) error {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
@@ -498,7 +501,21 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 	// What is volatile changes the family in memory and goes no further.
 	kept := keptChanges(state.Changes, state.Volatile)
 	next := state.Sequence + int64(len(state.Append))
-	if len(state.Pins) > 0 || len(state.Members) > 0 {
+	if len(state.Pins) == 0 && len(state.Members) > 0 {
+		// Registering a member keeps its conversation with the family's. It
+		// has a row to check and none that a queued update writes, so it is
+		// written by itself, ahead of the records, which go the usual way.
+		err := s.store.withTransactionNow(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+			if err := s.requireLease(opCtx, conn); err != nil {
+				return err
+			}
+			return registerMembers(opCtx, conn, parent, state)
+		})
+		if err != nil {
+			return s.mapError(ctx, err)
+		}
+	}
+	if len(state.Pins) > 0 {
 		err := s.leasedUntracked(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
 			if err := writeRecordDelta(opCtx, conn, parent, state.Changes); err != nil {
 				return err

@@ -45,6 +45,11 @@ type AcquireOptions struct {
 	// id, so Metadata.Parent follows the parent's renames; ErrSessionNotFound
 	// when no session has the name.
 	Parent string
+
+	// create and configure are Create's: the session must not exist, and
+	// starts as configure leaves the default metadata.
+	create    bool
+	configure func(*Metadata)
 }
 
 // SessionSummary combines persisted metadata with lightweight transcript
