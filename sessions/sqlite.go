@@ -266,10 +266,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	}
 	dsn := sqliteDataSource(config.Mode, dsnPath)
 
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open session database: %w", err)
-	}
+	db := sql.OpenDB(&statementConnector{dsn: dsn})
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
