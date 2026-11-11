@@ -442,7 +442,7 @@ func NewUnsafeMCPClientContext(ctx context.Context, serverSpec string) (*MCPClie
 	}
 
 	slog.Debug("mcp_config_loading", "config_file", jsonFile, "server_name", namespace)
-	client, err := newMCPClientFromConfigContext(ctx, &config, nil, nil)
+	client, err := newMCPClientFromConfig(ctx, &config, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -492,11 +492,7 @@ func selectMCPServer(configs map[string]MCPConfig, jsonFile, serverName string) 
 
 // newMCPClientFromConfig creates a client after the registry has decided and
 // constructed the effective sandbox policy.
-func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
-	return newMCPClientFromConfigContext(context.Background(), config, sb, effectiveCfg)
-}
-
-func newMCPClientFromConfigContext(ctx context.Context, config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
+func newMCPClientFromConfig(ctx context.Context, config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -517,7 +513,7 @@ func newMCPClientFromConfigContext(ctx context.Context, config *MCPConfig, sb sa
 
 	var transport mcp.Transport
 	var sandboxed bool
-	var abort context.CancelFunc
+	abort := context.CancelFunc(func() {}) // only a local server has a process to stop
 
 	switch config.Transport {
 	case "sse":
@@ -578,23 +574,15 @@ func newMCPClientFromConfigContext(ctx context.Context, config *MCPConfig, sb sa
 		return nil, fmt.Errorf("unknown transport type: %s (supported: stdio, sse, streamable)", config.Transport)
 	}
 
-	stop := func() bool { return true }
-	if abort != nil {
-		stop = context.AfterFunc(ctx, abort)
-	}
+	stop := context.AfterFunc(ctx, abort)
 	session, err := client.Connect(ctx, transport, nil)
 	stop()
-	if err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
-		if abort != nil {
-			abort()
-		}
+	if err = errors.Join(err, ctx.Err()); err != nil {
+		abort()
 		if session != nil {
 			_ = session.Close()
 		}
-		return nil, fmt.Errorf("failed to connect to MCP server: %w", errors.Join(err, ctx.Err()))
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
 	return &MCPClient{
@@ -642,9 +630,7 @@ func (c *MCPClient) ListToolsContext(ctx context.Context) ([]Tool, error) {
 func (c *MCPClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
-		if c.abort != nil {
-			defer c.abort()
-		}
+		defer c.kill()
 		if c.session != nil {
 			c.closeErr = c.session.Close()
 		}
@@ -655,10 +641,15 @@ func (c *MCPClient) Close() error {
 // discard releases a client whose construction did not commit. A partial
 // stdio server is not entitled to a graceful-shutdown wait before cancellation.
 func (c *MCPClient) discard() {
+	c.kill()
+	_ = c.Close()
+}
+
+// kill stops an owned local server at once. A remote one has no process.
+func (c *MCPClient) kill() {
 	if c.abort != nil {
 		c.abort()
 	}
-	_ = c.Close()
 }
 
 // Closed reports whether Close has been called.

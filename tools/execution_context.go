@@ -420,23 +420,6 @@ func (r *ToolRegistry) snapshotExecutionSource(allow []string) *executionSourceS
 	return state
 }
 
-// executionToolIdentity follows the same shadowing and policy rules as Get,
-// retaining the owning registry and mutation identity instead of tool values.
-func (r *ToolRegistry) executionToolIdentity(name string) (*ToolRegistry, uint64, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if !r.viewVisibleLocked(name) || !r.isToolAllowedLocked(name) {
-		return nil, 0, false
-	}
-	if _, exists := r.tools[name]; exists {
-		return r, r.toolVersions[name], true
-	}
-	if r.parent != nil {
-		return r.parent.executionToolIdentity(name)
-	}
-	return nil, 0, false
-}
-
 func (s *executionSourceState) validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -453,7 +436,7 @@ func (s *executionSourceState) validate(ctx context.Context) error {
 		}
 	}
 	for _, name := range s.selected {
-		owner, version, allowed := s.source.executionToolIdentity(name)
+		_, owner, version, _, allowed := s.source.resolveTool(name)
 		if !allowed {
 			return errors.New("source tool selection changed during tool construction")
 		}
@@ -485,12 +468,6 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 // setup. Synchronous host-supplied ContextTool constructors must still return
 // before cancellation can be observed. The caller owns a successful binding.
 func (r *ToolRegistry) BindExecutionContextWithContext(ctx context.Context, ec ExecutionContext, allow []string) (*ToolRegistry, []string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
-	}
-	if !r.native {
-		return nil, nil, ErrNativeToolsRequired
-	}
 	state := r.snapshotExecutionSource(allow)
 	bound, omitted, err := r.bindExecutionContext(ctx, ec, allow, state)
 	if err != nil {
@@ -586,20 +563,7 @@ func (r *ToolRegistry) bindExecutionContext(ctx context.Context, ec ExecutionCon
 			key := mcpBindingKey{source: t.Source, namespace: namespace}
 			if !loadedMCP[key] {
 				loadedMCP[key] = true
-				spec := rebindSourcePath(t.Source, ec.SourceRoot, ec.Root)
-				config, serverName, loadErr := loadMCPServerConfig(ParseServerSpec(spec))
-				err = loadErr
-				if err == nil {
-					jsonFile, _ := ParseServerSpec(spec)
-					var records []stagedToolRecord
-					records, _, err = bound.prepareSingleMCPServerWithNamespace(ctx, jsonFile, serverName, namespace, &config)
-					if err == nil {
-						bound.mu.Lock()
-						cleanup := bound.retireClientsLocked(bound.installStagedLocked(records))
-						bound.mu.Unlock()
-						cleanup()
-					}
-				}
+				err = bound.loadMCPServerAs(ctx, rebindSourcePath(t.Source, ec.SourceRoot, ec.Root), namespace)
 			}
 			if err == nil {
 				tool, _ = bound.Get(name)

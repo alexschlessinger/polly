@@ -158,31 +158,15 @@ func TestRuntimeStorageMCPStalledCancellation(t *testing.T) {
 func TestRuntimeStorageMCPCloseDoesNotHoldRegistryLocks(t *testing.T) {
 	for _, operation := range []string{"remove", "reload", "filtered", "pending", "close"} {
 		t.Run(operation, func(t *testing.T) {
-			entered, release := make(chan struct{}), make(chan struct{})
-			var once, releaseOnce sync.Once
-			unblock := func() { releaseOnce.Do(func() { close(release) }) }
-			defer unblock()
-			server := mcp.NewServer(&mcp.Implementation{Name: "close-gate", Version: "1"}, nil)
-			server.AddTool(&mcp.Tool{Name: "probe", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return &mcp.CallToolResult{}, nil
-			})
-			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
-			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if req.Method == http.MethodDelete {
-					once.Do(func() { close(entered) })
-					<-release
-				}
-				handler.ServeHTTP(w, req)
-			}))
-			defer httpServer.Close()
-			defer unblock()
+			url, entered, unblock, armed, _ := lifecycleMCPGate(t, "DELETE")
 			registry := NewToolRegistry(nil, WithNativeTools())
 			defer registry.Close()
 			defer unblock()
-			path := writeRegistryMCPConfig(t, MCPConfig{URL: httpServer.URL, Transport: "streamable"})
+			path := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
 			if _, err := registry.LoadMCPServer(path); err != nil {
 				t.Fatal(err)
 			}
+			armed.Store(true)
 			done := make(chan error, 1)
 			go func() {
 				var err error

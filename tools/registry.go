@@ -1107,8 +1107,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 
 	if name := registeredName(tool); name != "" {
 		slog.Debug("tool_registered", "tool_name", name)
-		r.tools[name] = tool
-		r.noteToolChangeLocked(name)
+		r.putToolLocked(name, tool)
 	}
 }
 
@@ -1124,14 +1123,11 @@ func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, re
 		if candidate == nil {
 			return false
 		}
-		r.tools["bash"] = candidate
-		r.noteToolChangeLocked("bash")
+		r.putToolLocked("bash", candidate)
 		slog.Debug("tool_registered", "tool_name", "bash")
 	}
-	r.tools[activate.GetName()] = activate
-	r.tools[readFile.GetName()] = readFile
-	r.noteToolChangeLocked(activate.GetName())
-	r.noteToolChangeLocked(readFile.GetName())
+	r.putToolLocked(activate.GetName(), activate)
+	r.putToolLocked(readFile.GetName(), readFile)
 	r.alwaysAllowedTools[activate.GetName()] = true
 	r.alwaysAllowedTools[readFile.GetName()] = true
 	slog.Debug("tool_registered", "tool_name", activate.GetName())
@@ -1234,23 +1230,44 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 // a parent's tool must pass the parent's policy, then this registry's
 // allow-list and policy.
 func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowed bool) {
+	tool, _, _, exists, allowed = r.resolveTool(name)
+	return tool, exists, allowed
+}
+
+// resolveTool is GetIfAllowed that also names the registry holding the tool
+// and the version of that registration, for a caller that later checks the
+// same tool is still the one served.
+func (r *ToolRegistry) resolveTool(name string) (tool Tool, owner *ToolRegistry, version uint64, exists, allowed bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	tool, exists = r.tools[name]
+	owner, version = r, r.toolVersions[name]
 	if !exists {
 		if r.parent == nil {
-			return nil, false, false
+			return nil, nil, 0, false, false
 		}
 		// A parent's tool must pass the parent's policy first.
-		if tool, exists, allowed = r.parent.GetIfAllowed(name); !allowed {
-			return nil, exists, false
+		if tool, owner, version, exists, allowed = r.parent.resolveTool(name); !allowed {
+			return nil, nil, 0, exists, false
 		}
 	}
 	if !r.viewVisibleLocked(name) || !r.isToolAllowedLocked(name) {
-		return nil, true, false
+		return nil, nil, 0, true, false
 	}
-	return tool, true, true
+	return tool, owner, version, true, true
+}
+
+// putToolLocked and dropToolLocked are the only writers of r.tools: the
+// version they record is what an in-flight load or binding rechecks.
+func (r *ToolRegistry) putToolLocked(name string, tool Tool) {
+	r.tools[name] = tool
+	r.noteToolChangeLocked(name)
+}
+
+func (r *ToolRegistry) dropToolLocked(name string) {
+	delete(r.tools, name)
+	r.noteToolRemovalLocked(name)
 }
 
 func (r *ToolRegistry) noteToolChangeLocked(name string) {
@@ -1274,13 +1291,18 @@ func (r *ToolRegistry) noteToolRemovalLocked(name string) {
 // setToolLocked installs tool and transfers any orphaned previous client to
 // the caller to close outside r.mu. A client is owned only through these maps.
 func (r *ToolRegistry) setToolLocked(name string, tool Tool, client *MCPClient) *MCPClient {
-	old := r.toolClients[name]
-	r.tools[name] = tool
-	r.noteToolChangeLocked(name)
+	r.putToolLocked(name, tool)
+	return r.replaceClientLocked(r.toolClients, name, client)
+}
+
+// replaceClientLocked points name at client in clients, the installed or the
+// pending map, and returns the previous client once nothing refers to it.
+func (r *ToolRegistry) replaceClientLocked(clients map[string]*MCPClient, name string, client *MCPClient) *MCPClient {
+	old := clients[name]
 	if client != nil {
-		r.toolClients[name] = client
+		clients[name] = client
 	} else {
-		delete(r.toolClients, name)
+		delete(clients, name)
 	}
 	if old != nil && old != client {
 		return r.orphanedClientLocked(old)
@@ -1300,6 +1322,12 @@ func (r *ToolRegistry) installStagedLocked(records []stagedToolRecord) []*MCPCli
 		slog.Debug("tool_registered", "tool_name", record.name)
 	}
 	return retired
+}
+
+// installStaged publishes prepared records and closes the clients they replace.
+func (r *ToolRegistry) installStaged(records []stagedToolRecord) {
+	r.mu.Lock()
+	r.unlockAndRetire(r.installStagedLocked(records))
 }
 
 // orphanedClientLocked transfers an unreferenced client's ownership to the
@@ -1338,6 +1366,13 @@ func (r *ToolRegistry) retireClientsLocked(clients []*MCPClient) func() {
 	}
 }
 
+// unlockAndRetire releases r.mu, then closes the retired clients outside it.
+func (r *ToolRegistry) unlockAndRetire(retired []*MCPClient) {
+	cleanup := r.retireClientsLocked(retired)
+	r.mu.Unlock()
+	cleanup()
+}
+
 func closeMCPClients(clients []*MCPClient) {
 	for _, client := range clients {
 		if client != nil {
@@ -1360,8 +1395,7 @@ func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) []*MCPClient {
 		if c := r.toolClients[name]; c != nil {
 			clients = append(clients, c)
 		}
-		delete(r.tools, name)
-		r.noteToolRemovalLocked(name)
+		r.dropToolLocked(name)
 		delete(r.toolClients, name)
 		slog.Debug("mcp_tool_removed", "tool_name", name)
 	}
@@ -1376,23 +1410,16 @@ func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) []*MCPClient {
 func (r *ToolRegistry) Remove(namespacedName string) {
 	var retired []*MCPClient
 	r.mu.Lock()
-	defer func() {
-		cleanup := r.retireClientsLocked(retired)
-		r.mu.Unlock()
-		cleanup()
-	}()
+	defer func() { r.unlockAndRetire(retired) }()
 
 	tool, exists := r.tools[namespacedName]
-	r.noteToolRemovalLocked(namespacedName)
+	r.dropToolLocked(namespacedName)
 	if !exists {
 		return
 	}
 
 	// Get MCP client if this is an MCP tool
 	client := r.toolClients[namespacedName]
-
-	// Remove from registry
-	delete(r.tools, namespacedName)
 	delete(r.toolClients, namespacedName)
 	slog.Debug("tool_removed", "tool_name", namespacedName)
 
@@ -1549,11 +1576,7 @@ func (r *ToolRegistry) CommitPendingChanges() {
 
 	var retired []*MCPClient
 	r.mu.Lock()
-	defer func() {
-		cleanup := r.retireClientsLocked(retired)
-		r.mu.Unlock()
-		cleanup()
-	}()
+	defer func() { r.unlockAndRetire(retired) }()
 
 	for name, tool := range r.pendingTools {
 		retired = append(retired, r.setToolLocked(name, tool, r.pendingToolClients[name]))
@@ -1603,10 +1626,7 @@ func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadR
 		return LoadResult{}, err
 	}
 
-	r.mu.Lock()
-	cleanup := r.retireClientsLocked(r.installStagedLocked([]stagedToolRecord{record}))
-	r.mu.Unlock()
-	cleanup()
+	r.installStaged([]stagedToolRecord{record})
 	return result, nil
 }
 
@@ -1684,23 +1704,11 @@ func joinNamespacePrefix(prefix, name string) string {
 func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 	var retired []*MCPClient
 	r.mu.Lock()
-	defer func() {
-		cleanup := r.retireClientsLocked(retired)
-		r.mu.Unlock()
-		cleanup()
-	}()
+	defer func() { r.unlockAndRetire(retired) }()
 
 	for _, record := range records {
-		old := r.pendingToolClients[record.name]
 		r.pendingTools[record.name] = record.tool
-		if record.client != nil {
-			r.pendingToolClients[record.name] = record.client
-		} else {
-			delete(r.pendingToolClients, record.name)
-		}
-		if old != nil && old != record.client {
-			retired = append(retired, r.orphanedClientLocked(old))
-		}
+		retired = append(retired, r.replaceClientLocked(r.pendingToolClients, record.name, record.client))
 		if record.serverSpec != "" {
 			r.pendingServerTools[record.serverSpec] = appendUniqueStrings(r.pendingServerTools[record.serverSpec], []string{record.name})
 		}
@@ -1725,13 +1733,29 @@ func restrictiveSandboxDeclaration(config *MCPConfig) sandbox.Declaration {
 	return sandbox.DeclareConfig(restrictiveSandboxConfig(*overlay))
 }
 
+// loadMCPServerAs loads one server under an exact namespace into a registry
+// that is not yet published.
+func (r *ToolRegistry) loadMCPServerAs(ctx context.Context, serverSpec, namespace string) error {
+	jsonFile, serverName := ParseServerSpec(serverSpec)
+	config, serverName, err := loadMCPServerConfig(jsonFile, serverName)
+	if err != nil {
+		return err
+	}
+	records, _, err := r.prepareSingleMCPServerWithNamespace(ctx, jsonFile, serverName, namespace, &config)
+	if err != nil {
+		return err
+	}
+	r.installStaged(records)
+	return nil
+}
+
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(ctx context.Context, jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	config, err := r.contextMCPConfig(serverName, config)
 	if err != nil {
 		return nil, nil, err
 	}
 	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
-	return r.prepareMCPServerToolsContext(ctx, config, serverName, namespace, serverSpec, nil)
+	return r.prepareMCPServerTools(ctx, config, serverName, namespace, serverSpec, nil)
 }
 
 // contextMCPConfig binds a server config to the registry's execution context,
@@ -1786,11 +1810,7 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 // prepareMCPServerTools connects and wraps a resolved server configuration.
 // Callers own config rebinding, source spelling, and registration semantics.
 // A nil allowlist includes every tool; a non-nil empty one includes none.
-func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
-	return r.prepareMCPServerToolsContext(context.Background(), config, serverName, namespace, serverSpec, allowed)
-}
-
-func (r *ToolRegistry) prepareMCPServerToolsContext(ctx context.Context, config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
+func (r *ToolRegistry) prepareMCPServerTools(ctx context.Context, config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -1833,25 +1853,19 @@ func (r *ToolRegistry) prepareMCPServerToolsContext(ctx context.Context, config 
 		sbCfg = &effective
 	}
 
-	client, err := newMCPClientFromConfigContext(ctx, config, sb, sbCfg)
+	client, err := newMCPClientFromConfig(ctx, config, sb, sbCfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	client.serverSpec = serverSpec
 
-	stop := func() bool { return true }
-	if client.abort != nil {
-		stop = context.AfterFunc(ctx, client.abort)
-	}
+	stop := context.AfterFunc(ctx, client.kill)
 	serverTools, err := client.ListToolsContext(ctx)
 	stop()
-	if err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
+	if err = errors.Join(err, ctx.Err()); err != nil {
 		client.discard()
-		return nil, nil, errors.Join(err, ctx.Err())
+		return nil, nil, err
 	}
 
 	var records []stagedToolRecord
@@ -1886,11 +1900,7 @@ func (r *ToolRegistry) prepareMCPServerToolsContext(ctx context.Context, config 
 	return records, toolNames, nil
 }
 
-func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
-	return r.prepareMCPServerWithNamespacePrefixContext(context.Background(), serverSpec, namespacePrefix)
-}
-
-func (r *ToolRegistry) prepareMCPServerWithNamespacePrefixContext(ctx context.Context, serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
+func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(ctx context.Context, serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, LoadResult{}, err
 	}
@@ -1945,7 +1955,7 @@ func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePre
 func (r *ToolRegistry) LoadMCPServerWithNamespacePrefixContext(ctx context.Context, serverSpec, namespacePrefix string) (LoadResult, error) {
 	state := r.snapshotMCPLoad()
 	defer r.releaseMCPLoad(state)
-	records, result, err := r.prepareMCPServerWithNamespacePrefixContext(ctx, serverSpec, namespacePrefix)
+	records, result, err := r.prepareMCPServerWithNamespacePrefix(ctx, serverSpec, namespacePrefix)
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -2185,7 +2195,7 @@ func (r *ToolRegistry) prepareMCPServerRestart(ctx context.Context, spec, namesp
 	for _, name := range names {
 		allowed[name] = true
 	}
-	records, toolNames, err := r.prepareMCPServerToolsContext(ctx, bound, serverName, namespace, spec, allowed)
+	records, toolNames, err := r.prepareMCPServerTools(ctx, bound, serverName, namespace, spec, allowed)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2224,7 +2234,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilterContext(ctx context.Context, serve
 		allowed[name] = true
 	}
 
-	records, toolNames, err := r.prepareMCPServerToolsContext(ctx, &config, namespace, namespace, serverSpec, allowed)
+	records, toolNames, err := r.prepareMCPServerTools(ctx, &config, namespace, namespace, serverSpec, allowed)
 	if err != nil {
 		return err
 	}
@@ -2253,9 +2263,7 @@ func (r *ToolRegistry) discardConstruction() {
 	}
 	r.mu.RUnlock()
 	for _, client := range clients {
-		if client.abort != nil {
-			client.abort()
-		}
+		client.kill()
 	}
 	_ = r.Close()
 }

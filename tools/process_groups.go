@@ -57,9 +57,6 @@ func (g *processGroups) detach() []int {
 	return alive
 }
 
-// kill ends every surviving group and reports the ones it killed.
-func (g *processGroups) kill() []int { return KillProcessGroups(g.detach()) }
-
 // KillProcessGroups kills every listed group still alive and reports the
 // ones it killed. Callers pass groups detached from a bound registry.
 func KillProcessGroups(pgids []int) []int {

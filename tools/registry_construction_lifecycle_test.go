@@ -79,7 +79,7 @@ func TestMCPRegistryCloseJoinsRetirements(t *testing.T) {
 			defer unblock()
 			path := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
 			if operation == "pending-replace" {
-				records, _, err := r.prepareMCPServerWithNamespacePrefix(path, "")
+				records, _, err := r.prepareMCPServerWithNamespacePrefix(context.Background(), path, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -314,7 +314,7 @@ func TestNativeOpenFinalSourceRevalidation(t *testing.T) {
 			t.Run(ownership+"/"+mutation, func(t *testing.T) {
 				url, _ := registryMCPServer(t, "probe")
 				path := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable", ContextIndependent: true})
-				owner := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+				owner := stubSandboxRegistry(t, sandbox.Config{})
 				defer owner.Close()
 				if _, err := owner.LoadMCPServer(path); err != nil {
 					t.Fatal(err)

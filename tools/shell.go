@@ -285,10 +285,7 @@ func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool,
 		records = append(records, record)
 	}
 
-	registry.mu.Lock()
-	cleanup := registry.retireClientsLocked(registry.installStagedLocked(records))
-	registry.mu.Unlock()
-	cleanup()
+	registry.installStaged(records)
 	loaded := make([]Tool, 0, len(records))
 	for _, record := range records {
 		loaded = append(loaded, record.tool)

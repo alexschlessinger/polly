@@ -1,10 +1,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -219,41 +216,10 @@ func TestLoadRegistryClosesConnectedServersOnFailure(t *testing.T) {
 func TestMCPLoadRevalidatesBeforeInstallation(t *testing.T) {
 	for _, mutation := range []string{"close", "remove", "replace", "policy", "independent"} {
 		t.Run(mutation, func(t *testing.T) {
-			server := mcp.NewServer(&mcp.Implementation{Name: "revalidate", Version: "1"}, nil)
-			server.AddTool(&mcp.Tool{Name: "probe", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return &mcp.CallToolResult{}, nil
-			})
-			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
-			var armed atomic.Bool
-			var closed atomic.Int32
-			entered, release := make(chan struct{}), make(chan struct{})
-			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if req.Method == http.MethodDelete {
-					closed.Add(1)
-				}
-				if req.Method == http.MethodPost {
-					body, err := io.ReadAll(req.Body)
-					if err != nil {
-						return
-					}
-					req.Body.Close()
-					req.Body = io.NopCloser(bytes.NewReader(body))
-					if bytes.Contains(body, []byte(`"tools/list"`)) && armed.Swap(false) {
-						close(entered)
-						select {
-						case <-release:
-						case <-req.Context().Done():
-							return
-						}
-					}
-				}
-				handler.ServeHTTP(w, req)
-			}))
-			defer httpServer.Close()
-			defer close(release)
+			url, entered, unblock, armed, closed := lifecycleMCPGate(t, "tools/list")
 			registry := stubSandboxRegistry(t, sandbox.Config{})
 			defer registry.Close()
-			path := writeRegistryMCPConfig(t, MCPConfig{URL: httpServer.URL, Transport: "streamable"})
+			path := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
 			if _, err := registry.LoadMCPServer(path); err != nil {
 				t.Fatal(err)
 			}
@@ -261,11 +227,7 @@ func TestMCPLoadRevalidatesBeforeInstallation(t *testing.T) {
 			armed.Store(true)
 			done := make(chan error, 1)
 			go func() { _, err := registry.RestartMCPServerContext(context.Background(), "srv"); done <- err }()
-			select {
-			case <-entered:
-			case <-time.After(3 * time.Second):
-				t.Fatal("discovery was not reached")
-			}
+			awaitLifecycle(t, entered)
 			switch mutation {
 			case "close":
 				registry.Close()
@@ -278,13 +240,12 @@ func TestMCPLoadRevalidatesBeforeInstallation(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "independent":
-				otherPath := writeRegistryMCPConfig(t, MCPConfig{URL: httpServer.URL, Transport: "streamable"})
+				otherPath := writeRegistryMCPConfig(t, MCPConfig{URL: url, Transport: "streamable"})
 				if _, err := registry.LoadMCPServerWithNamespacePrefix(otherPath, "other"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			// Use a value instead of closing: deferred close also rescues failures.
-			release <- struct{}{}
+			unblock()
 			if err := <-done; mutation == "independent" {
 				if err != nil {
 					t.Fatalf("independent load invalidated restart: %v", err)
