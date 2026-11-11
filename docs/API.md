@@ -1370,6 +1370,17 @@ A few rules of thumb:
   the transcript of a member it holds. An update reaches the database only
   while the leases it was accepted under stand: when another handle has
   taken over the root or the member since, it is dropped.
+- The SQLite store renews every lease it holds in one transaction per
+  heartbeat. When the handle on a member of a family it drives closes, the
+  store keeps the member's lease for fifteen seconds, and hands it to the
+  next `Acquire` that asks for the session by its name and `ExpectedID`
+  without a database transaction. The swarm runtime acquires a member this
+  way for each slice. To the store's own callers the session is free
+  meanwhile: its `ListSummaries` and `ReadView` report it not in use, and
+  `Delete`, or `Acquire` by name alone, ends the kept lease first. Another
+  process sees the session leased until the store gives the lease up, which
+  it does at the first heartbeat after the fifteen seconds and when the
+  family's root closes.
 - `CoordinationState.Volatile` names record changes that say what the caller
   is doing at the moment. A store may keep them in memory only. The SQLite
   store does so for a family it drives: its own readers see the change at

@@ -186,9 +186,10 @@ records goes first to a log in `~/.pollytool/polly.db-log/` and into the
 database at the next checkpoint, so a backup taken while a swarm runs holds it
 as of its last checkpoint. Whether an agent is queued or running at the moment
 is kept in memory only, so another Polly that reads the database sees each
-agent's status and counts as of the last thing the agent saved. If Polly
-crashes, the log keeps what the database lacks, and the next Polly to open
-the database writes it there. Neither the
+agent's status and counts as of the last thing the agent saved, and sees an
+agent's session as in use for up to twenty seconds after the agent last ran.
+If Polly crashes, the log keeps what the database lacks, and the next Polly to
+open the database writes it there. Neither the
 log nor a database commit waits for the disk: if the machine loses power or
 the system crashes, the most recent turns and swarm records can be lost. The
 database stays consistent either way, and Polly does wait for the disk before
