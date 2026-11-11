@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
@@ -90,12 +91,120 @@ type Manager struct {
 	gitRunner
 	GitDir string
 	Slots  []string
-	mu     sync.Mutex
+	// mu fences whole-runtime ref retirement against every in-flight operation.
+	// Ordinary operations share it; none upgrades it while holding a reservation.
+	mu sync.RWMutex
+	// Lock order: mu, source reservation, admin. Slot hints never hold a lock
+	// while waiting for a source. Git worktree add/remove/prune share admin;
+	// independent indexes and object writes do not. Ref pinning has a separate
+	// narrow lock: even unique refs can share storage (for example reftable).
+	admin     sync.Mutex
+	refsMu    sync.Mutex
+	sourcesMu sync.Mutex
+	sources   map[string]*sourceReservation
+	slotsMu   sync.Mutex
+	nextSlot  int
 	// userConfigPaths are the user's Git configuration sources and the pinned
 	// ignore and attribute files, granted read-only to every sandbox that runs
 	// Git for this repository inside the private home directory.
 	userConfigPaths []string
 	privatePaths    []string // frozen repository-relative exclusions
+}
+
+type sourceReservation struct {
+	ready chan struct{}
+	users int
+}
+
+// reserveSource coordinates operations on the manager's fixed root/slot paths.
+// Callers accepting arbitrary aliases use reserveSourcePath and execute against
+// its returned identity, never re-resolving an alias after a reservation wait.
+func (m *Manager) reserveSource(ctx context.Context, path string) (func(), error) {
+	_, unlock, err := m.reserveSourcePath(ctx, path)
+	return unlock, err
+}
+
+// reserveSourcePath returns the canonical identity that it reserves. Entries
+// live only while held or awaited, not for every historical snapshot/source.
+// Canonical paths also make a source's symlink aliases share its reservation.
+func (m *Manager) reserveSourcePath(ctx context.Context, path string) (string, func(), error) {
+	key, err := filepath.Abs(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if real, err := filepath.EvalSymlinks(key); err == nil {
+		key = real
+	} else if real, err := filepath.EvalSymlinks(filepath.Dir(key)); err == nil {
+		key = filepath.Join(real, filepath.Base(key)) // an interrupted release may have no tree
+	}
+	m.sourcesMu.Lock()
+	if m.sources == nil {
+		m.sources = make(map[string]*sourceReservation)
+	}
+	r := m.sources[key]
+	if r == nil {
+		r = &sourceReservation{ready: make(chan struct{}, 1)}
+		r.ready <- struct{}{}
+		m.sources[key] = r
+	}
+	r.users++
+	m.sourcesMu.Unlock()
+	drop := func() {
+		m.sourcesMu.Lock()
+		r.users--
+		if r.users == 0 {
+			delete(m.sources, key)
+		}
+		m.sourcesMu.Unlock()
+	}
+	timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings)
+	var start time.Time
+	if timings != nil {
+		start = time.Now()
+	}
+	select {
+	case <-ctx.Done():
+		drop()
+		return "", nil, ctx.Err()
+	case <-r.ready:
+	}
+	if timings != nil {
+		timings.sourceWait.Add(int64(time.Since(start)))
+	}
+	unlock := func() { r.ready <- struct{}{}; drop() }
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return "", nil, err
+	}
+	return key, unlock, nil
+}
+
+// worktreeTimings is an opt-in, bounded observation used by controlled fixtures.
+// No paths or payloads are retained and an ordinary context does not read clocks.
+type worktreeTimings struct {
+	managerWait, sourceWait, adminWait, refWait atomic.Int64
+	gitTime, gitCalls, slotProbes               atomic.Int64
+}
+type worktreeTimingsKey struct{}
+
+func lockWorktree(ctx context.Context, lock sync.Locker, phase string) func() {
+	timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings)
+	if timings == nil {
+		lock.Lock()
+		return lock.Unlock
+	}
+	start := time.Now()
+	lock.Lock()
+	elapsed := int64(time.Since(start))
+	switch phase {
+	case "manager":
+		timings.managerWait.Add(elapsed)
+	case "refs":
+		timings.refWait.Add(elapsed)
+	case "admin":
+		timings.adminWait.Add(elapsed)
+	}
+	return lock.Unlock
 }
 
 // gitRunner runs the trusted Git executable under the runtime's sandbox
@@ -357,7 +466,20 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 	if err := scratch.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch")); err != nil {
 		return // A scratch from before the scratch root, kept beside the tree.
 	}
-	os.Remove(filepath.Join(filepath.Dir(tree), "owner"))
+	if os.Remove(filepath.Join(filepath.Dir(tree), "owner")) == nil {
+		m.offerSlot(tree)
+	}
+}
+
+func (m *Manager) offerSlot(tree string) {
+	slot := filepath.Dir(tree)
+	n, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(slot), "slot-"))
+	if err != nil || n < 0 || n >= len(m.Slots) || m.Slots[n] != slot {
+		return
+	}
+	m.slotsMu.Lock()
+	m.nextSlot = n
+	m.slotsMu.Unlock()
 }
 
 func validateGitVersion(version string) error {
@@ -403,6 +525,13 @@ func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []b
 }
 
 func (m *gitRunner) runTo(ctx context.Context, cwd string, env []string, input []byte, isolate bool, out io.Writer, args ...string) error {
+	if timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings); timings != nil {
+		start := time.Now()
+		defer func() {
+			timings.gitCalls.Add(1)
+			timings.gitTime.Add(int64(time.Since(start)))
+		}()
+	}
 	base := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}
 	if isolate {
 		base = append(base, m.userConfig...)
@@ -438,8 +567,12 @@ func (m *gitRunner) runTo(ctx context.Context, cwd string, env []string, input [
 }
 
 func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	source, unlock, err := m.reserveSourcePath(ctx, source)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
 	snapshot, err := m.capture(ctx, source, Snapshot{})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("capture snapshot from %q: %w", source, err)
@@ -454,8 +587,12 @@ func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) 
 // paths. False never means changed; callers fall back to a capture, which
 // decides.
 func (m *Manager) Unchanged(ctx context.Context, c Checkout) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, c.Path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	if err := m.owned(c); err != nil {
 		return false, err
 	}
@@ -557,15 +694,15 @@ func seedIndex(source, destination string) error {
 	return os.Chtimes(destination, info.ModTime(), info.ModTime())
 }
 
-// captureSource validates the checkout used for content policy and provenance.
+// captureSource validates the reserved checkout used for content policy and
+// provenance. Callers supply its canonical identity, not an unreserved alias.
 func (m *Manager) captureSource(ctx context.Context, source string) (string, error) {
-	source, err := filepath.Abs(source)
+	real, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return "", err
 	}
-	source, err = filepath.EvalSymlinks(source)
-	if err != nil {
-		return "", err
+	if real != source {
+		return "", errors.New("snapshot source changed after reservation")
 	}
 	out, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
 	if err != nil {
@@ -860,6 +997,7 @@ func (m *Manager) snapshotTree(ctx context.Context, tree, source string) (Snapsh
 }
 
 func (m *Manager) retainSnapshot(ctx context.Context, s Snapshot) (Snapshot, error) {
+	defer lockWorktree(ctx, &m.refsMu, "refs")()
 	if _, err := m.git(ctx, m.Root, nil, nil, "update-ref", "refs/polly/snapshots/"+s.ID, s.Commit); err != nil {
 		return Snapshot{}, err
 	}
@@ -872,8 +1010,7 @@ func (m *Manager) retainSnapshot(ctx context.Context, s Snapshot) (Snapshot, err
 // CleanupSnapshotRefs removes only references recorded in this runtime's
 // manifests. Call after every retained checkout and publication is retired.
 func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, &m.mu, "manager")()
 	files, err := filepath.Glob(filepath.Join(m.Directory, "snapshot-*.json"))
 	if err != nil {
 		return err
@@ -934,42 +1071,71 @@ func (m *Manager) checkSourcePath(source, name string, policy sandbox.ReadPolicy
 	return info, nil
 }
 func (m *Manager) Create(ctx context.Context, s Snapshot) (Checkout, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
 	return m.create(ctx, s)
 }
 func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 	c := Checkout{ID: ids.New(), Base: s}
-	for _, slot := range m.Slots {
-		// Policies reserve names up front; directories exist only when used.
+	// Start after the last successful claim (or at a recently freed slot),
+	// but visit each slot at most once. The hint never proves ownership.
+	m.slotsMu.Lock()
+	start := m.nextSlot
+	if len(m.Slots) > 0 {
+		m.nextSlot = (start + 1) % len(m.Slots)
+	}
+	m.slotsMu.Unlock()
+	for probe := 0; probe < len(m.Slots); probe++ {
+		n := (start + probe) % len(m.Slots)
+		slot := m.Slots[n]
+		if timings, _ := ctx.Value(worktreeTimingsKey{}).(*worktreeTimings); timings != nil {
+			timings.slotProbes.Add(1)
+		}
 		ownerPath := filepath.Join(slot, "owner")
+		// Avoid waiting for an occupied checkout's long capture or cleanup.
+		// This is only a hint: the exclusive create below remains mandatory.
+		if _, err := os.Lstat(ownerPath); err == nil {
+			continue
+		}
+		unlock, err := m.reserveSource(ctx, filepath.Join(slot, "tree"))
+		if err != nil {
+			return Checkout{}, err
+		}
+		// O_EXCL, not the allocator hint, arbitrates other managers/processes.
 		owner, err := os.OpenFile(ownerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if errors.Is(err, os.ErrNotExist) {
-			if err = os.MkdirAll(slot, 0700); err != nil {
-				return Checkout{}, err
+			if err = os.MkdirAll(slot, 0700); err == nil {
+				owner, err = os.OpenFile(ownerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 			}
-			owner, err = os.OpenFile(ownerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		}
 		if errors.Is(err, os.ErrExist) {
+			unlock()
 			continue
 		}
 		if err != nil {
+			unlock()
 			return Checkout{}, err
 		}
 		_, err = owner.WriteString(c.ID)
 		closeErr := owner.Close()
-		if err != nil {
-			return Checkout{}, err
+		if err != nil || closeErr != nil {
+			// An incompletely written owner cannot prove a safe release. Keep
+			// it for the existing stale-claim recovery rather than guessing.
+			unlock()
+			return Checkout{}, errors.Join(err, closeErr)
 		}
-		if closeErr != nil {
-			return Checkout{}, closeErr
-		}
+		defer unlock() // excludes old release records until the manifest exists
+		m.slotsMu.Lock()
+		m.nextSlot = (n + 1) % len(m.Slots)
+		m.slotsMu.Unlock()
 		c.Path = filepath.Join(slot, "tree")
 		break
 	}
 	if c.Path == "" {
 		return Checkout{}, errors.New("worktree capacity exhausted; explicitly clean integrated worktrees")
 	}
+	// Shared Git worktree administration remains serialized, including failed
+	// registration cleanup/prune. No source/global lock is taken under admin.
+	defer lockWorktree(ctx, &m.admin, "admin")()
 	// A reused slot never hands a new occupant an old scratch.
 	dir, err := scratch.Claim(filepath.Dir(c.Path))
 	if err != nil {
@@ -1000,14 +1166,22 @@ func (m *Manager) manifest(name string, v any) error {
 }
 
 func (m *Manager) Preview(ctx context.Context, base, candidate Snapshot) (Preview, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	parent, err := m.capture(ctx, m.Root, Snapshot{})
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, m.Root)
 	if err != nil {
 		return Preview{}, err
 	}
+	parent, err := m.capture(ctx, m.Root, Snapshot{})
+	if err != nil {
+		unlock()
+		return Preview{}, err
+	}
 	p := Preview{ID: ids.New(), Parent: parent, Candidate: candidate}
+	// Keep the captured parent's attributes stable until merge-tree finishes.
+	// Release before retaining the immutable result or waiting on slot/admin
+	// work, so independent checkout administration still overlaps parent work.
 	merged, mergeErr := m.git(ctx, m.Root, nil, nil, "merge-tree", "--write-tree", "--merge-base="+base.Commit, parent.Commit, candidate.Commit)
+	unlock()
 	tree, _, _ := strings.Cut(string(merged), "\n")
 	tree = strings.TrimSpace(tree)
 	if !validObjectID(tree) {
@@ -1075,8 +1249,17 @@ func (m *Manager) FinishDiscard(ctx context.Context, c Checkout) error {
 }
 
 func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, finishing, discard bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, c.Path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// Keep the final current-tree and ownership proof inside the administration
+	// boundary: an earlier eligibility check is not authority to remove files
+	// after waiting for another add/remove. This deliberately serializes cleanup
+	// proofs, but not independent captures or parent merges.
+	defer lockWorktree(ctx, &m.admin, "admin")()
 	if c.ID == "" || filepath.Base(c.ID) != c.ID || !sandbox.PathWithin(c.Path, m.Directory) {
 		return errors.New("not a runtime-owned worktree")
 	}
@@ -1124,6 +1307,9 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 			return errors.New("cleanup refuses unintegrated changes")
 		}
 	}
+	if err := m.owned(c); err != nil {
+		return err
+	}
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
 		return err
 	}
@@ -1133,6 +1319,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	if err := os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
 		return err
 	}
+	m.offerSlot(c.Path)
 	return os.Remove(filepath.Join(m.Directory, c.ID+".json"))
 }
 
@@ -1173,8 +1360,13 @@ func removeIfPresent(path string) error {
 // CheckoutPresent distinguishes a release interrupted after removal from a
 // still-present checkout. It never gives an old record authority over a reused slot.
 func (m *Manager) CheckoutPresent(c Checkout) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx := context.Background()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, c.Path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	if c.ID == "" || !sandbox.PathWithin(c.Path, m.Directory) {
 		return false, errors.New("not a runtime-owned worktree")
 	}
@@ -1201,8 +1393,7 @@ func (m *Manager) CheckoutPresent(c Checkout) (bool, error) {
 // ValidateSnapshot checks the saved commit before a restoration allocates a slot.
 // The tree must still be the one recorded with that immutable commit.
 func (m *Manager) ValidateSnapshot(ctx context.Context, s Snapshot) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
 	kind, err := m.git(ctx, m.Root, nil, nil, "cat-file", "-t", s.Commit)
 	if err != nil {
 		return err
