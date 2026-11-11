@@ -80,6 +80,7 @@ func registerSwarmHelp(registry *tools.ToolRegistry, guide string) {
 		Run: func(context.Context, tools.Args) (string, error) {
 			return guide, nil
 		},
+		ReadOnly: true,
 	})
 	registry.MarkAlwaysAllowed("swarm_help")
 }
@@ -109,6 +110,7 @@ func registerHelpTools(registry *tools.ToolRegistry) {
 			}
 			return "", fmt.Errorf("unknown workflow example %q; available: %s", name, available)
 		},
+		ReadOnly: true,
 	})
 	registry.MarkAlwaysAllowed("workflow_help")
 }

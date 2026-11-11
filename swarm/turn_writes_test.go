@@ -92,23 +92,17 @@ func (s *turnWriteSession) UpdateCoordinationFrom(ctx context.Context, known uin
 	return nil
 }
 
-// A member writes its execution record when it takes its assignment, when it
-// journals a tool batch and when its slice ends. The request between two
-// batches appends the last batch to the transcript and leaves the record
-// alone, and the journal that follows carries the count and usage so far.
-//
-// The member does not wait for the store to write a request: it waits for the
-// journal before the batch runs, and for the slice's last checkpoint, and by
-// then every earlier update is written.
-func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
-	t.Parallel()
+// memberTurnWrites runs a member that calls tool in each of two batches and
+// then answers, and returns the updates it made through its own session. Each
+// model call checks that the record counts the calls answered before it.
+func memberTurnWrites(t *testing.T, tool, args string) []turnWrite {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var r *Runtime
 	calls := 0
 	model := modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		calls++
-		// The request for this call is saved, and no journal has followed it.
 		s, err := r.State(ctx)
 		if err != nil {
 			t.Error(err)
@@ -121,7 +115,7 @@ func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 		}
 		reply := answer("done")
 		if calls < 3 {
-			reply = iterationTool("list", "list_agents", `{}`)
+			reply = iterationTool("batch", tool, args)
 		}
 		reply.SetTokenUsage(10, 2)
 		return reply
@@ -133,18 +127,6 @@ func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The assignment, then for each of two batches a request and a journal,
-	// then the request that is answered and the end of the slice.
-	want := []turnWrite{{2, true, true}, {0, false, false}, {0, true, true}, {2, false, false}, {0, true, true}, {2, false, false}, {1, true, true}}
-	got := store.seen()
-	if len(got) != len(want) {
-		t.Fatalf("member updates = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("member update %d = %+v, want %+v (all: %+v)", i, got[i], want[i], got)
-		}
-	}
 	s, err := r.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +135,45 @@ func TestRequestBetweenToolBatchesLeavesTheExecutionRecordAlone(t *testing.T) {
 	if e.Status != "completed" || e.Iterations != 3 || e.Usage.Samples != 3 || *e.Usage.InputTokens != 30 || len(e.Intent) != 0 || e.IntentAt != 0 {
 		t.Fatalf("finished execution %+v", e)
 	}
+	return store.seen()
+}
+
+func wantTurnWrites(t *testing.T, got, want []turnWrite) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("member updates = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("member update %d = %+v, want %+v (all: %+v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// A member writes its execution record when it takes its assignment, when it
+// journals a tool batch and when its slice ends. The request after a
+// journaled batch appends that batch to the transcript and leaves the record
+// alone: the journal already carried the count and usage.
+//
+// The member does not wait for the store to write a request: it waits for the
+// journal before the batch runs, and for the slice's last checkpoint, and by
+// then every earlier update is written.
+func TestRequestAfterJournaledBatchLeavesTheExecutionRecordAlone(t *testing.T) {
+	t.Parallel()
+	// The assignment, then for each of two batches a request and a journal,
+	// then the request that is answered and the end of the slice.
+	wantTurnWrites(t, memberTurnWrites(t, "swarm_publish", `{"text":"finding"}`),
+		[]turnWrite{{2, true, true}, {0, false, false}, {0, true, true}, {2, false, false}, {0, true, true}, {2, false, false}, {1, true, true}})
+}
+
+// A batch whose tools all only read has no effect a crash could leave
+// uncertain, so the member neither journals it nor waits before it runs. The
+// request that follows carries the count and usage instead, unwaited, and the
+// member waits only for its assignment and for the end of its slice.
+func TestBatchThatOnlyReadsIsNotJournaled(t *testing.T) {
+	t.Parallel()
+	wantTurnWrites(t, memberTurnWrites(t, "list_agents", `{}`),
+		[]turnWrite{{2, true, true}, {0, false, false}, {2, true, false}, {2, true, false}, {1, true, true}})
 }
 
 // A journal is the batch a slice was running. One the transcript has moved

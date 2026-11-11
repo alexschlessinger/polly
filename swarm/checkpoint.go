@@ -15,9 +15,10 @@ import (
 
 func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState, transcript *transcriptBinding) {
 	var persisted int
-	// counted is how many generated messages the execution record's usage
-	// covers. It trails persisted between a slice's journals.
-	var counted int
+	// calls is how many of this slice's model calls the execution record
+	// counts, and counted how many generated messages its usage covers. Both
+	// trail the slice by at most the call whose tool batch is running.
+	var calls, counted int
 	var sequence *int64
 	var workflows workflowDeliveries
 	if execution == "" {
@@ -140,18 +141,16 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					if e.InputSaved {
 						raw.Transcript = &sessions.TranscriptIdentity{Execution: execution, Generation: generation}
 					}
-					// A request between two tool batches appends to the transcript
-					// and leaves the record as the last journal wrote it: the count
-					// and usage move with the next journal, and its intent is spent
-					// once the transcript has passed it. The record is written when
-					// the slice ends, and for a typed result, whose corrections and
+					// A request after a journaled batch appends to the transcript
+					// and leaves the record as that journal wrote it: its count
+					// and usage are current, and its intent is spent once the
+					// transcript has passed it. The record is written when the
+					// last batch only read and so was not journaled, when the
+					// slice ends, and for a typed result, whose corrections and
 					// completion are saved with the messages that carry them.
-					if checkpoint.Final || structured != nil {
+					if checkpoint.Final || structured != nil || checkpoint.Iterations > calls {
 						e = s.ownExecution(execution)
 						e.Iterations = offset + checkpoint.Iterations
-						if checkpoint.Request {
-							e.Iterations++
-						}
 						e.Intent, e.IntentAt = nil, 0
 						e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[counted:]))
 						recorded = true
@@ -239,7 +238,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				sequence = &next
 				persisted = len(checkpoint.Generated)
 				if recorded {
-					counted = persisted
+					calls, counted = checkpoint.Iterations, persisted
 				}
 			}
 			return next, err
@@ -302,7 +301,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			return nil
 		})
 		if err == nil && execution != "" {
-			counted = len(c.Generated)
+			calls, counted = c.Iterations, len(c.Generated)
 		}
 		return err
 	}

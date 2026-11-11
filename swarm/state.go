@@ -156,9 +156,11 @@ type Publication struct {
 // slice last journaled: the generated messages the transcript did not yet
 // hold, to be appended at transcript sequence IntentAt. A transcript that has
 // moved past IntentAt saved the batch with its results, so the intent is
-// spent; a record written before intents were stamped has no IntentAt.
-// Iterations and Usage are as of the last journaled batch or the end of the
-// last slice: a request in flight is not yet counted.
+// spent; a record written before intents were stamped has no IntentAt. A
+// batch whose tools all only read is not journaled.
+// Iterations and Usage count the model calls that have been answered. They
+// trail by at most the call whose tool batch is running, and a request in
+// flight is not yet counted.
 type Execution struct {
 	Workspace  string `json:"workspace,omitempty"`
 	Base       string `json:"base,omitempty"`
