@@ -208,7 +208,7 @@ func TestListArtifactsPaginationAndOrder(t *testing.T) {
 			ID: fmt.Sprintf("sha256:%064x", i), Kind: artifacts.KindText, Bytes: 100, Lines: 5, Name: "tool.txt",
 		})
 	}
-	tool := &listArtifactsTool{list: func() []artifacts.Ref { return refs }}
+	tool := testListArtifactsTool(refs)
 
 	first, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
@@ -253,7 +253,7 @@ func TestListArtifactsPaginationAndOrder(t *testing.T) {
 		t.Fatal("offset 0 was accepted")
 	}
 
-	empty := &listArtifactsTool{list: func() []artifacts.Ref { return nil }}
+	empty := testListArtifactsTool(nil)
 	none, err := empty.Execute(context.Background(), map[string]any{})
 	if err != nil || none != "No artifacts are referenced by this conversation." {
 		t.Fatalf("empty catalog = %q, %v", none, err)
@@ -266,7 +266,7 @@ func TestListArtifactsEntryFormats(t *testing.T) {
 		Name: "  chart   final.png ", ImageToken: "[image #3]",
 	}
 	binary := artifacts.Ref{ID: "sha256:" + strings.Repeat("b", 64), Kind: artifacts.KindBinary, Bytes: 9, MIMEType: "application/zip"}
-	tool := &listArtifactsTool{list: func() []artifacts.Ref { return []artifacts.Ref{image, binary} }}
+	tool := testListArtifactsTool([]artifacts.Ref{image, binary})
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)

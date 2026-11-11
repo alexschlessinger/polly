@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -9,8 +12,27 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-func TestTranscriptCacheAppendAndReplace(t *testing.T) {
-	a := &Agent{}
+// Full rendering is useful to existing compaction assertions, but is never the
+// agent's recall implementation. Ordinary recall goes through the bounded pager.
+func (a *Agent) renderedTranscript() string {
+	r := a.openTranscript(context.Background())
+	defer r.Close()
+	text, err := io.ReadAll(r)
+	if err != nil {
+		panic(err)
+	}
+	return string(text)
+}
+
+func testReadTranscriptTool(history []messages.ChatMessage) *readTranscriptTool {
+	return &readTranscriptTool{open: func(ctx context.Context) *transcriptReader {
+		return newTranscriptReader(ctx, history, builtinProjectionTools(false).recall)
+	}}
+}
+
+func TestTranscriptReaderAppendAndReplace(t *testing.T) {
+	a := NewAgent(nil, nil, AgentConfig{})
+	defer a.Close()
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "run", Content: "large tool result"},
@@ -23,7 +45,7 @@ func TestTranscriptCacheAppendAndReplace(t *testing.T) {
 		messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer"},
 	)
 	if got, want := a.renderedTranscript(), renderTranscript(a.transcript, a.projectionTools().recall); got != want {
-		t.Fatalf("incremental rendering differs: %q != %q", got, want)
+		t.Fatalf("streaming rendering differs: %q != %q", got, want)
 	}
 	if first != renderTranscript(history, a.projectionTools().recall) || len(history) != 2 {
 		t.Fatal("appending changed caller-owned history or rendered text")
@@ -36,16 +58,17 @@ func TestTranscriptCacheAppendAndReplace(t *testing.T) {
 	}
 }
 
-func TestTranscriptCacheConcurrentReaders(t *testing.T) {
+func TestTranscriptReaderConcurrentReaders(t *testing.T) {
 	a := &Agent{}
 	a.setTranscript(messages.User("question"))
+	tool := &readTranscriptTool{open: a.openTranscript}
 	var readers sync.WaitGroup
 	for range 4 {
 		readers.Go(func() {
 			for range 100 {
-				text := a.renderedTranscript()
-				if !strings.HasPrefix(text, "=== message 1: user ===\nquestion\n") {
-					t.Error("reader saw an incomplete prefix")
+				text, err := tool.Execute(context.Background(), map[string]any{"limit": 2})
+				if err != nil || !strings.HasPrefix(text, "1: === message 1: user ===\n2: question\n") {
+					t.Errorf("reader saw an incomplete prefix: %q, %v", text, err)
 				}
 			}
 		})
@@ -57,25 +80,29 @@ func TestTranscriptCacheConcurrentReaders(t *testing.T) {
 	readers.Wait()
 }
 
-func BenchmarkTranscriptRenderCache(b *testing.B) {
-	history := make([]messages.ChatMessage, 1000)
-	for i := range history {
-		history[i] = messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Repeat("transcript content ", 100)}
+func TestTranscriptReaderStableViewAndCancellation(t *testing.T) {
+	a := &Agent{}
+	a.setTranscript(messages.User("old"))
+	r := a.openTranscript(context.Background())
+	// A view borrows history; replacements cannot mutate it while it is read.
+	if a.transcriptMu.TryLock() {
+		a.transcriptMu.Unlock()
+		t.Fatal("reader did not hold a stable view")
 	}
-	for _, cached := range []bool{false, true} {
-		b.Run(fmt.Sprintf("cached=%t", cached), func(b *testing.B) {
-			a := &Agent{}
-			a.setTranscript(history)
-			a.renderedTranscript()
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if cached {
-					a.renderedTranscript()
-				} else {
-					renderTranscript(history, a.projectionTools().recall)
-				}
-			}
-		})
+	other := a.openTranscript(context.Background())
+	other.Close() // concurrent readers do not need a full snapshot each
+	r.Close()
+	a.setTranscript(messages.User("new"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tool := &readTranscriptTool{open: a.openTranscript}
+	for _, args := range []map[string]any{{"query": "missing"}, {"byte_offset": 0}} {
+		if _, err := tool.Execute(ctx, args); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled recall: %v", err)
+		}
+		if !a.transcriptMu.TryLock() {
+			t.Fatal("canceled recall leaked its view")
+		}
+		a.transcriptMu.Unlock()
 	}
 }

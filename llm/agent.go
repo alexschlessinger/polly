@@ -79,11 +79,8 @@ type Agent struct {
 
 	// transcript is the durable conversation snapshot served by
 	// read_transcript, refreshed as the run generates messages.
-	transcriptMu       sync.Mutex
-	transcript         []messages.ChatMessage
-	transcriptText     strings.Builder
-	transcriptRendered int
-	transcriptIndex    int
+	transcriptMu sync.RWMutex
+	transcript   []messages.ChatMessage
 
 	// limits are what providers' rejections showed each route's requests
 	// must keep within (see learnOverflow), for every run of the agent.
@@ -576,12 +573,12 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	if config.ArtifactStore != nil {
 		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact}
 		install(reader)
-		install(&listArtifactsTool{list: agent.listArtifacts})
+		install(&listArtifactsTool{page: agent.listArtifactPage})
 		if config.installsBuiltin(BuiltinRestoreArtifact) {
 			registry.RegisterPrivateMutation(&restoreArtifactTool{registry: registry, reader: reader})
 		}
 	}
-	install(&readTranscriptTool{rendered: agent.renderedTranscript})
+	install(&readTranscriptTool{open: agent.openTranscript})
 	return agent
 }
 
@@ -645,9 +642,6 @@ func (a *Agent) setTranscript(history []messages.ChatMessage) {
 	snapshot := append([]messages.ChatMessage(nil), history...)
 	a.transcriptMu.Lock()
 	a.transcript = snapshot
-	a.transcriptText.Reset()
-	a.transcriptRendered = 0
-	a.transcriptIndex = 0
 	a.transcriptMu.Unlock()
 }
 
@@ -657,12 +651,14 @@ func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
 	a.transcriptMu.Unlock()
 }
 
-func (a *Agent) renderedTranscript() string {
-	a.transcriptMu.Lock()
-	defer a.transcriptMu.Unlock()
-	a.transcriptIndex = appendTranscriptText(&a.transcriptText, a.transcript[a.transcriptRendered:], a.transcriptIndex, a.projectionTools().recall)
-	a.transcriptRendered = len(a.transcript)
-	return a.transcriptText.String()
+// openTranscript holds a stable view until Close, without copying the message
+// slice or rendering retained content. Concurrent readers may share the view;
+// append, withdrawal and replacement wait until each bounded read finishes.
+func (a *Agent) openTranscript(ctx context.Context) *transcriptReader {
+	a.transcriptMu.RLock()
+	r := newTranscriptReader(ctx, a.transcript, a.projectionTools().recall)
+	r.release = a.transcriptMu.RUnlock
+	return r
 }
 
 // SetCompactionModel sets the model that summarizes the conversation for
@@ -1119,11 +1115,6 @@ func (r *agentRun) withdraw() {
 	a.transcriptMu.Lock()
 	defer a.transcriptMu.Unlock()
 	a.transcript = a.transcript[:len(a.transcript)-1]
-	if a.transcriptRendered > len(a.transcript) {
-		// Only an internal message can have been rendered past the end, and
-		// it renders as nothing.
-		a.transcriptRendered = len(a.transcript)
-	}
 }
 
 // endsInInput reports whether history's last message, internal ones aside,
@@ -2031,16 +2022,21 @@ func (a *Agent) indexArtifact(ref artifacts.Ref) {
 	a.artifactMu.Unlock()
 }
 
-// listArtifacts returns the run's authorized refs in first-reference order:
-// durable-transcript order at run start, then in-run discovery order.
-func (a *Agent) listArtifacts() []artifacts.Ref {
+// listArtifactPage copies only the requested refs in first-reference order.
+// The total and page share a read lock so discovery/upgrades cannot split them.
+func (a *Agent) listArtifactPage(offset, limit int) ([]artifacts.Ref, int) {
 	a.artifactMu.RLock()
 	defer a.artifactMu.RUnlock()
-	refs := make([]artifacts.Ref, 0, len(a.artifactOrder))
-	for _, id := range a.artifactOrder {
+	total := len(a.artifactOrder)
+	if offset < 1 || offset > total || limit <= 0 {
+		return nil, total
+	}
+	start := offset - 1
+	refs := make([]artifacts.Ref, 0, min(limit, total-start))
+	for _, id := range a.artifactOrder[start : start+cap(refs)] {
 		refs = append(refs, a.artifactRefs[id])
 	}
-	return refs
+	return refs, total
 }
 
 func artifactKindPriority(kind artifacts.Kind) int {
