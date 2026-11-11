@@ -255,9 +255,9 @@ func (r *Runtime) recordFollowupFailure(memberID string, cause error) {
 	defer cancel()
 	_ = r.edit(ctx, func(s *State) error {
 		found := false
-		for key, mail := range s.Messages {
-			if mail.To == memberID && mail.Start && !mail.Delivered {
-				mail = s.ownMail(key)
+		for _, mail := range s.mailFor(memberID) {
+			if mail.Start && !mail.Delivered {
+				mail = s.ownMail(mail.ID)
 				mail.Start, mail.StartError = false, cause.Error()
 				if f := s.Followups[mail.ID]; f != nil && f.Phase != "launched" {
 					s.ownFollowup(mail.ID).Phase = "failed"

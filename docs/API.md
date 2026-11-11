@@ -1354,6 +1354,7 @@ A few rules of thumb:
   within a tenth of a second, not at once.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
-  result and before it writes to the source tree.
+  result and before it writes to the source tree, and after recording a
+  workspace's release and before it removes the workspace's files.
 - `Runtime.State` returns a state shared with the runtime's own readers.
   Treat it as read-only, and copy it before editing.

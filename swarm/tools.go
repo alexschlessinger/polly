@@ -109,6 +109,8 @@ func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 		return parentWake{}, err
 	}
 	before, _ := coordinationEntries(s)
+	// A state a read hands back again is unchanged, so it needs no second look.
+	checked := s
 	for {
 		r.mu.Lock()
 		notify := r.notify
@@ -122,7 +124,8 @@ func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 		// reads of the state just fetched, so hoisting them past the || only
 		// costs one extra scan of an in-memory map, once, on the last iteration.
 		mail := len(inbox(s, r.ID, true)) > 0
-		changed := parentWaitChanged(before, s)
+		changed := s != checked && parentWaitChanged(before, s)
+		checked = s
 		if active == 0 || mail || changed {
 			_, err := r.repairDeliveryNotices(ctx, s)
 			return parentWake{News: mail || changed, Idle: active == 0}, err
@@ -141,8 +144,9 @@ func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 // execution from queued to running is not a transition, and labels never are.
 func coordinationEntries(s *State) (entries map[string]any, controlled map[string]bool) {
 	entries, controlled = map[string]any{}, map[string]bool{}
+	notices := resultNotices(s)
 	for id, t := range s.Tasks {
-		notice := resultNotice(s, t)
+		notice := notices[id]
 		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int
@@ -152,16 +156,17 @@ func coordinationEntries(s *State) (entries map[string]any, controlled map[strin
 	}
 	for id, m := range s.Members {
 		generation := 0
-		if e := s.Executions[m.Execution]; e != nil {
+		e := s.Executions[m.Execution]
+		if e != nil {
 			generation = e.Generation
 		}
-		p := MemberState(s, m)
+		lifecycle, _ := memberLifecycle(m, e)
 		entries["member:"+id] = struct {
 			Lifecycle  Lifecycle
 			Control    MemberControl
 			Execution  string
 			Generation int
-		}{p.Lifecycle, p.Control, m.Execution, generation}
+		}{lifecycle, m.Control, m.Execution, generation}
 		controlled["member:"+id] = memberControlled(s, m)
 	}
 	for id, w := range s.Workflows {

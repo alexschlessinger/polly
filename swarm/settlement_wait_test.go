@@ -129,3 +129,80 @@ func TestWaitPathsRepairNoticesOnlyWhenMissing(t *testing.T) {
 		})
 	}
 }
+
+// Settlement derives its facts after its repairs commit, while members go on
+// editing: the state it keeps has to be one no later edit writes.
+func TestSettlementStateIsNotTheOneEditsWrite(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for name, prepare := range map[string]func(t *testing.T) (*Runtime, func(*State) bool){
+		// A finished task whose notice is gone gets one inside an edit.
+		"notice": func(t *testing.T) (*Runtime, func(*State) bool) {
+			r := runtimeTest(t, doneModel(), 1, 1)
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			awaitIdle(t, r, ctx)
+			if err := r.update(ctx, func(s *State) error {
+				for id, mail := range s.Messages {
+					if mail.Task == result.Task {
+						delete(s.Messages, id)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return r, func(s *State) bool { return resultNotice(s, s.Tasks[result.Task]) != nil }
+		},
+		// A saved acceptance of an unchanged submission is completed inside one.
+		"unchanged": func(t *testing.T) (*Runtime, func(*State) bool) {
+			r, _, ref := noEditResult(t, false)
+			if err := r.update(ctx, func(s *State) error {
+				s.Tasks[ref.Task].AcceptedRevision = ref.Revision
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return r, func(s *State) bool { return s.Tasks[ref.Task].Status == "done" }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, repaired := prepare(t)
+			suspendAutoRelease(t, r)
+			s, err := r.settlementState(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !repaired(s) {
+				t.Fatal("settlement repaired nothing, so it kept no edit's state")
+			}
+			tasks, mail := len(s.Tasks), len(s.Messages)
+			// A member's edit lands while settlement reads what it kept.
+			done := make(chan error, 1)
+			go func() {
+				done <- r.edit(ctx, func(current *State) error {
+					put(current, "task", &current.Tasks, "later", &Task{ID: "later", Status: "pending", Revision: 1})
+					put(current, "mail", &current.Messages, "later", &Mail{ID: "later", From: "later", To: r.ID, Kind: "info"})
+					return nil
+				})
+			}()
+			for editing := true; editing; {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+					editing = false
+				default:
+				}
+				deriveFacts(s, r.ID)
+			}
+			if len(s.Tasks) != tasks || len(s.Messages) != mail {
+				t.Fatalf("a later edit wrote the state settlement kept: %d tasks and %d mail, were %d and %d", len(s.Tasks), len(s.Messages), tasks, mail)
+			}
+		})
+	}
+}

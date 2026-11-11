@@ -40,9 +40,14 @@ type queuedUpdate struct {
 // callers: one goroutine takes everything queued and commits it in a single
 // transaction, in the order it was accepted. An update is therefore visible
 // to this store the moment it returns and reaches the database a moment
-// later; a process that dies in between loses it. Every other operation on
-// the store first waits for the queue to empty, so it reads and writes the
-// rows the accepted updates produced.
+// later; a process that dies in between loses it. Every other operation that
+// runs in a transaction first waits for the queue to empty, so it reads and
+// writes the rows the accepted updates produced. What reads the database
+// outside one does not wait: lease renewals, artifact reads and the store's
+// lease-free reads (List, Exists, GetMetadata, ListSummaries, GetLast). Of
+// the rows those read, an update here writes only a session's message count,
+// last-used time and transcript identity, which they can report as they were
+// before the next commit.
 //
 // A write that fails is tried once more. If it fails again the writer stops
 // and every later coordination update and wait reports the failure: updates
@@ -215,7 +220,7 @@ func (w *coordinationWriter) write(batch []queuedUpdate) error {
 	defer cancel()
 	return w.store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 		for _, update := range batch {
-			if _, err := writeRecordDelta(ctx, conn, update.parent, update.changes); err != nil {
+			if err := writeRecordDelta(ctx, conn, update.parent, update.changes); err != nil {
 				return err
 			}
 			next := update.sequence + int64(len(update.appended))
@@ -227,12 +232,8 @@ func (w *coordinationWriter) write(batch []queuedUpdate) error {
 			if len(update.appended) == 0 {
 				continue
 			}
-			for i, payload := range update.appended {
-				if _, err := conn.ExecContext(ctx,
-					"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-					update.session, update.sequence+int64(i), payload); err != nil {
-					return err
-				}
+			if _, err := insertMessages(ctx, conn, update.session, update.sequence, update.appended); err != nil {
+				return err
 			}
 			if err := recordTurn(ctx, conn, update.session, next, update.nowNS); err != nil {
 				return err

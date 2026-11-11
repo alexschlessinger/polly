@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -25,11 +24,10 @@ import (
 // through own.
 type editBase struct {
 	raw map[string]map[string]json.RawMessage
-	// touched names the records the callback took through own, put or drop,
-	// by kind. They are the only ones an edit looks at when it finishes.
-	touched map[string]map[string]struct{}
-	// prior holds what each touched record was when the edit began, nil for
-	// one it added, and undo puts each back.
+	// prior holds, by kind, what each record the callback took through own,
+	// put or drop was when the edit began, nil for one it added, and undo
+	// puts each back. Its keys name the only records an edit looks at when
+	// it finishes.
 	prior map[string]map[string]any
 	undo  []func()
 	// format is the format record the edit began with.
@@ -44,7 +42,7 @@ type editBase struct {
 
 // has reports whether the edit already took record id of kind.
 func (b *editBase) has(kind, id string) bool {
-	_, ok := b.touched[kind][id]
+	_, ok := b.prior[kind][id]
 	return ok
 }
 
@@ -97,20 +95,6 @@ func (s *State) revert() {
 	s.Format = s.editing.format
 }
 
-// touch notes that an edit's callback changed, added or dropped a record.
-func (s *State) touch(kind, id string) {
-	if s.editing == nil {
-		return
-	}
-	if s.editing.touched[kind] == nil {
-		if s.editing.touched == nil {
-			s.editing.touched = map[string]map[string]struct{}{}
-		}
-		s.editing.touched[kind] = map[string]struct{}{}
-	}
-	s.editing.touched[kind][id] = struct{}{}
-}
-
 // put adds or replaces a record. table is s's map for kind. Every write to a
 // State's maps goes through put, drop or an own method: inside an edit the
 // maps are the family's, and a write has to be noted and may need a copy.
@@ -118,7 +102,6 @@ func put[T any](s *State, kind string, table *map[string]*T, id string, value *T
 	writable(s, kind, table)
 	remember(s, kind, table, id)
 	(*table)[id] = value
-	s.touch(kind, id)
 }
 
 // drop deletes a record, as put adds one.
@@ -126,7 +109,6 @@ func drop[T any](s *State, kind string, table *map[string]*T, id string) {
 	writable(s, kind, table)
 	remember(s, kind, table, id)
 	delete(*table, id)
-	s.touch(kind, id)
 }
 
 // recordKind is one kind of record an edit can change, apart from workflow
@@ -135,7 +117,7 @@ type recordKind struct {
 	kind string
 	// changes adds to out the records work holds that shared does not, and
 	// names in edited every shared record whose content no longer matches raw.
-	changes func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string, confirm bool) error
+	changes func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error
 	// touched is changes for the one record an edit says it touched.
 	touched func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error
 	// adopt replaces work's record with a decode of data, or drops it.
@@ -145,25 +127,18 @@ type recordKind struct {
 func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 	return recordKind{
 		kind: kind,
-		changes: func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string, confirm bool) error {
+		changes: func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error {
 			before, after := table(shared), table(work)
 			for id, value := range after {
 				if previous, ok := before[id]; ok && previous == value {
-					if !confirm {
-						continue
-					}
 					var stored T
 					if err := json.Unmarshal(raw[kind][id], &stored); err == nil && reflect.DeepEqual(&stored, value) {
 						continue
 					}
 					*edited = append(*edited, kind+"/"+id)
 				}
-				data, err := json.Marshal(value)
-				if err != nil {
+				if _, err := encodeChange(raw, out, kind, id, value); err != nil {
 					return err
-				}
-				if !bytes.Equal(data, raw[kind][id]) {
-					setChange(out, kind, id, data)
 				}
 			}
 			for id := range before {
@@ -181,14 +156,8 @@ func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 				}
 				return nil
 			}
-			data, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			if !bytes.Equal(data, raw[kind][id]) {
-				setChange(out, kind, id, data)
-			}
-			return nil
+			_, err := encodeChange(raw, out, kind, id, value)
+			return err
 		},
 		adopt: func(work *State, id string, data json.RawMessage) error {
 			if data == nil {
@@ -211,6 +180,20 @@ func setChange(out map[string]map[string]json.RawMessage, kind, id string, data 
 	}
 	out[kind][id] = data
 }
+
+// encodeChange adds value to out as record kind/id unless raw already stores
+// those bytes, and reports whether it did.
+func encodeChange(raw, out map[string]map[string]json.RawMessage, kind, id string, value any) (bool, error) {
+	data, err := json.Marshal(value)
+	if err != nil || bytes.Equal(data, raw[kind][id]) {
+		return false, err
+	}
+	setChange(out, kind, id, data)
+	return true, nil
+}
+
+// workflowStepKey is the record ID of a report's step.
+func workflowStepKey(id string, index int) string { return fmt.Sprintf("%s/%d", id, index) }
 
 var recordKinds = []recordKind{
 	kindOf("followup", func(s *State) map[string]*FollowupCall { return s.Followups }),
@@ -255,8 +238,8 @@ func (s *State) editable(raw map[string]map[string]json.RawMessage, confirm bool
 // own returns record id for a callback that is about to change it. Inside an
 // edit that is a copy of the caller's own, put in the record's place; a state
 // that is already private returns the record itself.
-func own[T any](s *State, kind string, table func(*State) *map[string]*T, id string) *T {
-	value := (*table(s))[id]
+func own[T any](s *State, kind string, table *map[string]*T, id string) *T {
+	value := (*table)[id]
 	if value == nil || s.editing == nil || s.editing.has(kind, id) {
 		// A record the callback already owns or added may change again.
 		return value
@@ -265,45 +248,25 @@ func own[T any](s *State, kind string, table func(*State) *map[string]*T, id str
 	if err := json.Unmarshal(s.editing.raw[kind][id], mine); err != nil {
 		panic(fmt.Sprintf("swarm: stored %s %s no longer decodes: %v", kind, id, err))
 	}
-	writable(s, kind, table(s))
-	remember(s, kind, table(s), id)
-	(*table(s))[id] = mine
-	s.touch(kind, id)
+	put(s, kind, table, id, mine)
 	return mine
 }
 
-func (s *State) ownExecution(id string) *Execution {
-	return own(s, "execution", func(s *State) *map[string]*Execution { return &s.Executions }, id)
-}
-func (s *State) ownMember(id string) *Member {
-	return own(s, "member", func(s *State) *map[string]*Member { return &s.Members }, id)
-}
-func (s *State) ownTask(id string) *Task {
-	return own(s, "task", func(s *State) *map[string]*Task { return &s.Tasks }, id)
-}
-func (s *State) ownMail(id string) *Mail {
-	return own(s, "mail", func(s *State) *map[string]*Mail { return &s.Messages }, id)
-}
-func (s *State) ownRun(id string) *Run {
-	return own(s, "run", func(s *State) *map[string]*Run { return &s.Runs }, id)
-}
+func (s *State) ownExecution(id string) *Execution { return own(s, "execution", &s.Executions, id) }
+func (s *State) ownMember(id string) *Member       { return own(s, "member", &s.Members, id) }
+func (s *State) ownTask(id string) *Task           { return own(s, "task", &s.Tasks, id) }
+func (s *State) ownMail(id string) *Mail           { return own(s, "mail", &s.Messages, id) }
+func (s *State) ownRun(id string) *Run             { return own(s, "run", &s.Runs, id) }
 func (s *State) ownContext(id string) *ExecutionContext {
-	return own(s, "context", func(s *State) *map[string]*ExecutionContext { return &s.Contexts }, id)
-}
-func (s *State) ownParentTurn(id string) *ParentTurn {
-	return own(s, "parent_turn", func(s *State) *map[string]*ParentTurn { return &s.ParentTurns }, id)
+	return own(s, "context", &s.Contexts, id)
 }
 func (s *State) ownIntegration(id string) *IntegrationCandidate {
-	return own(s, "integration", func(s *State) *map[string]*IntegrationCandidate { return &s.Integrations }, id)
+	return own(s, "integration", &s.Integrations, id)
 }
-func (s *State) ownFollowup(id string) *FollowupCall {
-	return own(s, "followup", func(s *State) *map[string]*FollowupCall { return &s.Followups }, id)
-}
-func (s *State) ownParent(id string) *ParentRecord {
-	return own(s, "parent", func(s *State) *map[string]*ParentRecord { return &s.Parents }, id)
-}
+func (s *State) ownFollowup(id string) *FollowupCall { return own(s, "followup", &s.Followups, id) }
+func (s *State) ownParent(id string) *ParentRecord   { return own(s, "parent", &s.Parents, id) }
 func (s *State) ownPublication(id string) *Publication {
-	return own(s, "publication", func(s *State) *map[string]*Publication { return &s.Publications }, id)
+	return own(s, "publication", &s.Publications, id)
 }
 
 // ownWorkflow is own for a report, which is stored as one record and one per
@@ -328,19 +291,16 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 // changesByWalk compares every record of an edit with the shared state it
 // started from. It returns the records that differ and names the shared
 // records a callback changed in place.
-func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
+func (s *State) changesByWalk() (out map[string]map[string]json.RawMessage, edited []string, err error) {
 	shared, raw := s.editing.before, s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
 	for _, kind := range recordKinds {
-		if err := kind.changes(shared, s, raw, out, &edited, confirm); err != nil {
+		if err := kind.changes(shared, s, raw, out, &edited); err != nil {
 			return nil, nil, err
 		}
 	}
 	for id, report := range s.Workflows {
 		previous, ok := shared.Workflows[id]
-		if ok && previous == report && !confirm {
-			continue
-		}
 		differs, err := s.workflowChanges(out, id, previous)
 		if err != nil {
 			return nil, nil, err
@@ -374,32 +334,25 @@ func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id st
 		if was {
 			setChange(out, "workflow", id, nil)
 			for index := range previous.Steps {
-				setChange(out, "workflow_step", fmt.Sprintf("%s/%d", id, index), nil)
+				setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 			}
 		}
 		return was, nil
 	}
 	headers, steps := detachWorkflowSteps(map[string]*workflow.Report{id: report})
-	data, err := json.Marshal(headers[id])
-	if err != nil {
+	if differs, err = encodeChange(raw, out, "workflow", id, headers[id]); err != nil {
 		return false, err
 	}
-	if differs = !bytes.Equal(data, raw["workflow"][id]); differs {
-		setChange(out, "workflow", id, data)
-	}
 	for key, step := range steps {
-		data, err := json.Marshal(step)
+		changed, err := encodeChange(raw, out, "workflow_step", key, step)
 		if err != nil {
 			return false, err
 		}
-		if !bytes.Equal(data, raw["workflow_step"][key]) {
-			setChange(out, "workflow_step", key, data)
-			differs = true
-		}
+		differs = differs || changed
 	}
 	if was {
 		for index := len(report.Steps); index < len(previous.Steps); index++ {
-			setChange(out, "workflow_step", fmt.Sprintf("%s/%d", id, index), nil)
+			setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 		}
 	}
 	return differs, nil
@@ -407,21 +360,15 @@ func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id st
 
 // formatChanges adds the format record to out when an edit replaced it.
 func (s *State) formatChanges(out map[string]map[string]json.RawMessage) error {
-	raw := s.editing.raw
-	if s.Format != s.editing.format {
-		if s.Format == nil {
-			setChange(out, formatKind, formatID, nil)
-		} else {
-			data, err := json.Marshal(s.Format)
-			if err != nil {
-				return err
-			}
-			if !bytes.Equal(data, raw[formatKind][formatID]) {
-				setChange(out, formatKind, formatID, data)
-			}
-		}
+	if s.Format == s.editing.format {
+		return nil
 	}
-	return nil
+	if s.Format == nil {
+		setChange(out, formatKind, formatID, nil)
+		return nil
+	}
+	_, err := encodeChange(s.editing.raw, out, formatKind, formatID, s.Format)
+	return err
 }
 
 var kindsByName = func() map[string]recordKind {
@@ -441,10 +388,10 @@ var kindsByName = func() map[string]recordKind {
 func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
 	raw := s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
-	for name, ids := range s.editing.touched {
+	for name, ids := range s.editing.prior {
 		if name == "workflow" {
-			for id := range ids {
-				previous, _ := s.editing.prior[name][id].(*workflow.Report)
+			for id, was := range ids {
+				previous, _ := was.(*workflow.Report)
 				if _, err := s.workflowChanges(out, id, previous); err != nil {
 					return nil, nil, err
 				}
@@ -467,7 +414,7 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 	if !confirm {
 		return out, nil, nil
 	}
-	walked, edited, err := s.changesByWalk(true)
+	walked, edited, err := s.changesByWalk()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -497,7 +444,9 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 // edit is update for a callback that takes every record it changes through
 // its own* method, and so pays for those records, not for the family. Adding
 // and deleting records needs nothing more. Against a store that cannot write
-// a set of changes, or behind a wrapper that hides that, it is update.
+// a set of changes, or behind a wrapper that hides that, it is update. The
+// state fn is handed becomes the family's own, which later edits write: fn
+// must not keep it or a map of it, and a caller that wants the result reads.
 func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 	if err := r.prepare(ctx); err != nil {
 		return err
@@ -541,7 +490,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 				break
 			}
 		}
-		confirm := r.view.confirmEdits(raw)
+		confirm := r.view.confirmEdits()
 		var committed *sessions.CoordinationState
 		var work *State
 		var changed map[string]map[string]json.RawMessage
@@ -578,23 +527,14 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 			r.view.drop()
 			poke = r.pokeAll
 		} else {
-			touched, prior := work.editing.touched, work.editing.prior
-			work.reindexMail()
+			prior := work.editing.prior
+			work.reindex()
 			r.view.advance(revision, committed.Revision, work, changed)
-			poke = r.pokesFor(touched, work, prior)
+			poke = r.pokesFor(prior, work)
 		}
 		return nil
 	}
-	err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		s, err := decodeState(raw)
-		if err != nil {
-			return err
-		}
-		if err = fn(raw, s); err != nil {
-			return err
-		}
-		return encodeState(raw, s)
-	})
+	err := rewrite(ctx, session, fn)
 	if err == nil {
 		poke = r.pokeAll
 	}
@@ -622,24 +562,10 @@ func editSite() string {
 // family is small enough for the check to cost what update would; between
 // checks a change made without own is not written, and the next check of the
 // shared state reverts it.
-func (c *StateCache) confirmEdits(raw map[string]map[string]json.RawMessage) bool {
-	if failOnSharedChange {
-		return true
-	}
-	records := 0
-	for _, group := range raw {
-		records += len(group)
-	}
-	if records > sharedCheckRecords {
-		return false
-	}
+func (c *StateCache) confirmEdits() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if time.Since(c.confirmed) < sharedCheckEvery {
-		return false
-	}
-	c.confirmed = time.Now()
-	return true
+	return c.due(&c.confirmed)
 }
 
 // snapshot returns the family's state with the records and revision it was
@@ -685,7 +611,7 @@ func (c *StateCache) lend(s *State) *State {
 	}
 	if c.lent == nil {
 		lent := *s
-		lent.mailTo = nil
+		lent.mailTo, lent.rootUse, lent.mailOn, lent.lazy = nil, nil, nil, &lazyIndex{}
 		c.lent, c.cloned = &lent, nil
 	}
 	return c.lent
@@ -724,12 +650,9 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 		for id, data := range group {
 			if data == nil {
 				delete(c.raw[kind], id)
-				continue
+			} else {
+				setChange(c.raw, kind, id, data)
 			}
-			if c.raw[kind] == nil {
-				c.raw[kind] = map[string]json.RawMessage{}
-			}
-			c.raw[kind][id] = data
 		}
 	}
 	for _, kind := range recordKinds {

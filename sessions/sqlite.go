@@ -113,7 +113,8 @@ type sqliteSession struct {
 	coord  struct {
 		// parent is the family's root; it never changes once known.
 		parent []byte
-		// sequence is the transcript's next sequence while known is set.
+		// sequence is the transcript's next sequence while known is set,
+		// which it never is while writers is nonzero.
 		sequence int64
 		known    bool
 		// writers counts operations in flight that may write the row some
@@ -1867,17 +1868,25 @@ func (s *sqliteSession) leaseFresh() bool {
 	return time.Now().UnixNano() < s.leaseExpiry.Load()-int64(leaseStaleAfter/4)
 }
 
+// alive fails with the cause when the session or the caller is already done.
+func (s *sqliteSession) alive(ctx context.Context) error {
+	if cause := context.Cause(s.ctx); cause != nil {
+		return cause
+	}
+	if ctx != nil {
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
 // operationContext derives a context canceled by either the caller or the
 // session. A session or caller that is already done fails fast with its cause.
 func (s *sqliteSession) operationContext(ctx context.Context) (context.Context, func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if cause := context.Cause(s.ctx); cause != nil {
-		return nil, nil, cause
-	}
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, nil, cause
+	if err := s.alive(ctx); err != nil {
+		return nil, nil, err
 	}
 	opCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(s.ctx, cancel)
@@ -1917,11 +1926,11 @@ func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.
 		cache := s.store.coordination
 		cache.held <- struct{}{}
 		s.coord.writers++
+		s.coord.known = false
 		<-cache.held
 		defer func() {
 			cache.held <- struct{}{}
 			s.coord.writers--
-			s.coord.known = false
 			<-cache.held
 		}()
 	}
@@ -2020,18 +2029,35 @@ func nextSequence(ctx context.Context, conn rowQuerier, id []byte) (int64, error
 // appendMessages stores msgs at sequences next, next+1, ... and returns the
 // sequence after the last one.
 func appendMessages(ctx context.Context, conn *sql.Conn, id []byte, next int64, msgs []messages.ChatMessage) (int64, error) {
+	payloads, err := encodeMessages(msgs)
+	if err != nil {
+		return 0, err
+	}
+	return insertMessages(ctx, conn, id, next, payloads)
+}
+
+func encodeMessages(msgs []messages.ChatMessage) ([][]byte, error) {
+	payloads := make([][]byte, len(msgs))
 	for i, msg := range msgs {
 		payload, err := json.Marshal(msg)
 		if err != nil {
-			return 0, fmt.Errorf("encode message %d: %w", i, err)
+			return nil, fmt.Errorf("encode message %d: %w", i, err)
 		}
+		payloads[i] = payload
+	}
+	return payloads, nil
+}
+
+// insertMessages is appendMessages for messages already encoded.
+func insertMessages(ctx context.Context, conn *sql.Conn, id []byte, next int64, payloads [][]byte) (int64, error) {
+	for i, payload := range payloads {
 		if _, err := conn.ExecContext(ctx,
 			"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
 			id, next+int64(i), payload); err != nil {
 			return 0, err
 		}
 	}
-	return next + int64(len(msgs)), nil
+	return next + int64(len(payloads)), nil
 }
 
 // touchSQL advances updated_ns to now, and strictly past its old value even
@@ -2061,11 +2087,7 @@ func (s *sqliteSession) AddMessage(ctx context.Context, message messages.ChatMes
 
 func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []messages.ChatMessage) error {
 	if len(messagesToAdd) == 0 {
-		_, cleanup, err := s.operationContext(ctx)
-		if err == nil {
-			cleanup()
-		}
-		return err
+		return s.alive(ctx)
 	}
 
 	nowNS := time.Now().UTC().UnixNano()

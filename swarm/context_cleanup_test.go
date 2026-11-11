@@ -317,3 +317,73 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 		}
 	}
 }
+
+// syncSpy is a store whose Sync first shows the caller what is being synced.
+type syncSpy struct {
+	sessions.SessionStore
+	before func()
+}
+
+func (s *syncSpy) Sync(ctx context.Context) error {
+	s.before()
+	if store, ok := s.SessionStore.(sessions.SyncStore); ok {
+		return store.Sync(ctx)
+	}
+	return nil
+}
+
+// An edit only queues its records for the store's writer. A release removes
+// files on the strength of its mark, so it waits for the disk in between: a
+// process that died first would otherwise leave a live record of a workspace
+// that is gone, which no later pass can release.
+func TestReleaseSyncsItsMarkBeforeRemovingFiles(t *testing.T) {
+	t.Parallel()
+	for name, release := range map[string]func(context.Context, *Runtime, string) error{
+		"cleanup": func(ctx context.Context, r *Runtime, id string) error { return r.Cleanup(ctx, id) },
+		"automatic": func(ctx context.Context, r *Runtime, _ string) error {
+			_, err := r.releaseWorkspaces(ctx)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, result, ref := noEditResult(t, false)
+			ctx := context.Background()
+			var copy *ExecutionContext
+			synced := false
+			// The runtime's goroutines read its store, so the wrapper goes in
+			// before the runtime that uses it starts.
+			r = rebuildRuntime(t, r, func(c *Config) {
+				c.Store = &syncSpy{SessionStore: c.Store, before: func() {
+					if copy == nil {
+						return
+					}
+					state, err := r.read(ctx)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_, statErr := os.Stat(copy.Root)
+					if c := state.Contexts[copy.ID]; c != nil && c.Release == WorkspaceReleasing && statErr == nil {
+						synced = true
+					}
+				}}
+			})
+			suspendAutoRelease(t, r)
+			integrateOK(t, r, IntegrateRequest{Tasks: []TaskReference{ref}})
+			s, err := r.read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			copy = s.Contexts[result.Context]
+			if err := release(ctx, r, copy.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(copy.Root); !os.IsNotExist(err) {
+				t.Fatalf("release left the files: %v", err)
+			}
+			if !synced {
+				t.Fatal("release removed files without syncing its mark first")
+			}
+		})
+	}
+}
