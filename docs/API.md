@@ -1191,6 +1191,7 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `Clear`, `Reset` | Clear transcript/artifacts; Reset also replaces settings |
 | `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
 | `Parent` | Link a child by stable identity, independent of rename |
+| `SessionCreator.Create` | Optional. `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included |
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
 | `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store commits without waiting for the disk, so a power loss can lose the latest commits |
 
@@ -1368,7 +1369,11 @@ A few rules of thumb:
   request, which returns at once: the journal of the next tool batch that
   can act, or the last checkpoint of the slice, waits for that write too, so
   nothing is changed and no result is reported on a transcript a crash could
-  take back.
+  take back. An update that registers members writes the registration to the
+  database at once and queues its records like any other, so a crash between
+  the two leaves a member's session retained by a family with no record of
+  it, until the family's root is deleted. An update that pins artifacts is
+  written whole before it returns.
 - One store handle drives a family: the one that holds its root session. A
   second handle on the same database reads the family as of the driver's last
   checkpoint, and a change it makes to the family's records fails with
