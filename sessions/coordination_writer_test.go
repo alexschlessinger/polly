@@ -57,8 +57,8 @@ func historyText(t *testing.T, session Session) string {
 }
 
 // An update answered from memory is queued for the writer, and everything
-// else the store does waits for the queue, so it sees the update's rows in
-// the order the updates were accepted.
+// else the store does in a transaction waits for the queue, so it sees the
+// update's rows in the order the updates were accepted.
 func TestCoordinationUpdatesAreWrittenBehind(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "polly.db")

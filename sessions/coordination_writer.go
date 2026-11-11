@@ -40,9 +40,14 @@ type queuedUpdate struct {
 // callers: one goroutine takes everything queued and commits it in a single
 // transaction, in the order it was accepted. An update is therefore visible
 // to this store the moment it returns and reaches the database a moment
-// later; a process that dies in between loses it. Every other operation on
-// the store first waits for the queue to empty, so it reads and writes the
-// rows the accepted updates produced.
+// later; a process that dies in between loses it. Every other operation that
+// runs in a transaction first waits for the queue to empty, so it reads and
+// writes the rows the accepted updates produced. What reads the database
+// outside one does not wait: lease renewals, artifact reads and the store's
+// lease-free reads (List, Exists, GetMetadata, ListSummaries, GetLast). Of
+// the rows those read, an update here writes only a session's message count,
+// last-used time and transcript identity, which they can report as they were
+// before the next commit.
 //
 // A write that fails is tried once more. If it fails again the writer stops
 // and every later coordination update and wait reports the failure: updates
