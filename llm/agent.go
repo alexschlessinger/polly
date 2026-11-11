@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -2137,34 +2138,23 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		return results, nil
 	}
 
+	// Queue positions, not goroutines. The batch already owns the calls,
+	// handles and ordered result slots; only active workers need stacks. With
+	// no limit there is a worker per approved call, so every call starts at once.
 	g, ctx := errgroup.WithContext(ctx)
-	if a.config.MaxParallelTools <= 0 {
-		// Unlimited mode still starts one goroutine per approved call.
-		for _, idx := range approvedIndices {
-			g.Go(func() error { return execute(ctx, idx) })
-		}
-	} else {
-		// Queue positions, not goroutines. The batch already owns the calls,
-		// handles and ordered result slots; only active workers need stacks.
-		var queueMu sync.Mutex
-		next := 0
-		for range parallelism {
-			g.Go(func() error {
-				for {
-					queueMu.Lock()
-					if next == len(approvedIndices) {
-						queueMu.Unlock()
-						return nil
-					}
-					idx := approvedIndices[next]
-					next++
-					queueMu.Unlock()
-					if err := execute(ctx, idx); err != nil {
-						return err
-					}
+	var next atomic.Int64
+	for range parallelism {
+		g.Go(func() error {
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(approvedIndices) {
+					return nil
 				}
-			})
-		}
+				if err := execute(ctx, approvedIndices[i]); err != nil {
+					return err
+				}
+			}
+		})
 	}
 
 	if err := g.Wait(); err != nil {
