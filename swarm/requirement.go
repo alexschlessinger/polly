@@ -139,7 +139,7 @@ func deliveringTask(s *State, t *Task) bool {
 func resultNotice(s *State, t *Task) *Mail {
 	var notice *Mail
 	for _, m := range s.mailAbout(t.ID) {
-		if m.Revision == t.Revision && m.Execution == t.Execution && (notice == nil || m.ID < notice.ID) {
+		if announcesResult(m, t, notice) {
 			notice = m
 		}
 	}
@@ -149,17 +149,16 @@ func resultNotice(s *State, t *Task) *Mail {
 // resultNotices is resultNotice for every task, from one pass over the mail.
 func resultNotices(s *State) map[string]*Mail {
 	notices := map[string]*Mail{}
-	for id, m := range s.Messages {
-		if m.Task == "" {
-			continue
-		}
-		t := s.Tasks[m.Task]
-		if t == nil || m.Revision != t.Revision || m.Execution != t.Execution {
-			continue
-		}
-		if notice := notices[t.ID]; notice == nil || id < notice.ID {
+	for _, m := range s.Messages {
+		if t := s.Tasks[m.Task]; t != nil && m.Task != "" && announcesResult(m, t, notices[t.ID]) {
 			notices[t.ID] = m
 		}
 	}
 	return notices
+}
+
+// announcesResult reports whether m announces t's current result and comes
+// before best, the notice found so far.
+func announcesResult(m *Mail, t *Task, best *Mail) bool {
+	return m.Revision == t.Revision && m.Execution == t.Execution && (best == nil || m.ID < best.ID)
 }

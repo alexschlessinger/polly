@@ -252,11 +252,11 @@ type State struct {
 	editing *editBase
 	// mailTo names each member's mail, on the state a Runtime's edits keep
 	// current; any other state finds mail by looking at all of it.
-	mailTo map[string]map[string]struct{}
+	mailTo mailIndex
 	// rootUse counts the contexts on each root, kept the same way.
 	rootUse map[string]int
 	// mailOn names the mail about each task, kept the same way.
-	mailOn map[string]map[string]struct{}
+	mailOn mailIndex
 	// lazy is set on a state a reader keeps, which never changes: it builds
 	// mailOn for itself the first time it is asked.
 	lazy *lazyIndex
@@ -264,59 +264,41 @@ type State struct {
 
 type lazyIndex struct {
 	once   sync.Once
-	mailOn map[string]map[string]struct{}
+	mailOn mailIndex
 }
 
-func indexTaskMail(s *State) map[string]map[string]struct{} {
-	index := map[string]map[string]struct{}{}
+// mailIndex names mail IDs by one of a mail's fields: its recipient or its task.
+type mailIndex map[string]map[string]struct{}
+
+func (x mailIndex) add(key, id string) {
+	if x[key] == nil {
+		x[key] = map[string]struct{}{}
+	}
+	x[key][id] = struct{}{}
+}
+
+func (x mailIndex) remove(key, id string) {
+	if delete(x[key], id); len(x[key]) == 0 {
+		delete(x, key)
+	}
+}
+
+func indexMail(s *State) mailIndex {
+	index := mailIndex{}
 	for id, mail := range s.Messages {
-		if mail.Task == "" {
-			continue
-		}
-		if index[mail.Task] == nil {
-			index[mail.Task] = map[string]struct{}{}
-		}
-		index[mail.Task][id] = struct{}{}
+		index.add(mail.To, id)
 	}
 	return index
 }
 
-// mailAbout returns the mail that names a task, in no order.
-func (s *State) mailAbout(task string) []*Mail {
-	index := s.mailOn
-	if index == nil && s.lazy != nil {
-		s.lazy.once.Do(func() { s.lazy.mailOn = indexTaskMail(s) })
-		index = s.lazy.mailOn
-	}
-	var out []*Mail
-	if index == nil {
-		for _, mail := range s.Messages {
-			if mail.Task == task {
-				out = append(out, mail)
-			}
-		}
-		return out
-	}
-	// As in mailFor, the mail an edit in progress touched is looked at
-	// directly.
-	var touched map[string]struct{}
-	if s.editing != nil {
-		touched = s.editing.touched["mail"]
-	}
-	for id := range index[task] {
-		if _, ok := touched[id]; ok {
-			continue
-		}
-		if mail := s.Messages[id]; mail != nil {
-			out = append(out, mail)
+func indexTaskMail(s *State) mailIndex {
+	index := mailIndex{}
+	for id, mail := range s.Messages {
+		if mail.Task != "" {
+			index.add(mail.Task, id)
 		}
 	}
-	for id := range touched {
-		if mail := s.Messages[id]; mail != nil && mail.Task == task {
-			out = append(out, mail)
-		}
-	}
-	return out
+	return index
 }
 
 func indexRoots(s *State) map[string]int {
@@ -327,35 +309,48 @@ func indexRoots(s *State) map[string]int {
 	return index
 }
 
-func indexMail(s *State) map[string]map[string]struct{} {
-	index := map[string]map[string]struct{}{}
-	for id, mail := range s.Messages {
-		if index[mail.To] == nil {
-			index[mail.To] = map[string]struct{}{}
-		}
-		index[mail.To][id] = struct{}{}
-	}
-	return index
+// index builds the indexes a Runtime's edits then keep current.
+func (s *State) index() {
+	s.mailTo, s.rootUse, s.mailOn = indexMail(s), indexRoots(s), indexTaskMail(s)
 }
 
 // mailFor returns the mail addressed to a member, in no order.
-func (s *State) mailFor(to string) []*Mail {
+func (s *State) mailFor(to string) []*Mail { return s.mailWhere(s.mailTo, to, false) }
+
+// mailAbout returns the mail that names a task, in no order.
+func (s *State) mailAbout(task string) []*Mail {
+	index := s.mailOn
+	if index == nil && s.lazy != nil {
+		s.lazy.once.Do(func() { s.lazy.mailOn = indexTaskMail(s) })
+		index = s.lazy.mailOn
+	}
+	return s.mailWhere(index, task, true)
+}
+
+// mailWhere returns the mail whose task, or else recipient, is want. With no
+// index it looks at all mail. An index is as the edit in progress found it,
+// so the mail that edit touched is looked at directly.
+func (s *State) mailWhere(index mailIndex, want string, byTask bool) []*Mail {
+	matches := func(mail *Mail) bool {
+		if byTask {
+			return mail.Task == want
+		}
+		return mail.To == want
+	}
 	var out []*Mail
-	if s.mailTo == nil {
+	if index == nil {
 		for _, mail := range s.Messages {
-			if mail.To == to {
+			if matches(mail) {
 				out = append(out, mail)
 			}
 		}
 		return out
 	}
-	// The index is as the edit in progress found it: the mail that edit
-	// touched is looked at directly.
-	var touched map[string]struct{}
+	var touched map[string]any
 	if s.editing != nil {
-		touched = s.editing.touched["mail"]
+		touched = s.editing.prior["mail"]
 	}
-	for id := range s.mailTo[to] {
+	for id := range index[want] {
 		if _, ok := touched[id]; ok {
 			continue
 		}
@@ -364,7 +359,7 @@ func (s *State) mailFor(to string) []*Mail {
 		}
 	}
 	for id := range touched {
-		if mail := s.Messages[id]; mail != nil && mail.To == to {
+		if mail := s.Messages[id]; mail != nil && matches(mail) {
 			out = append(out, mail)
 		}
 	}
@@ -376,8 +371,8 @@ func (s *State) reindex() {
 	if s.mailTo == nil || s.editing == nil {
 		return
 	}
-	for id := range s.editing.touched["context"] {
-		if old, _ := s.editing.prior["context"][id].(*ExecutionContext); old != nil {
+	for id, was := range s.editing.prior["context"] {
+		if old, _ := was.(*ExecutionContext); old != nil {
 			if s.rootUse[old.Root]--; s.rootUse[old.Root] <= 0 {
 				delete(s.rootUse, old.Root)
 			}
@@ -386,27 +381,16 @@ func (s *State) reindex() {
 			s.rootUse[c.Root]++
 		}
 	}
-	for id := range s.editing.touched["mail"] {
-		if old, _ := s.editing.prior["mail"][id].(*Mail); old != nil {
-			delete(s.mailTo[old.To], id)
-			if len(s.mailTo[old.To]) == 0 {
-				delete(s.mailTo, old.To)
-			}
-			if delete(s.mailOn[old.Task], id); len(s.mailOn[old.Task]) == 0 {
-				delete(s.mailOn, old.Task)
-			}
+	for id, was := range s.editing.prior["mail"] {
+		if old, _ := was.(*Mail); old != nil {
+			s.mailTo.remove(old.To, id)
+			s.mailOn.remove(old.Task, id)
 		}
 		if mail := s.Messages[id]; mail != nil {
+			s.mailTo.add(mail.To, id)
 			if mail.Task != "" {
-				if s.mailOn[mail.Task] == nil {
-					s.mailOn[mail.Task] = map[string]struct{}{}
-				}
-				s.mailOn[mail.Task][id] = struct{}{}
+				s.mailOn.add(mail.Task, id)
 			}
-			if s.mailTo[mail.To] == nil {
-				s.mailTo[mail.To] = map[string]struct{}{}
-			}
-			s.mailTo[mail.To][id] = struct{}{}
 		}
 	}
 }
@@ -540,7 +524,7 @@ func detachWorkflowSteps(reports map[string]*workflow.Report) (map[string]*workf
 		header.Steps = nil
 		headers[id] = &header
 		for index, step := range report.Steps {
-			steps[fmt.Sprintf("%s/%d", id, index)] = step
+			steps[workflowStepKey(id, index)] = step
 		}
 	}
 	return headers, steps
@@ -591,21 +575,27 @@ func (r *Runtime) update(ctx context.Context, fn func(*State) error) error {
 	if err := r.prepare(ctx); err != nil {
 		return err
 	}
-	err := r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		s, err := decodeState(raw)
-		if err != nil {
-			return err
-		}
-		if err = fn(s); err != nil {
-			return err
-		}
-		return encodeState(raw, s)
-	})
+	err := rewrite(ctx, r.parent, func(_ *sessions.CoordinationState, s *State) error { return fn(s) })
 	if err == nil {
 		r.pokeAll()
 		r.changed()
 	}
 	return err
+}
+
+// rewrite runs fn on a decode of the whole family inside one transaction of
+// session's and writes back whatever differs.
+func rewrite(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) error {
+	return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+		s, err := decodeState(raw)
+		if err != nil {
+			return err
+		}
+		if err = fn(raw, s); err != nil {
+			return err
+		}
+		return encodeState(raw, s)
+	})
 }
 func (r *Runtime) currentRun(s *State) *Run {
 	for _, run := range s.Runs {
@@ -736,12 +726,11 @@ func (r *Runtime) current(ctx context.Context) (*State, error) {
 // identity and no Records then.
 func (r *Runtime) lookThrough(ctx context.Context, session sessions.CoordinationSession, fn func(s *State, raw *sessions.CoordinationState)) error {
 	revisions, ok := session.(sessions.CoordinationRevisionSession)
-	identity, named := session.(sessions.ViewIdentity)
-	if _, shared := r.parent.(sessions.CoordinationRevisionSession); ok && named && shared {
+	if _, shared := r.parent.(sessions.CoordinationRevisionSession); ok && shared {
 		if _, err := revisions.CoordinationRevision(ctx); err != nil {
 			return err
 		}
-		raw := &sessions.CoordinationState{ActorID: identity.ViewID(), ParentID: r.ID}
+		raw := &sessions.CoordinationState{ActorID: session.ViewID(), ParentID: r.ID}
 		return r.look(ctx, func(s *State) { fn(s, raw) })
 	}
 	raw, err := session.ReadCoordination(ctx)
@@ -806,7 +795,7 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.mailTo, s.rootUse, s.mailOn = indexMail(s), indexRoots(s), indexTaskMail(s)
+	s.index()
 	c.raw, c.revision, c.state, c.lent, c.cloned = raw.Records, raw.Revision, s, nil, nil
 	return s, nil
 }
@@ -821,24 +810,36 @@ const (
 // failOnSharedChange makes every read of the shared state confirm it first.
 var failOnSharedChange = testing.Testing()
 
+// due reports whether a confirmation last made at *last should run again, and
+// notes that it does. Tests always confirm. A running process does about once
+// a second while the family is small enough to decode cheaply. The caller
+// holds c.mu.
+func (c *StateCache) due(last *time.Time) bool {
+	if failOnSharedChange {
+		return true
+	}
+	records := 0
+	for _, group := range c.raw {
+		records += len(group)
+	}
+	if records > sharedCheckRecords || time.Since(*last) < sharedCheckEvery {
+		return false
+	}
+	*last = time.Now()
+	return true
+}
+
 // check confirms no reader changed the shared state, whose records the next
 // decode hands on as they are. A test fails on the spot. A running process
 // looks about once a second while the family is small enough to decode
 // cheaply, and on a difference warns and returns to the stored records.
 func (c *StateCache) check() {
-	if !failOnSharedChange {
-		records := 0
-		for _, group := range c.raw {
-			records += len(group)
-		}
-		if records > sharedCheckRecords || time.Since(c.checked) < sharedCheckEvery {
-			return
-		}
-		c.checked = time.Now()
+	if !c.due(&c.checked) {
+		return
 	}
 	fresh, err := decodeState(&sessions.CoordinationState{Records: c.raw})
 	if err == nil {
-		fresh.mailTo, fresh.rootUse, fresh.mailOn = indexMail(fresh), indexRoots(fresh), indexTaskMail(fresh)
+		fresh.index()
 	}
 	if err != nil || reflect.DeepEqual(fresh, c.state) {
 		return

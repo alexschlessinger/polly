@@ -419,12 +419,12 @@ func TestTaskChangePokesOnlyItsWatchers(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"task", "dependency"} {
-		r.pokesFor(map[string]map[string]struct{}{"task": {id: {}}}, s, nil)()
+		r.pokesFor(map[string]map[string]any{"task": {id: nil}}, s)()
 		if !poked(owner) || poked(other) {
 			t.Fatalf("a change to %s poked the wrong members", id)
 		}
 	}
-	if poke := r.pokesFor(map[string]map[string]struct{}{"task": {"unwatched": {}}}, s, nil); poke != nil {
+	if poke := r.pokesFor(map[string]map[string]any{"task": {"unwatched": nil}}, s); poke != nil {
 		poke()
 	}
 	if poked(owner) || poked(other) {
@@ -451,10 +451,7 @@ func TestOtherRootsFollowsTheContextsAnEditTouched(t *testing.T) {
 	}
 	// An edit drops b and moves c to a new root.
 	old := s.Contexts["c"]
-	s.editing = &editBase{
-		touched: map[string]map[string]struct{}{"context": {"b": {}, "c": {}}},
-		prior:   map[string]map[string]any{"context": {"b": s.Contexts["b"], "c": old}},
-	}
+	s.editing = &editBase{prior: map[string]map[string]any{"context": {"b": s.Contexts["b"], "c": old}}}
 	delete(s.Contexts, "b")
 	s.Contexts["c"] = &ExecutionContext{ID: "c", Root: "/z"}
 	s.reindex()
@@ -495,10 +492,7 @@ func TestResultNoticeIsFoundThroughEveryKindOfState(t *testing.T) {
 		}
 	}
 	// An edit drops the notice; the index follows.
-	indexed.editing = &editBase{
-		touched: map[string]map[string]struct{}{"mail": {"m2": {}}},
-		prior:   map[string]map[string]any{"mail": {"m2": indexed.Messages["m2"]}},
-	}
+	indexed.editing = &editBase{prior: map[string]map[string]any{"mail": {"m2": indexed.Messages["m2"]}}}
 	delete(indexed.Messages, "m2")
 	if notice := resultNotice(indexed, indexed.Tasks["t"]); notice == nil || notice.ID != "m3" {
 		t.Fatalf("during the edit: resultNotice = %v, want m3", notice)

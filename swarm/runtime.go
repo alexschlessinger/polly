@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -454,10 +455,15 @@ func (r *Runtime) pokeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, i := range r.active {
-		select {
-		case i.poke <- struct{}{}:
-		default:
-		}
+		i.nudge()
+	}
+}
+
+// nudge has i recheck its wake conditions, unless it is already due to.
+func (i *invocation) nudge() {
+	select {
+	case i.poke <- struct{}{}:
+	default:
 	}
 }
 
@@ -506,20 +512,16 @@ func (r *Runtime) watchTasks(i *invocation, ids []string) {
 // dependencies, and on publications, which any member may be waiting on; no
 // other kind of record wakes one. The edit works the pokes out while it still
 // holds the family's state and sends them once it has let go.
-func (r *Runtime) pokesFor(touched map[string]map[string]struct{}, after *State, prior map[string]map[string]any) func() {
+func (r *Runtime) pokesFor(prior map[string]map[string]any, after *State) func() {
 	var members, tasks []string
-	for kind, ids := range touched {
+	for kind, ids := range prior {
 		switch kind {
 		case "publication", "parent":
 			return r.pokeAll
 		case "task":
-			for id := range ids {
-				tasks = append(tasks, id)
-			}
+			tasks = slices.AppendSeq(tasks, maps.Keys(ids))
 		case "member":
-			for id := range ids {
-				members = append(members, id)
-			}
+			members = slices.AppendSeq(members, maps.Keys(ids))
 		case "mail", "followup":
 			// A follow-up record shares its mail's ID and gates its delivery.
 			for id := range ids {
@@ -542,18 +544,12 @@ func (r *Runtime) pokesFor(touched map[string]map[string]struct{}, after *State,
 		defer r.mu.Unlock()
 		for _, id := range members {
 			if i := r.active[id]; i != nil {
-				select {
-				case i.poke <- struct{}{}:
-				default:
-				}
+				i.nudge()
 			}
 		}
 		for _, id := range tasks {
 			for i := range r.watchers[id] {
-				select {
-				case i.poke <- struct{}{}:
-				default:
-				}
+				i.nudge()
 			}
 		}
 	}
@@ -1434,50 +1430,10 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 		r.yield = make(chan struct{})
 		r.mu.Unlock()
 		r.event("waiting", i.member, "waiting for an addressed event")
-		// A member that wakes soon runs its next slice on the session it
-		// holds; one that stays parked gives the lease up.
-		held := time.NewTimer(parkedSessionHold)
-		for {
-			// An edit pokes the members its records concern, so a parked
-			// member rechecks only then.
-			wake := false
-			if err := r.look(ctx, func(s *State) {
-				e := s.Executions[i.id]
-				publicationReady := e != nil && len(pendingPublications(s, i.member, e.Run)) > 0
-				wake = len(inbox(s, i.member, true)) > 0 || publicationReady || waitState(s, i.member) != i.waitState
-				// Said while no edit can run, so none slips between this
-				// check and the poke it would owe.
-				r.watchTasks(i, waitTasks(s, i.member))
-			}); err != nil {
-				r.watchTasks(i, nil)
-				i.err = err
-				r.finish(i)
-				return
-			}
-			if wake || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
-				r.watchTasks(i, nil)
-				held.Stop()
-				break
-			}
-			delay := time.Until(i.waitUntil)
-			if i.waitUntil.IsZero() {
-				delay = time.Hour
-			}
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				held.Stop()
-				r.watchTasks(i, nil)
-				i.err = ctx.Err()
-				r.finish(i)
-				return
-			case <-i.poke:
-			case <-timer.C:
-			case <-held.C:
-				i.releaseSession()
-			}
-			timer.Stop()
+		if err := r.park(ctx, i); err != nil {
+			i.err = err
+			r.finish(i)
+			return
 		}
 		// A wake re-queues the same execution: the record says queued while
 		// the invocation waits for a slot and running once the slice starts.
@@ -1512,6 +1468,48 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 	return !errors.Is(i.err, ErrYielded) && r.finish(i)
 }
 
+// park returns once the yielded member i has something to wake for, or its
+// wait runs out. A member that wakes soon runs its next slice on the session
+// it holds; one that stays parked gives the lease up.
+func (r *Runtime) park(ctx context.Context, i *invocation) error {
+	held := time.NewTimer(parkedSessionHold)
+	defer held.Stop()
+	defer r.watchTasks(i, nil)
+	for {
+		// An edit pokes the members its records concern, so a parked
+		// member rechecks only then.
+		wake := false
+		if err := r.look(ctx, func(s *State) {
+			e := s.Executions[i.id]
+			publicationReady := e != nil && len(pendingPublications(s, i.member, e.Run)) > 0
+			wake = len(inbox(s, i.member, true)) > 0 || publicationReady || waitState(s, i.member) != i.waitState
+			// Said while no edit can run, so none slips between this
+			// check and the poke it would owe.
+			r.watchTasks(i, waitTasks(s, i.member))
+		}); err != nil {
+			return err
+		}
+		if wake || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
+			return nil
+		}
+		delay := time.Until(i.waitUntil)
+		if i.waitUntil.IsZero() {
+			delay = time.Hour
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-i.poke:
+		case <-timer.C:
+		case <-held.C:
+			i.releaseSession()
+		}
+		timer.Stop()
+	}
+}
+
 // parkedSessionHold is how long a parked member keeps its session's lease,
 // which is shorter than the lease's heartbeat: a member that wakes within it
 // saves releasing and acquiring the session, and one that does not costs no
@@ -1536,6 +1534,9 @@ func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []stri
 	var others []string
 	if err := r.look(ctx, func(s *State) {
 		e, m := s.Executions[i.id], s.Members[i.member]
+		if m != nil {
+			others = otherRoots(s, s.Contexts[m.Context])
+		}
 		if e == nil || m == nil || !e.InputSaved || e.Completion != nil {
 			return
 		}
@@ -1550,7 +1551,6 @@ func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []stri
 		}
 		if c := s.Contexts[m.Context]; c != nil {
 			contexts[c.ID] = c
-			others = otherRoots(s, c)
 		}
 		own = &State{
 			Executions: map[string]*Execution{e.ID: e}, Members: map[string]*Member{m.ID: m},
@@ -1561,13 +1561,6 @@ func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []stri
 	}
 	if own != nil {
 		return own, others, nil
-	}
-	if err := r.look(ctx, func(s *State) {
-		if m := s.Members[i.member]; m != nil {
-			others = otherRoots(s, s.Contexts[m.Context])
-		}
-	}); err != nil {
-		return nil, nil, err
 	}
 	s, err := r.read(ctx)
 	return s, others, err

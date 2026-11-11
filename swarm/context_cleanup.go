@@ -112,16 +112,24 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 	}
 	if len(removed) > 0 {
 		if e := r.edit(finishCtx, func(s *State) error {
+			// One pass over the members, however many contexts went.
+			holders := make(map[string][]string, len(removed))
 			for _, id := range removed {
-				for key, member := range s.Members {
-					if member.Context == id {
-						member = s.ownMember(key)
-						if c := s.Contexts[id]; c != nil {
-							member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
-						}
-						member.Context = ""
-						wake = append(wake, member.ID)
+				holders[id] = nil
+			}
+			for key, member := range s.Members {
+				if _, gone := holders[member.Context]; gone {
+					holders[member.Context] = append(holders[member.Context], key)
+				}
+			}
+			for _, id := range removed {
+				for _, key := range holders[id] {
+					member := s.ownMember(key)
+					if c := s.Contexts[id]; c != nil {
+						member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
 					}
+					member.Context = ""
+					wake = append(wake, member.ID)
 				}
 				drop(s, "context", &s.Contexts, id)
 			}
