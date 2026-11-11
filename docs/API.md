@@ -1350,16 +1350,26 @@ A few rules of thumb:
   `sessions.CoordinationDeltaSession` is given only the records an update
   changed, instead of a copy of the family to edit.
 - The SQLite store answers `UpdateCoordinationFrom` and coordination reads
-  from memory and writes behind them. An update that returned before it was
-  written carries `CoordinationState.Written`, which returns once it is in
-  the database; the swarm runtime waits on it before an edit returns, so a
-  crash of the process loses nothing an edit returned from. The exception is
-  a member's checkpoint before a model request, which returns at once: the
-  journal of the next tool batch that can act, or the last checkpoint of the
-  slice, waits for that write too, so nothing is changed and no result is
-  reported on a transcript a crash could take back. One store handle owns a
-  family: a second handle on the same database that writes the same family
-  is noticed within a tenth of a second, not at once.
+  from memory for a family whose root session it holds, and writes the
+  updates into the database behind them, at checkpoints a fraction of a
+  second apart. A disk store first writes each update to an update log, the
+  directory `<path>-log` beside the database. An update that returned before
+  that write carries `CoordinationState.Written`, which returns once the log
+  holds it; the swarm runtime waits on it before an edit returns, so a crash
+  of the process loses nothing an edit returned from, and the next store to
+  open the database writes what the log holds. A memory store has no log and
+  nothing to wait for. The exception is a member's checkpoint before a model
+  request, which returns at once: the journal of the next tool batch that
+  can act, or the last checkpoint of the slice, waits for that write too, so
+  nothing is changed and no result is reported on a transcript a crash could
+  take back.
+- One store handle drives a family: the one that holds its root session. A
+  second handle on the same database reads the family as of the driver's last
+  checkpoint, and a change it makes to the family's records fails with
+  `sessions.ErrFamilyDriven` until the root is free. It can still save to
+  the transcript of a member it holds. An update reaches the database only
+  while the leases it was accepted under stand: when another handle has
+  taken over the root or the member since, it is dropped.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
   result and before it writes to the source tree, and after recording a
