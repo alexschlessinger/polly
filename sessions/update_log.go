@@ -42,6 +42,9 @@ const (
 	logIDBytes      = 16
 	logFrameHeader  = 8
 	logSegmentBytes = 16 << 20
+	// The flags of what an update carries besides messages and records.
+	logCarriesTranscript = 1
+	logCarriesOutcome    = 2
 )
 
 var logChecksums = crc32.MakeTable(crc32.Castagnoli)
@@ -60,15 +63,26 @@ func appendLogUpdate(dst []byte, update *queuedUpdate) ([]byte, error) {
 	for _, payload := range update.appended {
 		dst = appendLogBytes(dst, payload)
 	}
-	if update.transcript == nil {
-		dst = binary.AppendUvarint(dst, 0)
-	} else {
-		identity, err := json.Marshal(update.transcript)
-		if err != nil {
+	// What else the update carries for its session, as flags, then each in
+	// the order of its flag.
+	var identity []byte
+	var carried uint64
+	if update.transcript != nil {
+		var err error
+		if identity, err = json.Marshal(update.transcript); err != nil {
 			return nil, err
 		}
-		dst = binary.AppendUvarint(dst, 1)
+		carried |= logCarriesTranscript
+	}
+	if update.outcome != "" {
+		carried |= logCarriesOutcome
+	}
+	dst = binary.AppendUvarint(dst, carried)
+	if update.transcript != nil {
 		dst = appendLogBytes(dst, identity)
+	}
+	if update.outcome != "" {
+		dst = appendLogBytes(dst, []byte(update.outcome))
 	}
 	dst = binary.AppendUvarint(dst, uint64(len(update.changes)))
 	for kind, group := range update.changes {
@@ -157,12 +171,19 @@ func (d *logDecoder) update() queuedUpdate {
 	for n := d.count(); n > 0 && !d.bad; n-- {
 		update.appended = append(update.appended, d.bytes())
 	}
-	if d.uvarint() == 1 {
+	carried := d.uvarint()
+	if carried&^(logCarriesTranscript|logCarriesOutcome) != 0 {
+		d.bad = true
+	}
+	if carried&logCarriesTranscript != 0 {
 		var identity TranscriptIdentity
 		if json.Unmarshal(d.bytes(), &identity) != nil {
 			d.bad = true
 		}
 		update.transcript = &identity
+	}
+	if carried&logCarriesOutcome != 0 {
+		update.outcome = ReportStatus(d.bytes())
 	}
 	for kinds := d.count(); kinds > 0 && !d.bad; kinds-- {
 		kind := string(d.bytes())
@@ -376,7 +397,7 @@ func (l *updateLog) close(remove bool) error {
 // have, when the session's lease is still the one the update was accepted
 // under and the transcript is where the update left it.
 func applyLoggedSession(ctx context.Context, conn *sql.Conn, update *queuedUpdate) error {
-	if len(update.appended) == 0 && update.transcript == nil {
+	if len(update.appended) == 0 && update.transcript == nil && update.outcome == "" {
 		return nil
 	}
 	next, held, err := leasedSequence(ctx, conn, update.session, update.sessionToken)
@@ -386,6 +407,11 @@ func applyLoggedSession(ctx context.Context, conn *sql.Conn, update *queuedUpdat
 	end := update.sequence + int64(len(update.appended))
 	if update.transcript != nil {
 		if err := writeTranscriptIdentity(ctx, conn, update.session, update.transcript, end); err != nil {
+			return err
+		}
+	}
+	if update.outcome != "" {
+		if err := writeSpawnOutcome(ctx, conn, update.session, update.outcome, update.nowNS); err != nil {
 			return err
 		}
 	}

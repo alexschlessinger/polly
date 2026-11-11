@@ -127,7 +127,7 @@ func logFiles(t *testing.T, path string) []string {
 
 func testLogUpdate(n byte) queuedUpdate {
 	id := func(b byte) []byte { return append(make([]byte, 15), b) }
-	return queuedUpdate{
+	update := queuedUpdate{
 		parent: id(1), parentToken: id(2), session: id(3), sessionToken: id(4),
 		sequence: int64(n), nowNS: 1700000000000000000 + int64(n),
 		appended:   [][]byte{[]byte(`{"role":"user","content":"a"}`), []byte(`{}`)},
@@ -137,6 +137,14 @@ func testLogUpdate(n byte) queuedUpdate {
 			"mail": {"m": json.RawMessage(`[]`)},
 		},
 	}
+	// Every other update carries an outcome, and every third no transcript.
+	if n%2 == 0 {
+		update.outcome = ReportPaused
+	}
+	if n%3 == 0 {
+		update.transcript = nil
+	}
+	return update
 }
 
 // A log file gives back the updates appended to it, with the place each was

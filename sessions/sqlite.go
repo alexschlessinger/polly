@@ -2438,7 +2438,7 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 func (s *sqliteSession) GetMetadata(ctx context.Context) (*Metadata, error) {
 	// Read first, as in GetHistory: a checkpoint in between moves what is
 	// pending into the row.
-	identity, usedNS := s.store.writer.pendingIdentity(s.id)
+	identity, usedNS, outcome := s.store.writer.pendingIdentity(s.id)
 	snap, err := s.readSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -2452,6 +2452,9 @@ func (s *sqliteSession) GetMetadata(ctx context.Context) (*Metadata, error) {
 	}
 	if used := time.Unix(0, usedNS).UTC(); usedNS > 0 && used.After(metadata.LastUsed) {
 		metadata.LastUsed = used
+	}
+	if metadata.SpawnOutcome == "" {
+		metadata.SpawnOutcome = outcome
 	}
 	return metadata, nil
 }

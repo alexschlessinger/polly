@@ -47,7 +47,10 @@ type queuedUpdate struct {
 	sequence              int64
 	appended              [][]byte
 	transcript            *TranscriptIdentity
-	nowNS                 int64
+	// outcome is how the session's first run ended, for a session that has
+	// no outcome yet.
+	outcome ReportStatus
+	nowNS   int64
 }
 
 // pendingWindow is what the updates accepted since a checkpoint come to: the
@@ -74,6 +77,9 @@ type pendingSession struct {
 	tail       [][]byte
 	transcript *TranscriptIdentity
 	nowNS      int64
+	// outcome is the first one the updates gave, noted at outcomeNS.
+	outcome   ReportStatus
+	outcomeNS int64
 	// writing is set while a checkpoint's transaction writes the session.
 	// The writer's mu guards it.
 	writing bool
@@ -99,6 +105,9 @@ func joinPending(older, newer *pendingSession) *pendingSession {
 		joined.transcript = older.transcript
 	}
 	joined.nowNS = max(older.nowNS, newer.nowNS)
+	if older.outcome != "" {
+		joined.outcome, joined.outcomeNS = older.outcome, older.outcomeNS
+	}
 	return &joined
 }
 
@@ -131,7 +140,7 @@ func (w *pendingWindow) add(update *queuedUpdate, place uint64) {
 			}
 		}
 	}
-	if len(update.appended) == 0 && update.transcript == nil {
+	if len(update.appended) == 0 && update.transcript == nil && update.outcome == "" {
 		return
 	}
 	session := w.sessions[string(update.session)]
@@ -147,7 +156,14 @@ func (w *pendingWindow) add(update *queuedUpdate, place uint64) {
 	if update.transcript != nil {
 		session.transcript = update.transcript
 	}
-	session.nowNS = update.nowNS
+	if update.outcome != "" && session.outcome == "" {
+		session.outcome, session.outcomeNS = update.outcome, update.nowNS
+	}
+	// An outcome alone is no use of the session: one that has an outcome
+	// already is left as it was.
+	if len(update.appended) > 0 || update.transcript != nil {
+		session.nowNS = update.nowNS
+	}
 }
 
 // coordinationWriter takes the coordination updates the store answers from
@@ -168,8 +184,8 @@ func (w *pendingWindow) add(update *queuedUpdate, place uint64) {
 // either answers from what is pending here, or settles first: it asks for a
 // checkpoint and waits for it. Transactions settle unless they say otherwise.
 // The store's lease-free reads (List, Exists, GetMetadata, ListSummaries,
-// GetLast) do neither, and report a session's message count, last-used time
-// and transcript identity as of the last checkpoint.
+// GetLast) do neither, and report a session's message count, last-used time,
+// transcript identity and spawn outcome as of the last checkpoint.
 //
 // A checkpoint writes a family's records only while the family's root is
 // leased as it was when they were accepted, and a transcript's messages only
@@ -495,11 +511,11 @@ func (w *coordinationWriter) pendingTail(id []byte) (start int64, tail [][]byte)
 	return start, tail
 }
 
-// pendingIdentity returns the transcript identity and last-used time that
-// pending updates give the session id, when they give it any.
-func (w *coordinationWriter) pendingIdentity(id []byte) (identity *TranscriptIdentity, usedNS int64) {
+// pendingIdentity returns the transcript identity, last-used time and spawn
+// outcome that pending updates give the session id, when they give it any.
+func (w *coordinationWriter) pendingIdentity(id []byte) (identity *TranscriptIdentity, usedNS int64, outcome ReportStatus) {
 	if w == nil {
-		return nil, 0
+		return nil, 0, ""
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -513,9 +529,12 @@ func (w *coordinationWriter) pendingIdentity(id []byte) (identity *TranscriptIde
 				identity = &copied
 			}
 			usedNS = max(usedNS, session.nowNS)
+			if outcome == "" {
+				outcome = session.outcome
+			}
 		}
 	}
-	return identity, usedNS
+	return identity, usedNS, outcome
 }
 
 // close writes what is pending to the database and stops the writer.
@@ -823,7 +842,12 @@ func writePendingSession(ctx context.Context, conn *sql.Conn, session *pendingSe
 		}
 	}
 	if session.transcript != nil {
-		return writeTranscriptIdentity(ctx, conn, session.id, session.transcript, session.transcript.Sequence)
+		if err := writeTranscriptIdentity(ctx, conn, session.id, session.transcript, session.transcript.Sequence); err != nil {
+			return err
+		}
+	}
+	if session.outcome != "" {
+		return writeSpawnOutcome(ctx, conn, session.id, session.outcome, session.outcomeNS)
 	}
 	return nil
 }
