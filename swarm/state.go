@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -243,9 +246,20 @@ type State struct {
 	Workflows    map[string]*workflow.Report      `json:"workflows"`
 	// Format is nil until the root's first coordination mutation records it.
 	Format *FormatRecord `json:"format,omitempty"`
+
+	// editing is set on the state an edit hands its callback.
+	editing *editBase
 }
 
 func decodeState(raw *sessions.CoordinationState) (*State, error) {
+	return decodeStateFrom(raw, nil, &State{})
+}
+
+// decodeStateFrom decodes raw, taking from previous, the decode of was, every
+// record whose bytes did not change. The result shares those records with
+// previous, so both are read-only. Workflow reports are always decoded: a
+// report is assembled from its own record and one per step.
+func decodeStateFrom(raw *sessions.CoordinationState, was map[string]map[string]json.RawMessage, previous *State) (*State, error) {
 	s := &State{}
 	format, err := decodeFormat(raw)
 	if err != nil {
@@ -259,22 +273,22 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
 	if err := errors.Join(
-		decodeRecords(raw, "followup", &s.Followups),
-		decodeRecords(raw, "integration", &s.Integrations),
-		decodeRecords(raw, "apply", &s.Applies),
-		decodeRecords(raw, "parent_turn", &s.ParentTurns),
-		decodeRecords(raw, "parent", &s.Parents),
-		decodeRecords(raw, "run", &s.Runs),
-		decodeRecords(raw, "member", &s.Members),
-		decodeRecords(raw, "task", &s.Tasks),
-		decodeRecords(raw, "mail", &s.Messages),
-		decodeRecords(raw, "publication", &s.Publications),
-		decodeRecords(raw, "execution", &s.Executions),
-		decodeRecords(raw, "context", &s.Contexts),
-		decodeRecords(raw, "snapshot", &s.Snapshots),
-		decodeRecords(raw, "preview", &s.Previews),
-		decodeRecords(raw, "workflow", &s.Workflows),
-		decodeRecords(raw, "workflow_step", &steps),
+		decodeRecords(raw, "followup", &s.Followups, was, previous.Followups),
+		decodeRecords(raw, "integration", &s.Integrations, was, previous.Integrations),
+		decodeRecords(raw, "apply", &s.Applies, was, previous.Applies),
+		decodeRecords(raw, "parent_turn", &s.ParentTurns, was, previous.ParentTurns),
+		decodeRecords(raw, "parent", &s.Parents, was, previous.Parents),
+		decodeRecords(raw, "run", &s.Runs, was, previous.Runs),
+		decodeRecords(raw, "member", &s.Members, was, previous.Members),
+		decodeRecords(raw, "task", &s.Tasks, was, previous.Tasks),
+		decodeRecords(raw, "mail", &s.Messages, was, previous.Messages),
+		decodeRecords(raw, "publication", &s.Publications, was, previous.Publications),
+		decodeRecords(raw, "execution", &s.Executions, was, previous.Executions),
+		decodeRecords(raw, "context", &s.Contexts, was, previous.Contexts),
+		decodeRecords(raw, "snapshot", &s.Snapshots, was, previous.Snapshots),
+		decodeRecords(raw, "preview", &s.Previews, was, previous.Previews),
+		decodeRecords(raw, "workflow", &s.Workflows, nil, nil),
+		decodeRecords(raw, "workflow_step", &steps, nil, nil),
 	); err != nil {
 		return nil, err
 	}
@@ -286,11 +300,18 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 
 // decodeRecords unmarshals one kind's records straight into their typed map.
 // Each record is its own JSON document, so nothing is re-encoded to read it.
-// A kind without records leaves an empty map so callers can index it.
-func decodeRecords[T any](raw *sessions.CoordinationState, kind string, target *map[string]T) error {
+// A record whose bytes match was is taken from previous instead. A kind
+// without records leaves an empty map so callers can index it.
+func decodeRecords[T any](raw *sessions.CoordinationState, kind string, target *map[string]T, was map[string]map[string]json.RawMessage, previous map[string]T) error {
 	records := raw.Records[kind]
 	out := make(map[string]T, len(records))
 	for id, data := range records {
+		if old, ok := was[kind][id]; ok && bytes.Equal(old, data) {
+			if value, ok := previous[id]; ok {
+				out[id] = value
+				continue
+			}
+		}
 		var value T
 		if err := json.Unmarshal(data, &value); err != nil {
 			return fmt.Errorf("read swarm %s: %w", kind, err)
@@ -393,7 +414,13 @@ func attachWorkflowSteps(reports map[string]*workflow.Report, steps map[string]*
 }
 func fail(code, message string) error { return &workflow.Error{Code: code, Message: message} }
 
-func (r *Runtime) read(ctx context.Context) (*State, error) {
+// read returns the family's state for a caller that only looks at it. The
+// result is shared with every other reader: change records inside update.
+func (r *Runtime) read(ctx context.Context) (*State, error) { return r.State(ctx) }
+
+// readScratch returns a decode of the caller's own, for a check that works by
+// applying a change it then throws away.
+func (r *Runtime) readScratch(ctx context.Context) (*State, error) {
 	raw, err := r.parent.ReadCoordination(ctx)
 	if err != nil {
 		return nil, err
@@ -431,9 +458,9 @@ func (r *Runtime) currentRun(s *State) *Run {
 }
 
 func (r *Runtime) pauseBudget(ctx context.Context, id string) error {
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		if run := s.Runs[id]; run != nil && run.Status == "running" {
-			run.Status = "paused"
+			s.ownRun(id).Status = "paused"
 		}
 		return nil
 	})
@@ -487,9 +514,20 @@ func compactRoster(s *State) string {
 }
 
 // State is the display's read, and parked members'. Successive calls share
-// one decode until a record changes, so treat the result as read-only.
+// one decode until a record changes, and a changed family shares every record
+// that did not, so treat the result as read-only.
 func (r *Runtime) State(ctx context.Context) (*State, error) {
-	raw, err := r.parent.ReadCoordination(ctx)
+	parent := r.parent
+	if revisions, ok := parent.(sessions.CoordinationRevisionSession); ok {
+		revision, err := revisions.CoordinationRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if s := r.view.at(revision); s != nil {
+			return s, nil
+		}
+	}
+	raw, err := parent.ReadCoordination(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -497,27 +535,112 @@ func (r *Runtime) State(ctx context.Context) (*State, error) {
 }
 
 // StateCache hands back the previous decode whenever a fresh read finds every
-// record byte-identical. A display polling a swarm between checkpoints pays
-// for the row scan, not for decoding megabytes of unchanged records.
+// record unchanged, and decodes only the records that did change. A display
+// polling a swarm between checkpoints pays for the comparison, not for
+// decoding megabytes of unchanged records.
 type StateCache struct {
-	mu    sync.Mutex
-	raw   map[string]map[string]json.RawMessage
-	state *State
+	mu       sync.Mutex
+	raw      map[string]map[string]json.RawMessage
+	revision uint64
+	state    *State
+	checked  time.Time
+}
+
+// at returns the cached state when it was decoded from the records the store
+// calls revision.
+func (c *StateCache) at(revision uint64) *State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state == nil || revision == 0 || revision != c.revision {
+		return nil
+	}
+	c.check()
+	return c.state
 }
 
 func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != nil && sameRecords(c.raw, raw.Records) {
+	if c.state != nil && (raw.Revision != 0 && raw.Revision == c.revision || sameRecords(c.raw, raw.Records)) {
+		c.check()
+		c.revision = raw.Revision
 		return c.state, nil
 	}
-	s, err := decodeState(raw)
+	previous := c.state
+	if previous == nil {
+		previous = &State{}
+	} else {
+		c.check()
+	}
+	s, err := decodeStateFrom(raw, c.raw, previous)
 	if err != nil {
 		return nil, err
 	}
-	c.raw, c.state = raw.Records, s
+	c.raw, c.revision, c.state = raw.Records, raw.Revision, s
 	return s, nil
 }
+
+// sharedCheckRecords and sharedCheckEvery bound what a running process spends
+// confirming that no reader changed the shared state.
+const (
+	sharedCheckRecords = 4096
+	sharedCheckEvery   = time.Second
+)
+
+// failOnSharedChange makes every read of the shared state confirm it first.
+var failOnSharedChange = testing.Testing()
+
+// check confirms no reader changed the shared state, whose records the next
+// decode hands on as they are. A test fails on the spot. A running process
+// looks about once a second while the family is small enough to decode
+// cheaply, and on a difference warns and returns to the stored records.
+func (c *StateCache) check() {
+	if !failOnSharedChange {
+		records := 0
+		for _, group := range c.raw {
+			records += len(group)
+		}
+		if records > sharedCheckRecords || time.Since(c.checked) < sharedCheckEvery {
+			return
+		}
+		c.checked = time.Now()
+	}
+	fresh, err := decodeState(&sessions.CoordinationState{Records: c.raw})
+	if err != nil || reflect.DeepEqual(fresh, c.state) {
+		return
+	}
+	if failOnSharedChange {
+		panic("swarm: a State returned by a read was modified; change records inside update: " + differingRecords(fresh, c.state))
+	}
+	slog.Warn("swarm_shared_state_modified", "records", differingRecords(fresh, c.state))
+	c.state = fresh
+}
+
+// differingRecords names the records two states disagree on, for check.
+func differingRecords(a, b *State) string {
+	var out []string
+	left, right := reflect.ValueOf(a).Elem(), reflect.ValueOf(b).Elem()
+	for i := range left.NumField() {
+		if left.Field(i).Kind() != reflect.Map {
+			continue
+		}
+		name := left.Type().Field(i).Name
+		for _, key := range left.Field(i).MapKeys() {
+			other := right.Field(i).MapIndex(key)
+			if !other.IsValid() || !reflect.DeepEqual(left.Field(i).MapIndex(key).Interface(), other.Interface()) {
+				out = append(out, name+"/"+key.String())
+			}
+		}
+		for _, key := range right.Field(i).MapKeys() {
+			if !left.Field(i).MapIndex(key).IsValid() {
+				out = append(out, name+"/"+key.String())
+			}
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
+
 func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
 	if len(a) != len(b) {
 		return false
@@ -549,7 +672,7 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 	if len(options) == 1 {
 		option = options[0]
 	}
-	err := r.update(ctx, func(s *State) error {
+	err := r.edit(ctx, func(s *State) error {
 		run := r.currentRun(s)
 		for _, dep := range deps {
 			if s.Tasks[dep] == nil || s.Tasks[dep].Run != run.ID {
@@ -584,15 +707,15 @@ func depsDone(s *State, t *Task) bool {
 func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int) error {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		if err := member(s, r.ID, actor); err != nil {
 			return err
 		}
-		t := s.Tasks[taskID]
+		t := s.ownTask(taskID)
 		if t == nil || t.Run != r.currentRun(s).ID || t.Revision != revision || t.Owner != "" || t.Status != "pending" || !depsDone(s, t) {
 			return fail("not_claimable", "task is no longer claimable")
 		}
-		m := s.Members[actor]
+		m := s.ownMember(actor)
 		if m == nil {
 			return errors.New("only members can claim tasks")
 		}
@@ -605,8 +728,8 @@ func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int)
 func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int, result any, snapshot string) error {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	return r.edit(ctx, func(s *State) error {
+		t := s.ownTask(taskID)
 		if t != nil && requirementOf(s, t) == RequirementDelivered {
 			return fail("invalid_args", "task completes on delivery; end your turn with the result")
 		}
@@ -637,8 +760,8 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	return r.edit(ctx, func(s *State) error {
+		t := s.ownTask(taskID)
 		if t != nil && requirementOf(s, t) == RequirementDelivered {
 			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with followup_task")
 		}
@@ -673,8 +796,8 @@ func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	return r.edit(ctx, func(s *State) error {
+		t := s.ownTask(taskID)
 		if t == nil {
 			return errors.New("unknown task")
 		}
@@ -684,9 +807,10 @@ func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 		t.Status = "canceled"
 		t.AcceptedRevision = 0
 		t.Revision++
-		for _, other := range s.Tasks {
+		for key, other := range s.Tasks {
 			for _, dep := range other.Dependencies {
 				if dep == taskID && other.Status != "done" && other.Status != "canceled" {
+					other = s.ownTask(key)
 					other.Status = "blocked"
 					other.Feedback = "dependency canceled: " + taskID
 					other.Revision++
@@ -698,7 +822,7 @@ func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 }
 func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text string) (*Mail, error) {
 	var mail *Mail
-	err := r.update(ctx, func(s *State) error {
+	err := r.edit(ctx, func(s *State) error {
 		if err := member(s, r.ID, actor); err != nil {
 			return err
 		}
@@ -719,7 +843,7 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		}
 		mail = &Mail{ID: ids.New(), From: actor, To: to, Kind: kind, ReplyTo: replyTo, Text: text, Posted: time.Now().UTC()}
 		if kind == "reply" {
-			s.Messages[replyTo].ReplyID = mail.ID
+			s.ownMail(replyTo).ReplyID = mail.ID
 		}
 		s.Messages[mail.ID] = mail
 		return nil
@@ -733,8 +857,8 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	return r.edit(ctx, func(s *State) error {
+		t := s.ownTask(taskID)
 		if deliveringTask(s, t) {
 			return fail("blocked", "its result awaits delivery; cancel it or wait")
 		}
@@ -801,8 +925,8 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 	r.parentTools.Lock()
 	var controller, execution string
 	var blocker *workflow.Error
-	err := r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	err := r.edit(ctx, func(s *State) error {
+		t := s.ownTask(taskID)
 		if deliveringTask(s, t) {
 			return fail("blocked", "result awaits delivery; use a follow-up for new work")
 		}
@@ -887,11 +1011,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	if err := r.prepare(ctx); err != nil {
 		return nil, err
 	}
-	err := r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		s, err := decodeState(raw)
-		if err != nil {
-			return err
-		}
+	err := r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
 		if err := member(s, r.ID, actor); err != nil {
 			return err
 		}
@@ -952,7 +1072,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		for _, ref := range p.Artifacts {
 			raw.Pins = append(raw.Pins, ref.ID)
 		}
-		return encodeState(raw, s)
+		return nil
 	})
 	if err == nil {
 		r.changed()

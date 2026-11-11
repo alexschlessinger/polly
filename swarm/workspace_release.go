@@ -294,13 +294,14 @@ func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int
 		return 0, context.Canceled
 	}
 	var marked []*ExecutionContext
-	err = r.update(ctx, func(s *State) error {
+	err = r.edit(ctx, func(s *State) error {
 		for _, proof := range verified {
 			c := s.Contexts[proof.ID]
 			if c == nil {
 				continue
 			}
 			if ok, _ := r.releaseEligibleNow(s, c); ok || c.Release == WorkspaceReleasing {
+				c = s.ownContext(proof.ID)
 				c.Release = WorkspaceReleasing
 				c.Reason = ""
 				marked = append(marked, c)
@@ -353,8 +354,8 @@ func (r *Runtime) releaseFailure(ctx context.Context, c *ExecutionContext, err e
 	}
 	r.releaseMu.Unlock()
 	if retain {
-		saveErr := r.update(ctx, func(s *State) error {
-			if saved := s.Contexts[c.ID]; saved != nil {
+		saveErr := r.edit(ctx, func(s *State) error {
+			if saved := s.ownContext(c.ID); saved != nil {
 				saved.Release = WorkspaceRetained
 				saved.Reason = fmt.Sprintf("%v; inspect the workspace or /swarm cleanup %s", err, c.ID)
 			}

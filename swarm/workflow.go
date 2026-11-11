@@ -192,7 +192,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		if err != nil {
 			return nil, err
 		}
-		err = r.update(ctx, func(s *State) error { s.Contexts[c.ID].Owner = h.controller; return nil })
+		err = r.edit(ctx, func(s *State) error { s.ownContext(c.ID).Owner = h.controller; return nil })
 		return c.ID, err
 	case "snapshot":
 		c, err := h.context(ctx, a.String("context"))

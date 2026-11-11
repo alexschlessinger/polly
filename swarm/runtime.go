@@ -596,7 +596,7 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 	} else if c.Scratch, err = r.liveScratch(c.Root, c.ID); err != nil {
 		return nil, err
 	}
-	err = r.update(ctx, func(s *State) error {
+	err = r.edit(ctx, func(s *State) error {
 		if req.Snapshot != "" && (c.Checkout == nil || !sameCapturedCommit(s.Snapshots[req.Snapshot], &c.Checkout.Base)) {
 			return unavailableWorkspace()
 		}
@@ -966,16 +966,12 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if req.TaskName == "" {
 			m.AgentName = agentName(&Member{ID: identity})
 		}
-		err = r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
+		err = r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
 			s.Members[m.ID] = m
 			c.Owner = m.ID
 			s.Contexts[c.ID] = c
 			raw.Members = append(raw.Members, m.ID)
-			return encodeState(raw, s)
+			return nil
 		})
 		closeErr := session.Close()
 		if err == nil {
@@ -998,8 +994,8 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	r.active[m.ID] = i
 	r.mu.Unlock()
 	r.parentTools.Lock()
-	err := r.update(ctx, func(s *State) error {
-		stored := s.Members[m.ID]
+	err := r.edit(ctx, func(s *State) error {
+		stored := s.ownMember(m.ID)
 		if stored == nil {
 			return errors.New("unknown member session")
 		}
@@ -1031,7 +1027,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 				return err
 			}
 		}
-		run := r.currentRun(s)
+		run := s.ownRun(r.currentRun(s).ID)
 		if err := applyGrant(run, intent.grant); err != nil {
 			return err
 		}
@@ -1105,6 +1101,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			}
 		}
 		c := s.Contexts[stored.Context]
+		task = s.ownTask(task.ID)
 		if err := assignTask(s, task, stored, c, i.id); err != nil {
 			return err
 		}
@@ -1125,7 +1122,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			e.Request.Schema = previousExecution.Request.Schema
 		}
 		if intent.followup != "" {
-			f := s.Followups[intent.followup]
+			f := s.ownFollowup(intent.followup)
 			if previousExecution != nil {
 				e.Request.Schema = previousExecution.Request.Schema
 			}
@@ -1137,7 +1134,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			// The assignment is the brief, not teammate mail: it arrives as
 			// the task the member is launched with, and is delivered at
 			// launch so the mailbox never admits it a second time.
-			mail := s.Messages[intent.followup]
+			mail := s.ownMail(intent.followup)
 			mail.Start, mail.Delivered = true, true
 			e.Request.Task = refreshBrief(s, f) + e.Request.Task + "\n\nAssignment from your parent. " + followupProvenance(s, mail) + "\n" + mail.Text
 		}
@@ -1165,11 +1162,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			// than leave an execution queued without a goroutine. A restart
 			// applies the same pause fence if storage remains unavailable.
 			pauseCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			pauseErr := r.update(pauseCtx, func(s *State) error {
+			pauseErr := r.edit(pauseCtx, func(s *State) error {
 				f := s.Followups[intent.followup]
-				if e := s.Executions[i.id]; f != nil && f.Execution == i.id && e != nil {
+				if e := s.ownExecution(i.id); f != nil && f.Execution == i.id && e != nil {
 					e.Status, e.Error = "paused", "refresh launch could not be confirmed; explicitly resume this execution"
-					if mail := s.Messages[intent.followup]; mail != nil {
+					if mail := s.ownMail(intent.followup); mail != nil {
 						mail.Start = false
 					}
 				}
@@ -1327,9 +1324,9 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 		}
 		// A wake re-queues the same execution: the record says queued while
 		// the invocation waits for a slot and running once the slice starts.
-		if err := r.update(ctx, func(s *State) error {
+		if err := r.edit(ctx, func(s *State) error {
 			if e := s.Executions[i.id]; e != nil && e.Generation == i.generation && e.Status == "waiting" {
-				e.Status = "queued"
+				s.ownExecution(i.id).Status = "queued"
 			}
 			return nil
 		}); err != nil {
@@ -1360,11 +1357,13 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 
 func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *State) (result AgentResult, runErr error) {
 	defaults := r.currentDefaults()
-	m := s.Members[i.member]
 	e := s.Executions[i.id]
-	if m == nil || e == nil {
+	if s.Members[i.member] == nil || e == nil {
 		return AgentResult{}, errors.New("execution disappeared")
 	}
+	// The slice follows its member's task as it changes; s is shared.
+	member := *s.Members[i.member]
+	m := &member
 	r.mu.Lock()
 	i.generation = e.Generation
 	r.mu.Unlock()
@@ -1429,8 +1428,8 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		return AgentResult{}, err
 	}
 	cb := &local
-	if err = r.update(ctx, func(s *State) error {
-		s.Executions[i.id].Status = "running"
+	if err = r.edit(ctx, func(s *State) error {
+		s.ownExecution(i.id).Status = "running"
 		return nil
 	}); err != nil {
 		return AgentResult{}, err
@@ -1487,12 +1486,8 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		input := messages.ChatMessage{Role: messages.MessageRoleUser, Content: brief}
 		initial := append([]messages.ChatMessage(nil), history...)
 		persistAssignment = func() error {
-			return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-				s, err := decodeState(raw)
-				if err != nil {
-					return err
-				}
-				current := s.Executions[i.id]
+			return r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+				current := s.ownExecution(i.id)
 				if current == nil || current.Generation != e.Generation || current.InputSaved {
 					return errors.New("assignment input changed")
 				}
@@ -1502,7 +1497,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 				raw.Append = append(raw.Append, input)
 				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation}
 				current.InputSaved = true
-				return encodeState(raw, s)
+				return nil
 			})
 		}
 		history = append(history, input)
@@ -1729,10 +1724,10 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 			return result, captureErr
 		}
 		r.parentTools.Lock()
-		err = r.update(ctx, func(s *State) error {
+		err = r.edit(ctx, func(s *State) error {
 			s.Snapshots[snapshot.ID] = &snapshot
 			if task := s.Tasks[m.Task]; task != nil && task.Execution == i.id && task.Status == "running" {
-				task.Snapshot = snapshot.ID
+				s.ownTask(m.Task).Snapshot = snapshot.ID
 			}
 			return nil
 		})
@@ -1823,12 +1818,14 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 	var exhausted *IterationLimitError
 	var retryPaused *RetryPause
 	var outputScratch string
-	err := r.update(c, func(s *State) error {
-		e := s.Executions[i.id]
+	err := r.edit(c, func(s *State) error {
+		e := s.ownExecution(i.id)
 		m := s.Members[i.member]
 		if e == nil || m == nil || m.Execution != i.id || e.Generation != i.generation {
 			return errors.New("execution finalization was fenced")
 		}
+		// The task's result and status are settled below.
+		s.ownTask(m.Task)
 		// Cancellation can settle a queued worker before executeSlice supplies
 		// its result. Its receipt must still identify the retained session.
 		i.result.Session = m.ID
@@ -2009,7 +2006,7 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 	}
 	if memberID == "" {
 		// A bare grant funds the current run without launching anyone.
-		return r.update(ctx, func(s *State) error { return applyGrant(r.currentRun(s), grant) })
+		return r.edit(ctx, func(s *State) error { return applyGrant(s.ownRun(r.currentRun(s).ID), grant) })
 	}
 	r.mu.Lock()
 	busy := r.active[memberID] != nil
@@ -2079,8 +2076,8 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	var resume *Execution
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	err = r.update(ctx, func(s *State) error {
-		m := s.Members[memberID]
+	err = r.edit(ctx, func(s *State) error {
+		m := s.ownMember(memberID)
 		if m == nil {
 			return errors.New("unknown member")
 		}
@@ -2102,18 +2099,19 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		if !continues || e.ID != executionID {
 			return errors.New("execution changed; retry the resume")
 		}
+		e = s.ownExecution(e.ID)
 		// Deferred work rejoins its original run before the budget is judged.
 		if err := reactivateTask(s, s.Tasks[m.Task]); err != nil {
 			return err
 		}
-		run := r.currentRun(s)
+		run := s.ownRun(r.currentRun(s).ID)
 		if err := applyGrant(run, grant); err != nil {
 			return err
 		}
 		if run.Status == "paused" || e.Run != run.ID {
 			return ErrBudget
 		}
-		task := s.Tasks[m.Task]
+		task := s.ownTask(m.Task)
 		if task == nil || task.Owner != m.ID || task.Execution != e.ID || task.Run != run.ID || (task.Status != "blocked" && task.Status != "running" && task.Status != "changes_requested") || !depsDone(s, task) {
 			return errors.New("task is not available for continuation; check its owner, acceptance and dependencies")
 		}
@@ -2171,8 +2169,8 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	launched := false
 	defer func() {
 		if !launched {
-			_ = r.update(context.WithoutCancel(ctx), func(s *State) error {
-				s.Executions[resume.ID].Status = "paused"
+			_ = r.edit(context.WithoutCancel(ctx), func(s *State) error {
+				s.ownExecution(resume.ID).Status = "paused"
 				return nil
 			})
 		}
@@ -2190,18 +2188,14 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		if err != nil {
 			return err
 		}
-		err = session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
-			e := s.Executions[resume.ID]
+		err = r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+			e := s.ownExecution(resume.ID)
 			if e.Generation != resume.Generation {
 				return errors.New("recovery generation changed")
 			}
 			appendInterruptedIntent(raw, e.Intent)
 			e.Intent = nil
-			return encodeState(raw, s)
+			return nil
 		})
 		closeErr := session.Close()
 		if err != nil {
@@ -2256,13 +2250,14 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 	// Save the user's stop before cancellation can trigger a parent follow-up
 	// or a pending-mail wake. Only an explicit host Resume may clear it.
 	r.launchMu.Lock()
-	err := r.update(ctx, func(s *State) error {
-		m := s.Members[memberID]
+	err := r.edit(ctx, func(s *State) error {
+		m := s.ownMember(memberID)
 		if m == nil {
 			return errors.New("unknown member")
 		}
 		m.Control = MemberControlStopped
 		if e := s.Executions[m.Execution]; e != nil && e.RetryPause != nil {
+			e = s.ownExecution(m.Execution)
 			e.RetryPause = nil
 			e.Error = "stopped by user; explicit user resume required"
 		}
@@ -2328,7 +2323,7 @@ func (r *Runtime) Settle(ctx context.Context) error {
 
 func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) error {
 	defer r.scheduleRelease()
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		prior := s.Workflows[report.ID]
 		if prior != nil {
 			report.Run, report.Acknowledged = prior.Run, prior.Acknowledged
@@ -2393,7 +2388,7 @@ func workflowTerminalText(s *State, w *workflow.Report) string {
 func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		w := s.Workflows[id]
 		if w == nil {
 			return errors.New("unknown workflow")
@@ -2402,7 +2397,7 @@ func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
 			return errors.New("workflow is still running")
 		}
 		if w.Status != "completed" {
-			w.Acknowledged = true
+			s.ownWorkflow(id).Acknowledged = true
 		}
 		return nil
 	})
@@ -2488,11 +2483,11 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 	persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer stop()
 	var released []string
-	finishErr := r.update(persistCtx, func(s *State) error {
-		for _, m := range s.Members {
+	finishErr := r.edit(persistCtx, func(s *State) error {
+		for id, m := range s.Members {
 			if err == nil && m.Controller == controller {
-				m.Controller = ""
-				released = append(released, m.ID)
+				s.ownMember(id).Controller = ""
+				released = append(released, id)
 			}
 		}
 		return nil

@@ -96,6 +96,7 @@ func (r *Runtime) checkpointRetryPause(s *State, e *Execution, pause *RetryPause
 	task := s.Tasks[m.Task]
 	if task != nil && task.Owner == m.ID && task.Execution == e.ID {
 		if task.Status == "running" {
+			task = s.ownTask(task.ID)
 			task.Status, task.Feedback = "blocked", e.Error
 			if result.Value != nil {
 				task.Result = result.Value

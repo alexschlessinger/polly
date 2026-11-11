@@ -66,9 +66,9 @@ func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *Execution
 // asked for. Callers hold launchMu and parentTools and exclude active
 // context operations.
 func (r *Runtime) markReleasing(ctx context.Context, contexts []*ExecutionContext) error {
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		for _, c := range contexts {
-			stored := s.Contexts[c.ID]
+			stored := s.ownContext(c.ID)
 			if stored == nil {
 				return errors.New("unknown execution context")
 			}
@@ -111,10 +111,11 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 		removed = append(removed, c.ID)
 	}
 	if len(removed) > 0 {
-		if e := r.update(finishCtx, func(s *State) error {
+		if e := r.edit(finishCtx, func(s *State) error {
 			for _, id := range removed {
-				for _, member := range s.Members {
+				for key, member := range s.Members {
 					if member.Context == id {
+						member = s.ownMember(key)
 						if c := s.Contexts[id]; c != nil {
 							member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
 						}
