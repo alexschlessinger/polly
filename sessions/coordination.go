@@ -58,6 +58,12 @@ type CoordinationState struct {
 	// Changes is how an UpdateCoordinationFrom callback reports its work,
 	// kind then id; a nil payload deletes the record. Records is nil there.
 	Changes map[string]map[string]json.RawMessage
+	// Volatile names records among Changes, kind then id, whose new value
+	// says what the caller is doing at the moment and need not outlive the
+	// process. A store may keep such a value in memory only: its own readers
+	// see it at once, and it is written with the record's next change that
+	// is not volatile, if there is one. A store is free to write it anyway.
+	Volatile map[string]map[string]bool
 	// Append and ExpectedSequence atomically checkpoint generated output and
 	// admitted mail with the records containing its delivery receipts.
 	Append           []messages.ChatMessage
@@ -106,7 +112,7 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 		return nil, nil, err
 	}
 	state := &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(parent), Sequence: sequence}
-	state.Records, state.Revision, err = s.store.coordination.records(ctx, conn, parent)
+	state.Records, state.Revision, err = s.store.coordination.records(ctx, conn, parent, s.store.drives)
 	return state, parent, err
 }
 
@@ -489,6 +495,8 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 			return err
 		}
 	}
+	// What is volatile changes the family in memory and goes no further.
+	kept := keptChanges(state.Changes, state.Volatile)
 	next := state.Sequence + int64(len(state.Append))
 	if len(state.Pins) > 0 || len(state.Members) > 0 {
 		err := s.leasedUntracked(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
@@ -504,9 +512,9 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 			s.coord.known = false
 			return err
 		}
-	} else if changed || len(state.Append) > 0 || state.Transcript != nil {
+	} else if len(kept) > 0 || len(state.Append) > 0 || state.Transcript != nil {
 		update := &queuedUpdate{
-			parent: parent, parentToken: root.ownerToken, changes: state.Changes,
+			parent: parent, parentToken: root.ownerToken, changes: kept,
 			session: s.id, sessionToken: s.ownerToken, sequence: state.Sequence, nowNS: time.Now().UnixNano(),
 		}
 		if state.Transcript != nil {
@@ -533,6 +541,35 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 		state.Revision = cache.replace(parent, family.records)
 	}
 	return nil
+}
+
+// keptChanges returns the changes that are not volatile, nil when none is.
+func keptChanges(changes map[string]map[string]json.RawMessage, volatile map[string]map[string]bool) map[string]map[string]json.RawMessage {
+	var kept map[string]map[string]json.RawMessage
+	for kind, group := range changes {
+		passing := volatile[kind]
+		for id, value := range group {
+			if passing[id] {
+				continue
+			}
+			if len(passing) == 0 {
+				// Nothing of this kind is volatile: the group is kept whole.
+				if kept == nil {
+					kept = make(map[string]map[string]json.RawMessage, len(changes))
+				}
+				kept[kind] = group
+				break
+			}
+			if kept == nil {
+				kept = make(map[string]map[string]json.RawMessage, len(changes))
+			}
+			if kept[kind] == nil {
+				kept[kind] = map[string]json.RawMessage{}
+			}
+			kept[kind][id] = value
+		}
+	}
+	return kept
 }
 
 // checkRecord reports whether value may be stored as the record kind/id.

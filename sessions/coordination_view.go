@@ -51,7 +51,7 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 		if _, err := visibleSession(ctx, conn, id, updatedNS, ttlNS, time.Now().UnixNano()); err != nil {
 			return err
 		}
-		state.Records, state.Revision, err = s.coordination.records(ctx, conn, id)
+		state.Records, state.Revision, err = s.coordination.records(ctx, conn, id, s.drives)
 		return err
 	})
 	if err != nil {

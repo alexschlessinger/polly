@@ -1285,6 +1285,12 @@ func (s *SQLiteStore) handle(id string) *sqliteSession {
 	return s.byID[id]
 }
 
+// drives reports whether this store drives the family rooted at root.
+func (s *SQLiteStore) drives(root string) bool {
+	holder := s.handle(root)
+	return holder != nil && !holder.closed.Load() && holder.leaseFresh()
+}
+
 // driver returns the handle through which this store drives the family
 // rooted at root: its handle on the root session, session itself when that
 // is the root, while the handle's lease cannot have run out. A family the
@@ -2505,6 +2511,9 @@ func (s *sqliteSession) close(cause error) error {
 	// this session or on a family it roots.
 	cache := s.store.coordination
 	cache.held <- struct{}{}
+	// A family this session rooted is no longer the store's to answer for
+	// from memory, where it may hold values that were never written.
+	cache.forget(s.id)
 	<-cache.held
 	// The lease is what lets a checkpoint write this session's pending
 	// updates, so they are written before it goes: the family's, when this

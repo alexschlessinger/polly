@@ -275,3 +275,88 @@ func TestCoordinationStopsWhenQueuedUpdatesCannotBeWritten(t *testing.T) {
 		t.Fatalf("the record after the next store recovered the log = %q", stored)
 	}
 }
+
+// A volatile change says what its caller is doing at the moment. The store
+// keeps it in memory, where its own readers see it, and writes it neither to
+// the log nor to the table: the record is written with its next change that
+// is not volatile. A commit through another connection does not make the
+// store forget it.
+func TestVolatileChangeStaysInMemory(t *testing.T) {
+	ctx := context.Background()
+	holdCheckpoints(t)
+	path := filepath.Join(t.TempDir(), "polly.db")
+	open := func() *SQLiteStore {
+		store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	here, there := open(), open()
+	parent := acquireNamed(t, here, "parent")
+	coord := parent.(CoordinationSession)
+	if err := coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	var state *CoordinationState
+	volatile := func(kind, id, value string, kept ...string) func(*CoordinationState) error {
+		return func(s *CoordinationState) error {
+			state = s
+			s.Changes = map[string]map[string]json.RawMessage{kind: {id: json.RawMessage(value)}}
+			s.Volatile = map[string]map[string]bool{kind: {id: true}}
+			for _, other := range kept {
+				s.Changes[kind][other] = json.RawMessage(value)
+			}
+			return nil
+		}
+	}
+	updateFrom(t, coord, volatile("task", "a", `{"n":2}`))
+	if state.Written != nil {
+		t.Fatal("a change that is only volatile handed back a wait")
+	}
+	if got := readRecord(t, coord, "task", "a"); got != `{"n":2}` {
+		t.Fatalf("the store's own read after a volatile change = %q", got)
+	}
+	if logged := readOwnLog(t, here, path); len(logged) != 0 {
+		t.Fatalf("a volatile change was logged: %+v", logged)
+	}
+	if err := here.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedRecord(t, here, "task", "a"); got != `{"n":1}` {
+		t.Fatalf("a volatile change reached the table: %q", got)
+	}
+	// Another connection commits, and this store reads through the database.
+	child, err := there.Acquire(ctx, "child", AcquireOptions{Parent: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	if got := readRecord(t, child.(CoordinationSession), "task", "a"); got != `{"n":1}` {
+		t.Fatalf("another handle read a volatile change: %q", got)
+	}
+	if err := coord.UpdateCoordination(ctx, func(*CoordinationState) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecord(t, coord, "task", "a"); got != `{"n":2}` {
+		t.Fatalf("the volatile change after another connection's commit = %q", got)
+	}
+	// In one update, what is not volatile is kept and what is volatile is not.
+	updateFrom(t, coord, volatile("task", "a", `{"n":3}`, "b"))
+	if err := state.Written(ctx); err != nil {
+		t.Fatal(err)
+	}
+	logged := readOwnLog(t, here, path)
+	if len(logged) != 1 || len(logged[0].changes["task"]) != 1 || string(logged[0].changes["task"]["b"]) != `{"n":3}` {
+		t.Fatalf("the log after an update that is partly volatile: %+v", logged)
+	}
+	// The record's next change that is not volatile writes it.
+	updateFrom(t, coord, changeRecord("task", "a", `{"n":4}`))
+	if err := here.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := storedRecord(t, here, "task", "a"), storedRecord(t, here, "task", "b"); a != `{"n":4}` || b != `{"n":3}` {
+		t.Fatalf("the table after a change that is not volatile: a=%q b=%q", a, b)
+	}
+}

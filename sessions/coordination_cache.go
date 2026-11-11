@@ -100,9 +100,12 @@ func (c *coordinationCache) release() { <-c.held }
 
 // records returns the family's records as conn's open transaction sees them,
 // and their revision, reading the table only when memory does not hold them.
-// The caller holds the cache, has already read from the transaction, and must
-// not modify the result.
-func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent []byte) (map[string]map[string]json.RawMessage, uint64, error) {
+// A commit through another connection discards the families this store does
+// not drive, as driven reports: nobody else changes the records of one it
+// does, and memory may hold values of theirs that were never written. The
+// caller holds the cache, has already read from the transaction, and must not
+// modify the result.
+func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent []byte, driven func(root string) bool) (map[string]map[string]json.RawMessage, uint64, error) {
 	var version int64
 	if err := conn.QueryRowContext(ctx, `PRAGMA data_version`).Scan(&version); err != nil {
 		return nil, 0, err
@@ -111,8 +114,17 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 	if err := conn.Raw(func(d any) error { driver = d; return nil }); err != nil {
 		return nil, 0, err
 	}
-	if driver != c.conn || version != c.version || c.distrusted.CompareAndSwap(true, false) {
+	if c.distrusted.CompareAndSwap(true, false) {
 		c.clear()
+	}
+	if driver != c.conn || version != c.version {
+		c.mu.Lock()
+		for root := range c.families {
+			if driver != c.conn || !driven(root) {
+				delete(c.families, root)
+			}
+		}
+		c.mu.Unlock()
 		c.conn, c.version = driver, version
 	}
 	if family, ok := c.families[string(parent)]; ok {

@@ -10,11 +10,14 @@ import (
 
 // TranscriptIdentity binds a saved conversation boundary to the execution
 // that wrote it. Sequence prevents unrelated appends from inheriting the
-// binding; execution and generation fence follow-ups and resumed work.
+// binding; execution and generation fence follow-ups and resumed work. Counts
+// is the execution's own note of how far it had come at the boundary, which
+// the store keeps with the binding and never reads.
 type TranscriptIdentity struct {
 	Execution  string `json:"execution"`
 	Generation int    `json:"generation"`
 	Sequence   int64  `json:"sequence"`
+	Counts     string `json:"counts,omitempty"`
 }
 
 func (i *TranscriptIdentity) validate() error {
