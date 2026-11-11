@@ -120,10 +120,8 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 	}
 	// The write below cannot be undone, and recovery after a crash starts
 	// from this intent, so it has to be on disk first.
-	if store, ok := r.config.Store.(sessions.SyncStore); ok {
-		if err = store.Sync(ctx); err != nil {
-			return err
-		}
+	if err = r.syncStore(ctx); err != nil {
+		return err
 	}
 	if err = m.RecordApply(plan.ID, record); err != nil {
 		return err
@@ -159,6 +157,16 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 		return fail("recovery_required", fmt.Sprintf("application outcome requires inspection: %v", errors.Join(err, manifestErr, storeErr)))
 	}
 	r.event("integration", "", "applied "+plan.ID)
+	return nil
+}
+
+// syncStore returns once every edit made so far is on disk. An edit is only
+// queued for the store's writer when it returns, so a caller about to do
+// something it cannot undo, on the strength of one, calls this first.
+func (r *Runtime) syncStore(ctx context.Context) error {
+	if store, ok := r.config.Store.(sessions.SyncStore); ok {
+		return store.Sync(ctx)
+	}
 	return nil
 }
 
