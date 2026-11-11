@@ -25,7 +25,7 @@ agent loop, registry, and coordination rules. See the [library reference](API.md
 |---|---|
 | Model client | `llm.LLM` and optional metadata interfaces |
 | Tools | `tools.Tool`, `OutputTool`, and the concrete `ToolRegistry` |
-| Session database | `SessionStore`, `Session`, `CoordinationSession` |
+| Session database | `SessionStore`, `SessionCreator`, `Session`, `CoordinationSession`, `SpawnOutcomeSession` |
 | Artifact bytes | `artifacts.Store`, scoped through `Session.ArtifactStore()` |
 | Native sandbox | `WithSandboxFactory` and `sandbox.Sandbox` |
 | Git workspace construction | An application-supplied `*worktree.Manager` |
@@ -175,9 +175,11 @@ Use the existing [session interfaces](../sessions/interface.go),
 - Read-only inspection without acquiring a write lease or repairing state.
 - Session-scoped artifact access, publication, and collection.
 
-Managed sessions need `CoordinationSession` on both parent and child handles;
-the runtime checks each child acquisition, including recovery after a rename,
-and closes incompatible handles before returning an error. CLI/TUI adapters also
+Managed sessions need `CoordinationSession` on both parent and child handles,
+`SpawnOutcomeSession` on child handles, and a store that implements
+`SessionCreator`. The runtime refuses a store that does not, checks each child
+acquisition, including recovery after a rename, and closes incompatible
+handles before returning an error. CLI/TUI adapters also
 need the view and title capabilities they consume.
 Conversation storage alone does not establish swarm support.
 

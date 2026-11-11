@@ -940,8 +940,11 @@ and the binding is closed before the lease is released. The parent keeps its
 existing registry.
 
 `Parent` and every acquired member must implement `sessions.CoordinationSession`,
-which both SQLite disk and memory sessions do. The runtime rejects and closes
-incompatible child handles at acquisition, including resumed members.
+every member `sessions.SpawnOutcomeSession` as well, and `Store`
+`sessions.SessionCreator`, which the SQLite store and its disk and memory
+sessions do. `New` refuses a store that cannot create sessions, and the
+runtime rejects and closes incompatible child handles at acquisition,
+including resumed members.
 The [shared storage contracts](RUNTIME-BACKENDS.md#implementation-and-verification)
 exercise SQLite and an independent reopenable test store through these interfaces.
 Cross-process recovery needs persistent storage, and `Promote`
@@ -1191,7 +1194,7 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `Clear`, `Reset` | Clear transcript/artifacts; Reset also replaces settings |
 | `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
 | `Parent` | Link a child by stable identity, independent of rename |
-| `SessionCreator.Create` | Optional. `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included |
+| `SessionCreator.Create` | `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included |
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
 | `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store commits without waiting for the disk, so a power loss can lose the latest commits |
 
@@ -1207,10 +1210,10 @@ preserve who owns the title, so use `SetTitle` to change it.
 
 `ExtraReadDirs` stores the session's canonical read grants and survives reset
 and clear. `SpawnCallID` identifies the delegation that created a session, and
-`SpawnOutcome` records only that first run; follow-ups don't rewrite it. A
-session that implements the optional `SpawnOutcomeSession` sets it with
-`RecordSpawnOutcome`, without reading or rewriting the rest of its settings;
-the swarm runtime uses it when a member's run ends. For a member of a family
+`SpawnOutcome` records only that first run; follow-ups don't rewrite it.
+`SpawnOutcomeSession.RecordSpawnOutcome` sets it without reading or rewriting
+the rest of the session's settings; the swarm runtime calls it when a
+member's run ends. For a member of a family
 the store drives, the SQLite store queues the outcome with the family's
 updates: the member's own `GetMetadata` returns it at once, and the store's
 lease-free reads and other processes after the next checkpoint.
