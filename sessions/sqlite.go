@@ -30,9 +30,18 @@ import (
 )
 
 const (
-	schemaVersion            = 9
-	artifactChunkSize        = 1 << 20
-	journalSizeLimit         = 64 << 20
+	schemaVersion     = 9
+	artifactChunkSize = 1 << 20
+	journalSizeLimit  = 64 << 20
+	// pageCacheKiB is how much of the database a connection may keep in
+	// memory. A checkpoint writes rows that lie on about as many pages, and
+	// with SQLite's two megabytes most of them are read back from the file
+	// and written out again before the transaction commits.
+	pageCacheKiB = 64 << 10
+	// walCheckpointPages is how many pages the write-ahead log holds before
+	// SQLite copies them into the database and syncs both. A page rewritten
+	// many times meanwhile is copied once. It stays inside journalSizeLimit.
+	walCheckpointPages       = 8192
 	boundedVacuumPages       = 128
 	retentionNamed           = "named"
 	retentionAuto            = "auto"
@@ -498,6 +507,10 @@ func sqliteDataSource(mode StoreMode, path string) string {
 			normalized = "/" + normalized
 		}
 		uri.Path = normalized
+		query.Add("_pragma", fmt.Sprintf("cache_size(-%d)", pageCacheKiB))
+		query.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walCheckpointPages))
+		// What a statement sets aside to undo itself stays in memory.
+		query.Add("_pragma", "temp_store(MEMORY)")
 	}
 	uri.RawQuery = query.Encode()
 	return uri.String()

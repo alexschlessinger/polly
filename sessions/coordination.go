@@ -619,7 +619,10 @@ func deleteRecord(ctx context.Context, conn *sql.Conn, parent []byte, kind, id s
 }
 
 func putRecord(ctx context.Context, conn *sql.Conn, parent []byte, kind, id string, value json.RawMessage) error {
-	_, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value))
+	// A record that exists is changed where it lies: replacing the row would
+	// delete it and its key and insert both again.
+	_, err := conn.ExecContext(ctx, `INSERT INTO swarm_records VALUES(?,?,?,?)
+		ON CONFLICT(parent_id,kind,id) DO UPDATE SET payload_json = excluded.payload_json`, parent, kind, id, []byte(value))
 	return err
 }
 

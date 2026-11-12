@@ -1672,6 +1672,16 @@ func TestConnectionConfigurationIsSharedAcrossModes(t *testing.T) {
 				if err := store.db.QueryRow("PRAGMA journal_size_limit").Scan(&journalLimit); err != nil || journalLimit != journalSizeLimit {
 					t.Fatalf("PRAGMA journal_size_limit = %d, %v; want %d", journalLimit, err, journalSizeLimit)
 				}
+				for pragma, want := range map[string]int64{"cache_size": -pageCacheKiB, "wal_autocheckpoint": walCheckpointPages, "temp_store": 2} {
+					var got int64
+					if err := store.db.QueryRow("PRAGMA " + pragma).Scan(&got); err != nil || got != want {
+						t.Fatalf("PRAGMA %s = %d, %v; want %d", pragma, got, err, want)
+					}
+				}
+				var pageSize int64
+				if err := store.db.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil || walCheckpointPages*pageSize > journalSizeLimit {
+					t.Fatalf("the log may hold %d pages of %d bytes before a checkpoint, %v; its size limit is %d bytes", walCheckpointPages, pageSize, err, journalSizeLimit)
+				}
 			}
 			if strings.ToLower(journal) != wantJournal {
 				t.Fatalf("journal mode = %q, want %q", journal, wantJournal)
