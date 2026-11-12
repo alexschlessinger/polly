@@ -1350,6 +1350,13 @@ func (s *SQLiteStore) withReadTransaction(ctx context.Context, fn func(*sql.Conn
 
 // withTransactionNow is withTransaction without the wait, for the writer.
 func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
+	return s.withTransactionThen(ctx, begin, fn, nil)
+}
+
+// withTransactionThen is withTransactionNow that runs then once fn's
+// transaction has committed, before the caller's turn at the connection
+// ends: whoever has the turn next finds what then did.
+func (s *SQLiteStore) withTransactionThen(ctx context.Context, begin string, fn func(*sql.Conn) error, then func()) error {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
 	if err := s.enter(ctx); err != nil {
@@ -1361,7 +1368,13 @@ func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn f
 		return err
 	}
 	defer conn.Close()
-	return runTransaction(ctx, conn, begin, func() error { return fn(conn) })
+	if err := runTransaction(ctx, conn, begin, func() error { return fn(conn) }); err != nil {
+		return err
+	}
+	if then != nil {
+		then()
+	}
+	return nil
 }
 
 // runTransaction runs fn inside a transaction opened on conn with begin and
@@ -2169,24 +2182,22 @@ func (s *sqliteSession) leasedWrite(ctx context.Context, write, settle bool, fn 
 	}
 	defer cleanup()
 	writer := s.store.writer
-	pending, err := writer.takeSession(opCtx, s.id)
-	if err != nil {
-		return s.mapError(ctx, err)
-	}
-	err = s.store.withTransactionNow(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+	var pending []pendingPart
+	err = s.store.withTransactionThen(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		if pending != nil {
-			if err := writePendingSession(opCtx, conn, pending, false); err != nil {
+		var err error
+		if pending, err = writer.pendingFor(s.id, s.ownerToken); err != nil {
+			return err
+		}
+		for i := range pending {
+			if err := writePendingSession(opCtx, conn, &pending[i].session, false); err != nil {
 				return err
 			}
 		}
 		return fn(opCtx, conn)
-	})
-	if err != nil && pending != nil {
-		writer.restoreSession(pending)
-	}
+	}, func() { writer.wrote(pending) })
 	return s.mapError(ctx, err)
 }
 

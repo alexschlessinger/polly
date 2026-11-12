@@ -151,16 +151,3 @@ func TestOutcomeOutsideADrivenFamilyIsWrittenAtOnce(t *testing.T) {
 		t.Fatalf("stored metadata = %+v, %v", metadata, err)
 	}
 }
-
-// What is pending for a session in two windows comes to the first outcome.
-func TestJoinedPendingKeepsTheFirstOutcome(t *testing.T) {
-	token := []byte("lease")
-	older := &pendingSession{token: token, outcome: ReportPaused, outcomeNS: 1}
-	newer := &pendingSession{token: token, outcome: ReportFinished, outcomeNS: 2}
-	if joined := joinPending(older, newer); joined.outcome != ReportPaused || joined.outcomeNS != 1 {
-		t.Fatalf("joined outcome = %q at %d", joined.outcome, joined.outcomeNS)
-	}
-	if joined := joinPending(&pendingSession{token: token}, newer); joined.outcome != ReportFinished || joined.outcomeNS != 2 {
-		t.Fatalf("joined outcome = %q at %d", joined.outcome, joined.outcomeNS)
-	}
-}

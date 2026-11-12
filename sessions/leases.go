@@ -171,38 +171,34 @@ func (s *SQLiteStore) release(ctx context.Context, leases ...lease) error {
 	for len(leases) > 0 {
 		batch := leases[:min(len(leases), releaseBatch)]
 		leases = leases[len(batch):]
-		pending := make([]*pendingSession, len(batch))
 		var err error
-		for i, held := range batch {
-			if err = s.writer.settleFamily(ctx, held.id); err == nil {
-				pending[i], err = s.writer.takeSession(ctx, held.id)
-			}
-			if err != nil {
+		for _, held := range batch {
+			if err = s.writer.settleFamily(ctx, held.id); err != nil {
 				break
 			}
 		}
 		deleted := false
 		if err == nil {
-			err = s.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
-				for i, held := range batch {
-					gone, err := endLease(ctx, conn, held, pending[i])
+			// The leases stay with a failure and so does what was pending,
+			// so a checkpoint can still write it.
+			var ended []pendingPart
+			err = s.withTransactionThen(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+				for _, held := range batch {
+					pending, err := s.writer.pendingFor(held.id, held.token)
+					if err != nil {
+						return err
+					}
+					gone, err := endLease(ctx, conn, held, pending)
 					if err != nil {
 						return err
 					}
 					deleted = deleted || gone
+					ended = append(ended, pending...)
 				}
 				return nil
-			})
+			}, func() { s.writer.wrote(ended) })
 		}
-		if err != nil {
-			// The leases stay with the failure, so a checkpoint can still
-			// write what was pending.
-			for _, session := range pending {
-				if session != nil {
-					s.writer.restoreSession(session)
-				}
-			}
-		} else if deleted {
+		if err == nil && deleted {
 			s.incrementalVacuum(ctx)
 		}
 		result = errors.Join(result, err)
@@ -213,7 +209,7 @@ func (s *SQLiteStore) release(ctx context.Context, leases ...lease) error {
 // endLease writes what is pending for the session and ends the lease held on
 // it, if that is still the stored one. It reports whether the session
 // was deleted instead: an automatic one that never had a turn.
-func endLease(ctx context.Context, conn *sql.Conn, held lease, pending *pendingSession) (deleted bool, err error) {
+func endLease(ctx context.Context, conn *sql.Conn, held lease, pending []pendingPart) (deleted bool, err error) {
 	var retention string
 	var hasTurn, owned int
 	err = conn.QueryRowContext(ctx, `
@@ -225,21 +221,25 @@ func endLease(ctx context.Context, conn *sql.Conn, held lease, pending *pendingS
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
+	messages := 0
+	for i := range pending {
+		messages += len(pending[i].session.tail)
+	}
 	if err != nil || owned == 0 {
-		if err == nil && pending != nil && len(pending.tail) > 0 {
+		if err == nil && messages > 0 {
 			// Someone else has the session now and has gone on from what
 			// the database held.
-			slog.Warn("coordination_updates_dropped", "session", hex.EncodeToString(held.id), "messages", len(pending.tail))
+			slog.Warn("coordination_updates_dropped", "session", hex.EncodeToString(held.id), "messages", messages)
 		}
 		return false, err
 	}
-	if pending != nil {
-		if err := writePendingSession(ctx, conn, pending, false); err != nil {
+	for i := range pending {
+		if err := writePendingSession(ctx, conn, &pending[i].session, false); err != nil {
 			return false, err
 		}
-		if len(pending.tail) > 0 {
-			hasTurn = 1
-		}
+	}
+	if messages > 0 {
+		hasTurn = 1
 	}
 	if retention == retentionAuto && hasTurn == 0 {
 		deleted, err = deleteSessions(ctx, conn, "id = ? AND NOT "+swarmPinnedSQL, held.id)

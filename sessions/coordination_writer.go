@@ -22,7 +22,7 @@ var checkpointDelay = 50 * time.Millisecond
 // transaction pays for every page it changes, and rows written together
 // share pages, so a large one costs less a row. It also holds the database's
 // one writing connection: this size keeps a turn at it to a fraction of a
-// second, which is how long a lease renewal or a session taking its own
+// second, which is how long a lease renewal or a session writing its own
 // pending rows may then wait.
 var checkpointRows = 16384
 
@@ -87,35 +87,30 @@ type pendingSession struct {
 	// outcome is the first one the updates gave, noted at outcomeNS.
 	outcome   ReportStatus
 	outcomeNS int64
-	// writing is set while a checkpoint's transaction writes the session.
-	// The writer's mu guards it.
-	writing bool
 }
 
-// joinPending returns what older and newer, pending for one session in that
-// order, come to together. Either may be nil.
-func joinPending(older, newer *pendingSession) *pendingSession {
-	// A lease taken again is another tenure: what the last one left can no
-	// longer be written.
-	if older == nil || newer != nil && !bytes.Equal(older.token, newer.token) {
-		return newer
+// without takes written, an earlier copy of the session that a transaction
+// has written, out of it, and reports whether nothing is left pending.
+func (s *pendingSession) without(written *pendingSession) (empty bool) {
+	s.start += int64(len(written.tail))
+	s.tail = s.tail[len(written.tail):]
+	// An identity given since replaced the one written.
+	if s.transcript == written.transcript {
+		s.transcript = nil
 	}
-	if newer == nil {
-		return older
+	// The outcome is the first one given, so the one written is this one.
+	if written.outcome != "" {
+		s.outcome = ""
 	}
-	joined := *newer
-	if len(older.tail) > 0 {
-		joined.start = older.start
-		joined.tail = append(older.tail[:len(older.tail):len(older.tail)], newer.tail...)
-	}
-	if joined.transcript == nil {
-		joined.transcript = older.transcript
-	}
-	joined.nowNS = max(older.nowNS, newer.nowNS)
-	if older.outcome != "" {
-		joined.outcome, joined.outcomeNS = older.outcome, older.outcomeNS
-	}
-	return &joined
+	return len(s.tail) == 0 && s.transcript == nil && s.outcome == ""
+}
+
+// pendingPart is what one window held for a session when a transaction came
+// to write it: session is the copy the transaction writes, and of the pending
+// session it is a copy of.
+type pendingPart struct {
+	session pendingSession
+	of      *pendingSession
 }
 
 func newPendingWindow() *pendingWindow {
@@ -445,60 +440,63 @@ func (w *coordinationWriter) settleFamily(ctx context.Context, root []byte) erro
 	return w.settle(ctx)
 }
 
-// takeSession hands the caller what is pending for the session id, to write
-// in a transaction of its own. That includes what a checkpoint under way has
-// not come to: the caller waits only for a transaction that is writing the
-// session at the moment, not for the checkpoint. The caller gives what it
-// took back with restoreSession if it does not write it.
-func (w *coordinationWriter) takeSession(ctx context.Context, id []byte) (*pendingSession, error) {
+// pendingFor returns what is pending for the session id under the lease
+// token, oldest first, for the caller to write in the transaction it is in.
+// That includes what a checkpoint under way has not come to, so the caller
+// waits for its turn at the connection and not for the checkpoint.
+//
+// What it returns stays pending until the caller says, with wrote, that its
+// transaction committed, which it does before it gives up its turn. A
+// checkpoint's transaction needs the turn too, so none comes between the
+// session's rows reaching the database and their leaving here: a checkpoint
+// never records that it wrote updates whose rows are still in a caller's
+// hands. A caller that fails leaves everything as it was.
+//
+// What another lease left pending is not the caller's to write: a checkpoint
+// drops it. When the checkpoint that holds part of it has failed, pendingFor
+// fails as every wait for the database then does.
+func (w *coordinationWriter) pendingFor(id, token []byte) ([]pendingPart, error) {
 	w.mu.Lock()
-	// older is what the caller takes out of the checkpoint under way. What a
-	// transaction of the checkpoint wrote while the caller waited for it is
-	// in the database, and no longer pending.
-	var older *pendingSession
-	for w.applying != nil {
-		session := w.applying.sessions[string(id)]
-		if session == nil {
-			break
+	defer w.mu.Unlock()
+	var parts []pendingPart
+	for _, window := range []*pendingWindow{w.applying, w.window} {
+		if window == nil {
+			continue
 		}
-		if w.applyErr != nil {
-			err := w.applyErr
-			w.mu.Unlock()
-			return nil, err
+		session := window.sessions[string(id)]
+		if session == nil || !bytes.Equal(session.token, token) {
+			continue
 		}
-		if !session.writing {
-			// The checkpoint has not come to the session, and now will not.
-			delete(w.applying.sessions, string(id))
-			older = session
-			break
+		if window == w.applying && w.applyErr != nil {
+			return nil, w.applyErr
 		}
-		moved := w.appliedMoved
-		w.mu.Unlock()
-		select {
-		case <-moved:
-		case <-ctx.Done():
-			return nil, context.Cause(ctx)
-		}
-		w.mu.Lock()
+		// A copy: an update accepted meanwhile adds to the session in place.
+		parts = append(parts, pendingPart{session: *session, of: session})
 	}
-	newer := w.window.sessions[string(id)]
-	delete(w.window.sessions, string(id))
-	w.mu.Unlock()
-	return joinPending(older, newer), nil
+	return parts, nil
 }
 
-func (w *coordinationWriter) restoreSession(session *pendingSession) {
-	w.mu.Lock()
-	// What was accepted for the session meanwhile comes after what is given
-	// back.
-	w.window.sessions[string(session.id)] = joinPending(session, w.window.sessions[string(session.id)])
-	// The window is pending again even if it was empty: its place is one
-	// the database already claims, which a checkpoint then makes true.
-	if w.window.last == 0 {
-		w.window.last, w.since = w.accepted, time.Now()
+// wrote takes parts, which a transaction wrote and committed, out of what is
+// pending. The caller still holds its turn at the connection. What was
+// accepted for a session since its part was copied stays pending. No caller
+// has that today: a session's handle takes no update from memory while a
+// write of its own is under way, and a lease being released has no handle.
+func (w *coordinationWriter) wrote(parts []pendingPart) {
+	if len(parts) == 0 {
+		return
 	}
-	w.mu.Unlock()
-	wake(w.wakeApply)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := range parts {
+		part := &parts[i]
+		id := string(part.of.id)
+		// The window the part came from may have become the checkpoint's.
+		for _, window := range []*pendingWindow{w.applying, w.window} {
+			if window != nil && window.sessions[id] == part.of && part.of.without(&part.session) {
+				delete(window.sessions, id)
+			}
+		}
+	}
 }
 
 // pendingTail returns the messages appended to the session id that the
@@ -726,8 +724,10 @@ func (w *coordinationWriter) apply(window *pendingWindow, log *updateLog) error 
 			}})
 		}
 	}
-	// A session's handle may take what is pending for it out of the window
-	// until a transaction here claims it, so the map is read under mu.
+	// A session's handle, or a release of its lease, may write what is
+	// pending for it in a transaction of its own before or between this
+	// checkpoint's, and take it out of the window, so the map is read
+	// under mu.
 	w.mu.Lock()
 	sessions := make([]*pendingSession, 0, len(window.sessions))
 	for _, session := range window.sessions {
@@ -737,7 +737,7 @@ func (w *coordinationWriter) apply(window *pendingWindow, log *updateLog) error 
 	for {
 		var writing []*pendingSession
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		err := w.store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+		err := w.store.withTransactionThen(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 			rows, taken := 0, 0
 			for taken < len(steps) && rows < checkpointRows {
 				if err := steps[taken].write(ctx, conn); err != nil {
@@ -763,30 +763,25 @@ func (w *coordinationWriter) apply(window *pendingWindow, log *updateLog) error 
 			_, err := conn.ExecContext(ctx, `INSERT INTO update_log_marks(owner, place) VALUES(?, ?)
 				ON CONFLICT(owner) DO UPDATE SET place = excluded.place`, log.owner, int64(window.last))
 			return err
-		})
-		cancel()
-		if len(writing) > 0 {
+		}, func() {
+			// Written, the sessions are no longer pending. A handle that
+			// has the turn next must not find them here.
 			w.mu.Lock()
 			for _, session := range writing {
-				session.writing = false
-				if err == nil {
-					delete(window.sessions, string(session.id))
-				}
+				delete(window.sessions, string(session.id))
 			}
-			// A handle waiting for its session need not wait for the rest
-			// of the window.
-			announce(&w.appliedMoved)
 			w.mu.Unlock()
-		}
+		})
+		cancel()
 		if err != nil || len(steps) == 0 && len(sessions) == 0 {
 			return err
 		}
 	}
 }
 
-// claim marks the next sessions of window, about rows' worth of them, as
-// being written by the transaction that asked, and returns them and the
-// rest. A session its handle took meanwhile is no longer the checkpoint's.
+// claim returns the next sessions of window, about rows' worth of them, for
+// the transaction that asked to write, and the rest. A session its handle
+// wrote meanwhile is no longer pending.
 func (w *coordinationWriter) claim(window *pendingWindow, sessions []*pendingSession, rows int) (claimed, rest []*pendingSession) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -796,7 +791,6 @@ func (w *coordinationWriter) claim(window *pendingWindow, sessions []*pendingSes
 		if window.sessions[string(session.id)] != session {
 			continue
 		}
-		session.writing = true
 		claimed = append(claimed, session)
 		rows -= len(session.tail) + 2
 	}
