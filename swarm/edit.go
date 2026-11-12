@@ -459,11 +459,13 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 }
 
 // editLive is edit for a change to one execution's record that says what its
-// member is doing at the moment: queued for a slot, or running. Such a change
+// member is doing at the moment, such as waiting for a slot. Such a change
 // is for whoever watches this runtime. It is volatile: the store keeps it in
 // memory and writes it with the record's next change, so the stored record
 // says what the member was doing when it last saved something. The record
-// gets status unless it has it already or allowed, when given, says no.
+// gets status unless it has it already or allowed, when given, says no. That
+// a member is running is said by its slice's first request, which is an edit
+// already: see bindCheckpoint.
 func (r *Runtime) editLive(ctx context.Context, execution, status string, allowed func(*Execution) bool) error {
 	if err := r.prepare(ctx); err != nil {
 		return err

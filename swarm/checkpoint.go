@@ -141,6 +141,14 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					if e.InputSaved {
 						raw.Transcript = &sessions.TranscriptIdentity{Execution: execution, Generation: generation}
 					}
+					// A slice's first request is where its member starts to run.
+					// Like editLive's, the change is for whoever watches, unless
+					// the record is written below for a reason of its own.
+					started := checkpoint.Request && (e.Status == "queued" || e.Status == "waiting")
+					if started {
+						e = s.ownExecution(execution)
+						e.Status = "running"
+					}
 					// A request after a journaled batch appends to the transcript
 					// and leaves the record as that journal wrote it: its count
 					// and usage are current, and its intent is spent once the
@@ -166,6 +174,8 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 						if !checkpoint.Final && structured == nil && pause == nil {
 							volatile(raw, "execution", execution)
 						}
+					} else if started {
+						volatile(raw, "execution", execution)
 					}
 					if raw.Transcript != nil {
 						raw.Transcript.Counts = countsNote(e)

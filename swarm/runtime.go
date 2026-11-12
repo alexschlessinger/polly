@@ -1410,14 +1410,19 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			go r.wake(i.member)
 		}
 	}()
+	// held says the invocation took its slot when it woke.
+	held := false
 	for {
-		select {
-		case r.slots <- struct{}{}:
-		case <-ctx.Done():
-			i.err = ctx.Err()
-			r.finish(i)
-			return
+		if !held {
+			select {
+			case r.slots <- struct{}{}:
+			case <-ctx.Done():
+				i.err = ctx.Err()
+				r.finish(i)
+				return
+			}
 		}
+		held = false
 		again := r.executeSlice(ctx, i)
 		if !errors.Is(i.err, ErrYielded) {
 			if again {
@@ -1435,14 +1440,20 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			r.finish(i)
 			return
 		}
-		// A wake re-queues the same execution: the record says queued while
-		// the invocation waits for a slot and running once the slice starts.
-		if err := r.editLive(ctx, i.id, "queued", func(e *Execution) bool {
-			return e.Generation == i.generation && e.Status == "waiting"
-		}); err != nil {
-			i.err = err
-			r.finish(i)
-			return
+		// A wake re-queues the same execution. With a slot free the slice
+		// starts at once, and its first request says the member is running;
+		// the record says queued only while the invocation waits for a slot.
+		select {
+		case r.slots <- struct{}{}:
+			held = true
+		default:
+			if err := r.editLive(ctx, i.id, "queued", func(e *Execution) bool {
+				return e.Generation == i.generation && e.Status == "waiting"
+			}); err != nil {
+				i.err = err
+				r.finish(i)
+				return
+			}
 		}
 	}
 }
@@ -1657,9 +1668,6 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		if e, err = r.recount(ctx, session, e); err != nil {
 			return AgentResult{}, err
 		}
-	}
-	if err = r.editLive(ctx, i.id, "running", nil); err != nil {
-		return AgentResult{}, err
 	}
 	history, err := session.GetHistory(ctx)
 	if err != nil {
