@@ -1368,6 +1368,10 @@ func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn f
 // commits it when fn succeeds. Rollback is armed before BEGIN is dispatched:
 // cancellation can mask a BEGIN that SQLite already executed, and the
 // connection must never return to the pool in an uncertain transaction.
+//
+// An error means the transaction did not commit. Cancellation can mask a
+// COMMIT that SQLite already executed too, so a context that has ended ends
+// the transaction before the commit, and the commit itself runs to its end.
 func runTransaction(ctx context.Context, conn *sql.Conn, begin string, fn func() error) (err error) {
 	committed := false
 	defer func() {
@@ -1381,7 +1385,10 @@ func runTransaction(ctx context.Context, conn *sql.Conn, begin string, fn func()
 	if err = fn(); err != nil {
 		return err
 	}
-	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(context.WithoutCancel(ctx), "COMMIT"); err != nil {
 		return err
 	}
 	committed = true

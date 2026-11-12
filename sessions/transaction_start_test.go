@@ -75,3 +75,90 @@ func TestUncertainTransactionStartRollsBackBeforeConnectionReuse(t *testing.T) {
 		})
 	}
 }
+
+// endedCommitDriver models a caller's context that ends while SQLite executes
+// COMMIT: the statement completes, and the driver reports the context's
+// error for it all the same.
+type endedCommitDriver struct {
+	base driver.Driver
+	end  atomic.Pointer[context.CancelFunc]
+}
+
+func (d *endedCommitDriver) Open(name string) (driver.Conn, error) {
+	conn, err := d.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &endedCommitConn{Conn: conn, owner: d}, nil
+}
+
+type endedCommitConn struct {
+	driver.Conn
+	owner *endedCommitDriver
+}
+
+func (c *endedCommitConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	execer, ok := c.Conn.(driver.ExecerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	if query != "COMMIT" {
+		return execer.ExecContext(ctx, query, args)
+	}
+	result, err := execer.ExecContext(context.WithoutCancel(ctx), query, args)
+	if end := c.owner.end.Swap(nil); end != nil {
+		(*end)()
+	}
+	if err == nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return result, err
+}
+
+// A transaction that returns an error did not commit, and one that committed
+// returns none, whenever its caller's context ends: before the commit the
+// transaction is rolled back, and a commit under way runs to its end.
+func TestTransactionReportsWhetherItCommitted(t *testing.T) {
+	real, _ := openTestStore(t, ModeMemory, nil, 0)
+	injected := &endedCommitDriver{base: real.db.Driver()}
+	name := fmt.Sprintf("ended-commit-%d", transactionDriverIDs.Add(1))
+	sql.Register(name, injected)
+	db, err := sql.Open(name, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("CREATE TABLE written(n INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	store := &SQLiteStore{db: db, turn: make(chan struct{}, 1)}
+	stored := func() (count int) {
+		t.Helper()
+		if err := db.QueryRow("SELECT count(*) FROM written").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for _, during := range []bool{true, false} {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		before := stored()
+		if during {
+			injected.end.Store(&cancel)
+		}
+		err := store.withWrite(ctx, func(conn *sql.Conn) error {
+			_, err := conn.ExecContext(ctx, "INSERT INTO written VALUES(1)")
+			if !during {
+				cancel()
+			}
+			return err
+		})
+		if ctx.Err() == nil {
+			t.Fatalf("during commit = %v: the caller's context did not end", during)
+		}
+		if wrote := stored() - before; (err == nil) != (wrote == 1) || during != (wrote == 1) {
+			t.Fatalf("during commit = %v: the transaction returned %v and stored %d rows", during, err, wrote)
+		}
+	}
+}
