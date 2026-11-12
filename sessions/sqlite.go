@@ -2181,16 +2181,14 @@ func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, erro
 }
 
 // confirmLease checks the lease without reading the session row, for callers
-// that need no session data.
+// that need no session data. A handle whose lease is fresh holds it without
+// asking the database; one that cannot be sure reads the stored lease, as a
+// read of the transcript would.
 func (s *sqliteSession) confirmLease(ctx context.Context) error {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
+	if s.leaseFresh() {
+		return s.alive(ctx)
 	}
-	defer cleanup()
-	s.store.dbMu.RLock()
-	defer s.store.dbMu.RUnlock()
-	return s.mapError(ctx, s.requireLease(opCtx, s.store.db))
+	return s.leasedRead(ctx, func(context.Context, *sql.Conn) error { return nil })
 }
 
 func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error {

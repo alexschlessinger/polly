@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,11 +11,10 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// historyWhileWriting reads the session's transcript while a transaction on
-// the store's writing connection is open and has added a message it has not
-// committed. It returns what the read saw, or fails the test when the read
-// waits for the writer.
-func historyWhileWriting(t *testing.T, store *SQLiteStore, session Session) []messages.ChatMessage {
+// whileWriting runs fn while a transaction on the store's writing connection
+// is open and has added a message to the session that it has not committed.
+// It fails the test when fn waits for the writer.
+func whileWriting(t *testing.T, store *SQLiteStore, session Session, fn func(context.Context) error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -36,29 +36,32 @@ func historyWhileWriting(t *testing.T, store *SQLiteStore, session Session) []me
 	case err := <-written:
 		t.Fatalf("the write did not begin: %v", err)
 	}
-	type read struct {
-		history []messages.ChatMessage
-		err     error
-	}
-	done := make(chan read, 1)
-	go func() {
-		history, err := session.GetHistory(ctx)
-		done <- read{history, err}
-	}()
-	var got read
+	done := make(chan error, 1)
+	go func() { done <- fn(ctx) }()
+	var err error
 	select {
-	case got = <-done:
+	case err = <-done:
 	case <-time.After(3 * time.Second):
 		close(release)
 		<-written
-		t.Fatal("a transcript read waited for the store's writing connection")
+		t.Fatal("a read waited for the store's writing connection")
 	}
 	close(release)
 	<-written
-	if got.err != nil {
-		t.Fatal(got.err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return got.history
+}
+
+// historyWhileWriting reads the session's transcript during a write, and
+// returns what the read saw.
+func historyWhileWriting(t *testing.T, store *SQLiteStore, session Session) (history []messages.ChatMessage) {
+	t.Helper()
+	whileWriting(t, store, session, func(ctx context.Context) (err error) {
+		history, err = session.GetHistory(ctx)
+		return err
+	})
+	return history
 }
 
 // A disk store reads a transcript through a connection of its own: the read
@@ -139,5 +142,45 @@ func TestReadersCannotWrite(t *testing.T) {
 	}
 	if stats := store.readers.Stats(); stats.MaxOpenConnections != readConnections {
 		t.Fatalf("the readers may open %d connections, want %d", stats.MaxOpenConnections, readConnections)
+	}
+}
+
+// A session's cache identity confirms the lease without waiting for a write:
+// a handle whose lease is fresh asks nobody, and one that cannot be sure
+// reads the stored lease through the readers.
+func TestCacheSessionIDDoesNotWaitForAWrite(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	session, err := store.Acquire(ctx, "cached", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	handle := session.(*sqliteSession)
+	want, err := session.CacheSessionID(ctx)
+	if err != nil || want == "" {
+		t.Fatalf("cache identity = %q, %v", want, err)
+	}
+	for _, fresh := range []bool{true, false} {
+		if !fresh {
+			handle.leaseExpiry.Store(0)
+		}
+		if handle.leaseFresh() != fresh {
+			t.Fatalf("the handle's lease is fresh = %v, want %v", handle.leaseFresh(), fresh)
+		}
+		whileWriting(t, store, session, func(ctx context.Context) error {
+			got, err := session.CacheSessionID(ctx)
+			if err == nil && got != want {
+				t.Errorf("cache identity changed to %q", got)
+			}
+			return err
+		})
+	}
+	// A handle that cannot be sure finds out that its lease is gone.
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM session_leases WHERE session_id = ?", handle.id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.CacheSessionID(ctx); !errors.Is(err, ErrSessionLeaseLost) {
+		t.Fatalf("cache identity without a lease: %v", err)
 	}
 }
