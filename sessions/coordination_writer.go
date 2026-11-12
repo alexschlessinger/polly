@@ -24,9 +24,11 @@ const (
 	// maxPendingBytes and maxPendingRows bound the updates the database does
 	// not hold yet. A caller that would exceed either waits, so a slow disk
 	// slows the callers down instead of growing what a checkpoint has to
-	// write, and with it how long anything that settles waits.
-	maxPendingBytes = 32 << 20
-	maxPendingRows  = 1 << 15
+	// write, and with it how long anything that settles waits. They leave
+	// room for several rounds of a large swarm: a record changed in each is
+	// then written once, and a session's messages together.
+	maxPendingBytes = 256 << 20
+	maxPendingRows  = 1 << 18
 	// checkpointRows is about how many rows one checkpoint transaction
 	// writes, so everything else that needs the connection gets its turn.
 	checkpointRows = 2000

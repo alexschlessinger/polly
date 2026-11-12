@@ -181,8 +181,9 @@ history. Unless you pass `--system`, the CLI adds coding guidance and loads the
 Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
 Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).
 
-The database trails a running swarm by a fraction of a second. What a swarm
-records goes first to a log in `~/.pollytool/polly.db-log/` and into the
+The database trails a running swarm by a fraction of a second, and by a few
+seconds while a large swarm records faster than the database takes it. What a
+swarm records goes first to a log in `~/.pollytool/polly.db-log/` and into the
 database at the next checkpoint, so a backup taken while a swarm runs holds it
 as of its last checkpoint. Whether an agent is queued or running at the moment
 is kept in memory only, so another Polly that reads the database sees each
