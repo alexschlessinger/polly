@@ -90,7 +90,7 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 	destination.writer.close()
 	destination.writer.finish()
 	old := s.db
-	s.db = destination.db
+	s.db, s.readers = destination.db, destination.readers
 	s.mode = ModeDisk
 	s.path = destination.path
 	transferred = true

@@ -41,7 +41,12 @@ const (
 	// walCheckpointPages is how many pages the write-ahead log holds before
 	// SQLite copies them into the database and syncs both. A page rewritten
 	// many times meanwhile is copied once. It stays inside journalSizeLimit.
-	walCheckpointPages       = 8192
+	walCheckpointPages = 8192
+	// readConnections is how many connections a disk store keeps for reads
+	// that need not wait behind its writes, and readCacheKiB is the page
+	// cache of each.
+	readConnections          = 4
+	readCacheKiB             = 8 << 10
 	boundedVacuumPages       = 128
 	retentionNamed           = "named"
 	retentionAuto            = "auto"
@@ -77,8 +82,12 @@ var (
 type SQLiteStore struct {
 	dbMu sync.RWMutex // gates handle-preserving memory-to-disk promotion
 	db   *sql.DB
-	// turn orders the callers that wait for the database's one connection.
-	// See enter.
+	// readers are connections of a disk store's that only read. The
+	// write-ahead log lets them read while db's one connection writes, so a
+	// read through them takes no turn. A memory store has none. See
+	// withReadTransaction.
+	readers *sql.DB
+	// turn orders the callers that wait for db's one connection. See enter.
 	turn     chan struct{}
 	mode     StoreMode
 	path     string
@@ -309,6 +318,9 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 
 	fail := func(err error) (*SQLiteStore, error) {
 		cancel(err)
+		if store.readers != nil {
+			_ = store.readers.Close()
+		}
 		_ = db.Close()
 		return nil, err
 	}
@@ -319,6 +331,12 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		if err := protectSQLiteFiles(dsnPath); err != nil {
 			return fail(err)
 		}
+		// Opened once the database is in its journal mode and has its schema.
+		store.readers = sql.OpenDB(&statementConnector{dsn: sqliteReaderSource(dsnPath)})
+		store.readers.SetMaxOpenConns(readConnections)
+		store.readers.SetMaxIdleConns(readConnections)
+		store.readers.SetConnMaxLifetime(0)
+		store.readers.SetConnMaxIdleTime(0)
 	}
 	if config.Mode == ModeDisk {
 		// What a store that is gone left in the update log belongs in the
@@ -476,7 +494,19 @@ func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
 	return nil
 }
 
+// sqliteDataSource names the database at path for the connection that
+// writes it.
 func sqliteDataSource(mode StoreMode, path string) string {
+	return sqliteSource(mode, path, false)
+}
+
+// sqliteReaderSource names the disk database at path for one of the
+// connections that only read it.
+func sqliteReaderSource(path string) string {
+	return sqliteSource(ModeDisk, path, true)
+}
+
+func sqliteSource(mode StoreMode, path string, reader bool) string {
 	query := make(url.Values)
 	query.Set("_foreign_keys", "on")
 	query.Set("_busy_timeout", "10000")
@@ -485,7 +515,9 @@ func sqliteDataSource(mode StoreMode, path string) string {
 	// lose the latest commits but leaves the database consistent. Sync is for
 	// a caller that needs a commit on disk before it goes on.
 	query.Set("_synchronous", "NORMAL")
-	query.Set("_txlock", "immediate")
+	if !reader {
+		query.Set("_txlock", "immediate")
+	}
 	query.Add("_pragma", "trusted_schema(OFF)")
 	uri := url.URL{Scheme: "file"}
 	if mode == ModeMemory {
@@ -507,10 +539,15 @@ func sqliteDataSource(mode StoreMode, path string) string {
 			normalized = "/" + normalized
 		}
 		uri.Path = normalized
-		query.Add("_pragma", fmt.Sprintf("cache_size(-%d)", pageCacheKiB))
-		query.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walCheckpointPages))
 		// What a statement sets aside to undo itself stays in memory.
 		query.Add("_pragma", "temp_store(MEMORY)")
+		if reader {
+			query.Add("_pragma", fmt.Sprintf("cache_size(-%d)", readCacheKiB))
+			query.Add("_pragma", "query_only(ON)")
+		} else {
+			query.Add("_pragma", fmt.Sprintf("cache_size(-%d)", pageCacheKiB))
+			query.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walCheckpointPages))
+		}
 	}
 	uri.RawQuery = query.Encode()
 	return uri.String()
@@ -1254,6 +1291,25 @@ func (s *SQLiteStore) enter(ctx context.Context) error {
 
 func (s *SQLiteStore) leave() { <-s.turn }
 
+// withReadTransaction runs fn in a transaction that only reads and sees the
+// database as of its start. A disk store runs it on one of its readers, so
+// it does not wait its turn behind the writes; a memory store has the one
+// connection.
+func (s *SQLiteStore) withReadTransaction(ctx context.Context, fn func(*sql.Conn) error) error {
+	s.dbMu.RLock()
+	if s.readers == nil {
+		s.dbMu.RUnlock()
+		return s.withTransactionNow(ctx, "BEGIN", fn)
+	}
+	defer s.dbMu.RUnlock()
+	conn, err := s.readers.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return runTransaction(ctx, conn, "BEGIN", func() error { return fn(conn) })
+}
+
 // withTransactionNow is withTransaction without the wait, for the writer.
 func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
 	s.dbMu.RLock()
@@ -1892,6 +1948,11 @@ func (s *SQLiteStore) Close() error {
 	s.writer.finish()
 	s.dbMu.Lock()
 	defer s.dbMu.Unlock()
+	if s.readers != nil {
+		if err := s.readers.Close(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
 	if err := s.db.Close(); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}
@@ -2151,7 +2212,7 @@ func (s *sqliteSession) leasedRead(ctx context.Context, fn func(context.Context,
 		return err
 	}
 	defer cleanup()
-	err = s.store.withTransactionNow(opCtx, "BEGIN", func(conn *sql.Conn) error {
+	err = s.store.withReadTransaction(opCtx, func(conn *sql.Conn) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
