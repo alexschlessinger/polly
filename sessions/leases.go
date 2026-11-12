@@ -135,8 +135,12 @@ func (s *SQLiteStore) yieldKeptNamed(ctx context.Context, name string) {
 	if none {
 		return
 	}
+	var id []byte
 	s.dbMu.RLock()
-	id, err := sessionIDByName(ctx, s.db, name)
+	err := s.look(ctx, func(db queryer) (err error) {
+		id, err = sessionIDByName(ctx, db, name)
+		return err
+	})
 	s.dbMu.RUnlock()
 	if err == nil {
 		s.yieldKept(ctx, id)

@@ -1242,6 +1242,10 @@ func (s *SQLiteStore) Sync(ctx context.Context) error {
 	if s.mode != ModeDisk {
 		return nil
 	}
+	if err := s.enter(ctx); err != nil {
+		return err
+	}
+	defer s.leave()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -1290,6 +1294,40 @@ func (s *SQLiteStore) enter(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) leave() { <-s.turn }
+
+// queryer is what a read needs of a connection or of a pool of them.
+type queryer interface {
+	rowQuerier
+	rowsQuerier
+}
+
+// look runs fn on what the store reads through when it needs no transaction:
+// one of its readers, or for a memory store its one connection, in the
+// caller's turn at it. The read does not settle. Nothing goes to the writing
+// connection outside a turn: database/sql hands that connection to whoever
+// waits for it in no order, so a crowd of readers would keep the caller whose
+// turn it is waiting behind them. The caller holds dbMu.
+func (s *SQLiteStore) look(ctx context.Context, fn func(queryer) error) error {
+	if s.readers != nil {
+		return fn(s.readers)
+	}
+	if err := s.enter(ctx); err != nil {
+		return err
+	}
+	defer s.leave()
+	return fn(s.db)
+}
+
+// execNow runs one statement on the writing connection in the caller's turn
+// at it, without settling. The caller holds dbMu.
+func (s *SQLiteStore) execNow(ctx context.Context, query string, args ...any) error {
+	if err := s.enter(ctx); err != nil {
+		return err
+	}
+	defer s.leave()
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
 
 // withReadTransaction runs fn in a transaction that only reads and sees the
 // database as of its start. A disk store runs it on one of its readers, so
@@ -1680,9 +1718,7 @@ func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error 
 	defer s.dbMu.RUnlock()
 	releaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(releaseCtx,
-		"DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", id, owner)
-	return err
+	return s.execNow(releaseCtx, "DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", id, owner)
 }
 
 // SQLite primary result codes for a lock held by another connection.
@@ -1752,13 +1788,15 @@ func (s *SQLiteStore) List(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var names []string
-	err := queryEach(ctx, s.db, "SELECT name FROM sessions ORDER BY name", nil, func(rows *sql.Rows) error {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return err
-		}
-		names = append(names, name)
-		return nil
+	err := s.look(ctx, func(db queryer) error {
+		return queryEach(ctx, db, "SELECT name FROM sessions ORDER BY name", nil, func(rows *sql.Rows) error {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			names = append(names, name)
+			return nil
+		})
 	})
 	return names, err
 }
@@ -1773,7 +1811,9 @@ func (s *SQLiteStore) Exists(ctx context.Context, name string) (bool, error) {
 		return false, nil
 	}
 	var exists bool
-	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE name = ?)", name).Scan(&exists)
+	err := s.look(ctx, func(db queryer) error {
+		return db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE name = ?)", name).Scan(&exists)
+	})
 	return exists, err
 }
 
@@ -1788,7 +1828,11 @@ func (s *SQLiteStore) GetMetadata(ctx context.Context, name string) (*Metadata, 
 	if err := validateSessionName(name); err != nil {
 		return nil, ErrSessionNotFound
 	}
-	snap, err := scanSnapshotWhere(ctx, s.db, "s.name = ?", name)
+	var snap sessionSnapshot
+	err := s.look(ctx, func(db queryer) (err error) {
+		snap, err = scanSnapshotWhere(ctx, db, "s.name = ?", name)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -1818,19 +1862,21 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	}
 	nowNS := time.Now().UTC().UnixNano()
 	var result []SessionSummary
-	err := queryEach(ctx, s.db, "SELECT "+snapshotColumns+","+leaseActiveSQL("s.id")+snapshotFrom+`
-		ORDER BY s.updated_ns DESC,s.name`, []any{nowNS}, func(rows *sql.Rows) error {
-		var snap sessionSnapshot
-		var inUse bool
-		if err := rows.Scan(append(snap.scanTargets(), &inUse)...); err != nil {
-			return err
-		}
-		metadata, err := metadataFromSnapshot(snap)
-		if err != nil {
-			return err
-		}
-		result = append(result, SessionSummary{ID: hex.EncodeToString(snap.id), ParentID: hex.EncodeToString(snap.parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse && !s.keeps(snap.id)})
-		return nil
+	err := s.look(ctx, func(db queryer) error {
+		return queryEach(ctx, db, "SELECT "+snapshotColumns+","+leaseActiveSQL("s.id")+snapshotFrom+`
+			ORDER BY s.updated_ns DESC,s.name`, []any{nowNS}, func(rows *sql.Rows) error {
+			var snap sessionSnapshot
+			var inUse bool
+			if err := rows.Scan(append(snap.scanTargets(), &inUse)...); err != nil {
+				return err
+			}
+			metadata, err := metadataFromSnapshot(snap)
+			if err != nil {
+				return err
+			}
+			result = append(result, SessionSummary{ID: hex.EncodeToString(snap.id), ParentID: hex.EncodeToString(snap.parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse && !s.keeps(snap.id)})
+			return nil
+		})
 	})
 	return result, err
 }
@@ -1842,8 +1888,9 @@ func (s *SQLiteStore) GetLast(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var name string
-	err := s.db.QueryRowContext(ctx,
-		"SELECT name FROM sessions ORDER BY updated_ns DESC, name LIMIT 1").Scan(&name)
+	err := s.look(ctx, func(db queryer) error {
+		return db.QueryRowContext(ctx, "SELECT name FROM sessions ORDER BY updated_ns DESC, name LIMIT 1").Scan(&name)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -1916,7 +1963,7 @@ func (s *SQLiteStore) incrementalVacuum(ctx context.Context) {
 	if s.mode != ModeDisk || ctx.Err() != nil {
 		return
 	}
-	_, _ = s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", boundedVacuumPages))
+	_ = s.execNow(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", boundedVacuumPages))
 }
 
 func (s *SQLiteStore) Close() error {
@@ -2168,12 +2215,12 @@ func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, erro
 	defer cleanup()
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
-	if err := s.store.enter(opCtx); err != nil {
-		return sessionSnapshot{}, s.mapError(ctx, err)
-	}
-	defer s.store.leave()
-	snap, err := scanSnapshotWhere(opCtx, s.store.db, `s.id = ? AND EXISTS (
-		SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken)
+	var snap sessionSnapshot
+	err = s.store.look(opCtx, func(db queryer) (err error) {
+		snap, err = scanSnapshotWhere(opCtx, db, `s.id = ? AND EXISTS (
+			SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		err = s.loseLease()
 	}
@@ -2752,12 +2799,14 @@ func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (reader io.Re
 		return nil, s.session.mapError(ctx, err)
 	}
 	var byteCount, chunkCount int64
-	err = s.session.store.db.QueryRowContext(opCtx, `
-		SELECT artifact_blobs.byte_count,artifact_blobs.chunk_count
-		FROM artifact_blobs
-		JOIN session_artifacts ON session_artifacts.digest = artifact_blobs.digest
-		WHERE session_artifacts.session_id = ? AND artifact_blobs.digest = ?`,
-		s.session.id, digest).Scan(&byteCount, &chunkCount)
+	err = s.session.store.look(opCtx, func(db queryer) error {
+		return db.QueryRowContext(opCtx, `
+			SELECT artifact_blobs.byte_count,artifact_blobs.chunk_count
+			FROM artifact_blobs
+			JOIN session_artifacts ON session_artifacts.digest = artifact_blobs.digest
+			WHERE session_artifacts.session_id = ? AND artifact_blobs.digest = ?`,
+			s.session.id, digest).Scan(&byteCount, &chunkCount)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, os.ErrNotExist
 	}
@@ -2839,8 +2888,9 @@ func (r *artifactReader) Read(p []byte) (int, error) {
 		if r.chunkIndex == r.chunkCount {
 			r.finished = true
 			var storedChunks int64
-			if err := store.db.QueryRowContext(r.ctx,
-				"SELECT count(*) FROM artifact_chunks WHERE digest = ?", r.digest).Scan(&storedChunks); err != nil {
+			if err := store.look(r.ctx, func(db queryer) error {
+				return db.QueryRowContext(r.ctx, "SELECT count(*) FROM artifact_chunks WHERE digest = ?", r.digest).Scan(&storedChunks)
+			}); err != nil {
 				return 0, r.session.mapError(r.ctx, err)
 			}
 			if storedChunks != r.chunkCount {
@@ -2853,9 +2903,11 @@ func (r *artifactReader) Read(p []byte) (int, error) {
 		}
 		var storedIndex int64
 		var data []byte
-		err := store.db.QueryRowContext(r.ctx, `
-			SELECT chunk_index,data FROM artifact_chunks
-			WHERE digest = ? AND chunk_index = ?`, r.digest, r.chunkIndex).Scan(&storedIndex, &data)
+		err := store.look(r.ctx, func(db queryer) error {
+			return db.QueryRowContext(r.ctx, `
+				SELECT chunk_index,data FROM artifact_chunks
+				WHERE digest = ? AND chunk_index = ?`, r.digest, r.chunkIndex).Scan(&storedIndex, &data)
+		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("%w: missing chunk %d", ErrArtifactCorrupt, r.chunkIndex)
 		}

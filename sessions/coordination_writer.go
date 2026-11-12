@@ -582,7 +582,7 @@ func (w *coordinationWriter) finish() {
 	if clean {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		w.store.dbMu.RLock()
-		_, err := w.store.db.ExecContext(ctx, `DELETE FROM update_log_marks WHERE owner = ?`, log.owner)
+		err := w.store.execNow(ctx, `DELETE FROM update_log_marks WHERE owner = ?`, log.owner)
 		w.store.dbMu.RUnlock()
 		cancel()
 		clean = err == nil

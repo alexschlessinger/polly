@@ -55,7 +55,7 @@ var ErrReadOnlyView = errors.New("session view is read-only")
 
 func (s *sqliteArtifactStore) requireReadAccess(ctx context.Context) error {
 	if !s.readOnly {
-		return s.session.requireLease(ctx, s.session.store.db)
+		return s.session.store.look(ctx, func(db queryer) error { return s.session.requireLease(ctx, db) })
 	}
 	return s.session.store.ensureOpen()
 }

@@ -528,8 +528,7 @@ func (s *SQLiteStore) recoverOwner(ctx context.Context, dir string, owner []byte
 	forget := func() error {
 		s.dbMu.RLock()
 		defer s.dbMu.RUnlock()
-		_, err := s.db.ExecContext(ctx, `DELETE FROM update_log_marks WHERE owner = ?`, owner)
-		return err
+		return s.execNow(ctx, `DELETE FROM update_log_marks WHERE owner = ?`, owner)
 	}
 	if len(files) == 0 {
 		done = true
