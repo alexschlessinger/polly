@@ -185,9 +185,11 @@ type Runtime struct {
 	view             StateCache
 	// scratchNext is where the search for a free live scratch slot starts.
 	scratchNext atomic.Int64
-	// editing admits one edit at a time, and no reader of the family's own
-	// state during it; see editOn and look.
+	// editing admits one runner of edits at a time, and no reader of the
+	// family's own state meanwhile; see lead and look. edits is the edits
+	// waiting for it.
 	editing sync.RWMutex
+	edits   editQueue
 	yield   chan struct{}
 	wg      sync.WaitGroup
 	// parentTools keeps an operation of the parent's, which reads the family

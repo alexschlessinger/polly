@@ -10,8 +10,10 @@ import (
 	"maps"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -538,21 +540,148 @@ func (r *Runtime) editAhead(ctx context.Context, session sessions.CoordinationSe
 	return written, err
 }
 
-// editFamily is an edit while it holds the family's state. It returns the
-// pokes the edit owes and, when the store answered before writing the edit,
-// the wait for that write. Once the state is let go editAhead sends the
-// pokes, and editOn waits.
+// editBatch is how many edits run under one hold of the family's state. It
+// bounds how long a reader waits for the state, and how long the caller that
+// runs the edits waits for its own to return.
+const editBatch = 32
+
+// editCall is one edit and what it came to.
+type editCall struct {
+	ctx     context.Context
+	session sessions.CoordinationSession
+	delta   sessions.CoordinationDeltaSession
+	fn      func(raw *sessions.CoordinationState, s *State) error
+	// confirm is whether the edit checks every record it left alone, and site
+	// names its caller for the diagnostics of one that does.
+	confirm bool
+	site    string
+
+	poke    func()
+	written func(context.Context) error
+	err     error
+	// panicked is what the edit panicked with when another caller ran it.
+	panicked any
+	// turn tells a caller that waited what became of its edit: true once
+	// another caller has run it, false when this caller is to run it and the
+	// edits behind it.
+	turn chan bool
+}
+
+// editQueue is the edits waiting for the family's state. One caller at a
+// time leads: it runs its own edit and then the ones that queued up behind
+// it, so the state passes from edit to edit without waking a caller for each.
+type editQueue struct {
+	mu      sync.Mutex
+	led     bool
+	waiting []*editCall
+}
+
+// join makes call's caller the lead when nobody leads, and otherwise queues
+// call behind the edits already waiting.
+func (q *editQueue) join(call *editCall) (lead bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.led {
+		q.led = true
+		return true
+	}
+	call.turn = make(chan bool, 1)
+	q.waiting = append(q.waiting, call)
+	return false
+}
+
+// take removes up to n of the edits that have waited longest, for the lead.
+func (q *editQueue) take(n int) []*editCall {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n = min(n, len(q.waiting))
+	if n == 0 {
+		return nil
+	}
+	taken := q.waiting[:n:n]
+	if q.waiting = q.waiting[n:]; len(q.waiting) == 0 {
+		q.waiting = nil
+	}
+	return taken
+}
+
+// pass ends a caller's lead: the caller whose edit has waited longest leads
+// next, and nobody does when none waits.
+func (q *editQueue) pass() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.waiting) == 0 {
+		q.led = false
+		return
+	}
+	heir := q.waiting[0]
+	if q.waiting = q.waiting[1:]; len(q.waiting) == 0 {
+		q.waiting = nil
+	}
+	heir.turn <- false
+}
+
+// editFamily is an edit from when it asks for the family's state until it has
+// let go of it. It returns the pokes the edit owes and, when the store
+// answered before writing the edit, the wait for that write: editAhead sends
+// the pokes, and editOn waits. Edits run one at a time, in the order they
+// asked.
 func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (poke func(), written func(context.Context) error, err error) {
 	delta, ok := session.(sessions.CoordinationDeltaSession)
+	if !ok {
+		// The session cannot write a set of changes: the update reads and
+		// writes the family inside one transaction of its own.
+		if err := rewrite(ctx, session, fn); err != nil {
+			return nil, nil, err
+		}
+		return r.pokeAll, nil, nil
+	}
+	call := &editCall{ctx: ctx, session: session, delta: delta, fn: fn}
+	if call.confirm = r.view.confirmEdits(); call.confirm {
+		call.site = editSite()
+	}
+	if r.edits.join(call) || !<-call.turn {
+		r.lead(call)
+	}
+	if call.panicked != nil {
+		panic(call.panicked)
+	}
+	return call.poke, call.written, call.err
+}
+
+// lead runs call, its caller's own edit, and then up to a batch of the edits
+// waiting behind it, under one hold of the family's state: no reader looks at
+// the state meanwhile. Each waiting caller goes on as soon as its edit has
+// run. The next caller in line leads after that.
+func (r *Runtime) lead(call *editCall) {
+	defer r.edits.pass()
+	r.editing.Lock()
+	defer r.editing.Unlock()
+	call.poke, call.written, call.err = r.editHeld(call)
+	for _, next := range r.edits.take(editBatch - 1) {
+		r.editFor(next)
+		next.turn <- true
+	}
+}
+
+// editFor runs an edit for the caller that waits on it. A panic in the edit
+// is that caller's: it is handed over with the result.
+func (r *Runtime) editFor(call *editCall) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("swarm_edit_panicked", "site", call.site, "panic", p, "stack", string(debug.Stack()))
+			call.panicked = p
+		}
+	}()
+	call.poke, call.written, call.err = r.editHeld(call)
+}
+
+// editHeld is an edit while its runner holds the family's state.
+func (r *Runtime) editHeld(call *editCall) (poke func(), written func(context.Context) error, err error) {
+	ctx := call.ctx
 	// A family that keeps changing under an edit falls back to the update
 	// below, which reads and writes inside one transaction.
-	if ok {
-		// One edit at a time changes the family's state, and no reader looks
-		// at it meanwhile.
-		r.editing.Lock()
-		defer r.editing.Unlock()
-	}
-	for attempt := 0; ok && attempt < 3; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		// The shared state is current unless something outside this runtime
 		// wrote the family; the store says so, and then a read catches up.
 		shared, raw, revision := r.view.snapshot()
@@ -564,23 +693,22 @@ func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationS
 				break
 			}
 		}
-		confirm := r.view.confirmEdits()
 		var committed *sessions.CoordinationState
 		var work *State
 		var changed map[string]map[string]json.RawMessage
 		var edited []string
-		err := delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
-			work = shared.editable(raw, confirm, r.view.unheld())
-			if err := fn(state, work); err != nil {
+		err := call.delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
+			work = shared.editable(raw, call.confirm, r.view.unheld())
+			if err := call.fn(state, work); err != nil {
 				return err
 			}
 			var err error
-			changed, edited, err = work.changes(confirm)
+			changed, edited, err = work.changes(call.confirm)
 			if err != nil {
 				return err
 			}
 			if len(edited) > 0 && failOnSharedChange {
-				panic("swarm: the edit at " + editSite() + " changed records without own, put or drop: " + strings.Join(edited, ", "))
+				panic("swarm: the edit at " + call.site + " changed records without own, put or drop: " + strings.Join(edited, ", "))
 			}
 			committed, state.Changes = state, changed
 			return nil
@@ -597,7 +725,7 @@ func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationS
 			return nil, nil, err
 		}
 		if len(edited) > 0 {
-			slog.Warn("swarm_edit_without_own", "site", editSite(), "records", strings.Join(edited, ", "))
+			slog.Warn("swarm_edit_without_own", "site", call.site, "records", strings.Join(edited, ", "))
 			r.view.drop()
 			return r.pokeAll, committed.Written, nil
 		}
@@ -606,13 +734,14 @@ func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationS
 		r.view.advance(revision, committed.Revision, work, changed)
 		return r.pokesFor(prior, work), committed.Written, nil
 	}
-	if err := rewrite(ctx, session, fn); err != nil {
+	if err := rewrite(ctx, call.session, call.fn); err != nil {
 		return nil, nil, err
 	}
 	return r.pokeAll, nil, nil
 }
 
-// editSite names the caller of the edit in progress, for its diagnostics.
+// editSite names the caller of the edit its goroutine is making, for the
+// edit's diagnostics.
 func editSite() string {
 	for skip := 2; skip < 40; skip++ {
 		pc, file, line, ok := runtime.Caller(skip)
@@ -620,7 +749,8 @@ func editSite() string {
 			break
 		}
 		name := runtime.FuncForPC(pc).Name()
-		if !strings.Contains(name, "pollytool/swarm.") || strings.Contains(name, ").editOn") || strings.Contains(name, ").editFamily") || strings.HasSuffix(name, ").edit") {
+		if !strings.Contains(name, "pollytool/swarm.") || strings.HasSuffix(name, ").edit") ||
+			strings.HasSuffix(name, ").editOn") || strings.HasSuffix(name, ").editAhead") || strings.HasSuffix(name, ").editLive") {
 			continue
 		}
 		return fmt.Sprintf("%s:%d", file[strings.LastIndex(file, "/")+1:], line)
