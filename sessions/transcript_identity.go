@@ -32,7 +32,23 @@ func (i *TranscriptIdentity) validate() error {
 // the stored settings, which SQLite replaces where it sits: nothing else in
 // them is read, decoded or written.
 func writeTranscriptIdentity(ctx context.Context, conn *sql.Conn, id []byte, identity *TranscriptIdentity, sequence int64) error {
-	change, args := "json_remove(CAST(settings_json AS TEXT), '$.transcript')", []any{}
+	return writeIdentity(ctx, conn, id, identity, sequence, nil)
+}
+
+// recordTurnWithIdentity is recordTurn and writeTranscriptIdentity for a
+// session that got both, in the one change to its row.
+func recordTurnWithIdentity(ctx context.Context, conn *sql.Conn, id []byte, next int64, identity *TranscriptIdentity, sequence int64) error {
+	return writeIdentity(ctx, conn, id, identity, sequence, &next)
+}
+
+// writeIdentity is writeTranscriptIdentity, and with turn set also recordTurn
+// for messages that left the transcript's next sequence at turn.
+func writeIdentity(ctx context.Context, conn *sql.Conn, id []byte, identity *TranscriptIdentity, sequence int64, turn *int64) error {
+	set, args := "", []any{}
+	if turn != nil {
+		set, args = "next_sequence = ?, has_turn = 1, ", append(args, *turn)
+	}
+	change := "json_remove(CAST(settings_json AS TEXT), '$.transcript')"
 	if identity != nil {
 		if err := identity.validate(); err != nil {
 			return err
@@ -43,9 +59,9 @@ func writeTranscriptIdentity(ctx context.Context, conn *sql.Conn, id []byte, ide
 		if err != nil {
 			return err
 		}
-		change, args = "json_set(CAST(settings_json AS TEXT), '$.transcript', json(?))", []any{string(data)}
+		change, args = "json_set(CAST(settings_json AS TEXT), '$.transcript', json(?))", append(args, string(data))
 	}
-	result, err := conn.ExecContext(ctx, "UPDATE sessions SET settings_json = CAST("+change+" AS BLOB), "+touchSQL+" WHERE id = ?",
+	result, err := conn.ExecContext(ctx, "UPDATE sessions SET "+set+"settings_json = CAST("+change+" AS BLOB), "+touchSQL+" WHERE id = ?",
 		append(args, time.Now().UnixNano(), id)...)
 	if err != nil {
 		return err

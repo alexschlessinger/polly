@@ -133,6 +133,190 @@ func TestCoordinationUpdatesAreWrittenBehind(t *testing.T) {
 	}
 }
 
+// A checkpoint with more rows than one transaction takes is written in
+// several, and whole.
+func TestCheckpointLargerThanATransactionIsWrittenWhole(t *testing.T) {
+	holdCheckpoints(t)
+	old := checkpointRows
+	checkpointRows = 3
+	t.Cleanup(func() { checkpointRows = old })
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "polly.db")
+	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := store.Acquire(ctx, "parent", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coord := parent.(CoordinationSession)
+	// The first update goes to the database and leaves the family in memory.
+	if err := coord.UpdateCoordination(ctx, setRecord("task", "first", `{"n":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	const updates = 10
+	var transcript []string
+	for n := range updates {
+		text := fmt.Sprintf("message %d", n)
+		transcript = append(transcript, text)
+		updateFrom(t, coord, changeRecord("task", fmt.Sprintf("task-%d", n), fmt.Sprintf(`{"n":%d}`, n), text))
+	}
+	watcher, err := store.readers.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	stored := func() (records int) {
+		t.Helper()
+		if err := watcher.QueryRowContext(ctx, "SELECT count(*) FROM swarm_records WHERE kind = 'task'").Scan(&records); err != nil {
+			t.Fatal(err)
+		}
+		return records
+	}
+	// The test takes every other turn at the writing connection, so it looks
+	// at the database between the checkpoint's transactions.
+	if err := store.enter(ctx); err != nil {
+		t.Fatal(err)
+	}
+	synced := make(chan error, 1)
+	go func() { synced <- store.Sync(ctx) }()
+	var seen []int
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		records := stored()
+		if len(seen) == 0 || seen[len(seen)-1] != records {
+			seen = append(seen, records)
+		}
+		if records == updates+1 || time.Now().After(deadline) {
+			break
+		}
+		// Long enough for the checkpoint to come and wait for its turn.
+		time.Sleep(200 * time.Microsecond)
+		store.leave()
+		if err := store.enter(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.leave()
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	if seen[0] != 1 || seen[len(seen)-1] != updates+1 {
+		t.Fatalf("the database held %v records, want 1 before the checkpoint and %d after", seen, updates+1)
+	}
+	if len(seen) < 3 {
+		t.Fatalf("the database held %v records: the checkpoint was one transaction", seen)
+	}
+	for _, records := range seen[1 : len(seen)-1] {
+		if (records-1)%checkpointRows != 0 {
+			t.Fatalf("the database held %v records: a transaction wrote other than %d", seen, checkpointRows)
+		}
+	}
+	if err := watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if parent, err = reopened.Acquire(ctx, "parent", AcquireOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	for n := range updates {
+		if got, want := readRecord(t, parent.(CoordinationSession), "task", fmt.Sprintf("task-%d", n)), fmt.Sprintf(`{"n":%d}`, n); got != want {
+			t.Fatalf("task-%d after reopening = %q, want %q", n, got, want)
+		}
+	}
+	if got, want := historyText(t, parent), strings.Join(transcript, ","); got != want {
+		t.Fatalf("transcript after reopening = %q, want %q", got, want)
+	}
+}
+
+// A checkpoint leaves a session's row as the updates it writes said: the
+// transcript's next sequence, that the session had a turn, and the identity
+// the transcript is bound to, whichever of them an update brought.
+func TestCheckpointWritesASessionsTurnAndIdentity(t *testing.T) {
+	holdCheckpoints(t)
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent, err := store.Acquire(ctx, "parent", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	coord := parent.(CoordinationSession)
+	// The first update goes to the database and leaves the family in memory.
+	if err := coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		next, updated int64
+		turn          bool
+		execution     sql.NullString
+		generation    sql.NullInt64
+		sequence      sql.NullInt64
+	}
+	read := func() (r row) {
+		t.Helper()
+		err := store.readers.QueryRowContext(ctx, `SELECT next_sequence, has_turn, updated_ns,
+			json_extract(CAST(settings_json AS TEXT), '$.transcript.execution'),
+			json_extract(CAST(settings_json AS TEXT), '$.transcript.generation'),
+			json_extract(CAST(settings_json AS TEXT), '$.transcript.sequence')
+			FROM sessions WHERE name = 'parent'`).Scan(&r.next, &r.turn, &r.updated, &r.execution, &r.generation, &r.sequence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	before := read()
+	if before.next != 0 || before.turn || before.execution.Valid {
+		t.Fatalf("the session's row before any turn: %+v", before)
+	}
+	for _, step := range []struct {
+		name       string
+		appended   []string
+		identity   *TranscriptIdentity
+		next       int64
+		generation int64
+		sequence   int64
+	}{
+		{name: "a turn and its identity", appended: []string{"one", "two"}, identity: &TranscriptIdentity{Execution: "run", Generation: 1}, next: 2, generation: 1, sequence: 2},
+		{name: "a turn alone", appended: []string{"three"}, next: 3, generation: 1, sequence: 2},
+		{name: "an identity alone", identity: &TranscriptIdentity{Execution: "run", Generation: 2}, next: 3, generation: 2, sequence: 3},
+	} {
+		queued := accepted(store)
+		updateFrom(t, coord, func(state *CoordinationState) error {
+			state.Transcript = step.identity
+			return changeRecord("task", "a", fmt.Sprintf(`{"n":%d}`, step.next+step.generation), step.appended...)(state)
+		})
+		if accepted(store) != queued+1 {
+			t.Fatalf("%s: the update was not queued for the writer", step.name)
+		}
+		if err := store.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+		after := read()
+		if after.next != step.next || !after.turn || after.execution.String != "run" || after.generation.Int64 != step.generation || after.sequence.Int64 != step.sequence {
+			t.Fatalf("%s: the session's row is %+v, want next %d, generation %d bound at %d", step.name, after, step.next, step.generation, step.sequence)
+		}
+		if after.updated <= before.updated {
+			t.Fatalf("%s: the session's row was not touched: %d after %d", step.name, after.updated, before.updated)
+		}
+		before = after
+	}
+	if got := historyText(t, parent); got != "one,two,three" {
+		t.Fatalf("transcript = %q", got)
+	}
+}
+
 // An update answered from memory hands its caller the wait for it to be safe
 // from a crash. On a disk store that is the write to the update log: once the
 // wait returns the log holds the update, whether or not a checkpoint has put

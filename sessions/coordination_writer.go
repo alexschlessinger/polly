@@ -18,6 +18,14 @@ import (
 // record changed many times in between is written once.
 var checkpointDelay = 50 * time.Millisecond
 
+// checkpointRows is about how many rows one checkpoint transaction writes. A
+// transaction pays for every page it changes, and rows written together
+// share pages, so a large one costs less a row. It also holds the database's
+// one writing connection: this size keeps a turn at it to a fraction of a
+// second, which is how long a lease renewal or a session taking its own
+// pending rows may then wait.
+var checkpointRows = 16384
+
 const (
 	// checkpointBytes starts a checkpoint before checkpointDelay is up.
 	checkpointBytes = 8 << 20
@@ -29,9 +37,6 @@ const (
 	// then written once, and a session's messages together.
 	maxPendingBytes = 256 << 20
 	maxPendingRows  = 1 << 18
-	// checkpointRows is about how many rows one checkpoint transaction
-	// writes, so everything else that needs the connection gets its turn.
-	checkpointRows = 2000
 )
 
 // queuedUpdate is a coordination update the store has accepted and applied to
@@ -840,18 +845,23 @@ func writePendingSession(ctx context.Context, conn *sql.Conn, session *pendingSe
 		slog.Warn("coordination_updates_dropped", "session", hex.EncodeToString(session.id), "messages", len(session.tail))
 		return nil
 	}
-	if len(session.tail) > 0 && next == session.start {
+	appended := len(session.tail) > 0 && next == session.start
+	if appended {
 		if _, err := insertMessages(ctx, conn, session.id, session.start, session.tail); err != nil {
 			return err
 		}
-		if err := recordTurn(ctx, conn, session.id, end, session.nowNS); err != nil {
-			return err
-		}
 	}
-	if session.transcript != nil {
-		if err := writeTranscriptIdentity(ctx, conn, session.id, session.transcript, session.transcript.Sequence); err != nil {
-			return err
-		}
+	// The session's row is changed once for the turn and the identity.
+	switch {
+	case appended && session.transcript != nil:
+		err = recordTurnWithIdentity(ctx, conn, session.id, end, session.transcript, session.transcript.Sequence)
+	case appended:
+		err = recordTurn(ctx, conn, session.id, end, session.nowNS)
+	case session.transcript != nil:
+		err = writeTranscriptIdentity(ctx, conn, session.id, session.transcript, session.transcript.Sequence)
+	}
+	if err != nil {
+		return err
 	}
 	if session.outcome != "" {
 		return writeSpawnOutcome(ctx, conn, session.id, session.outcome, session.outcomeNS)
