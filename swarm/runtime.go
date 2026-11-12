@@ -187,10 +187,14 @@ type Runtime struct {
 	scratchNext atomic.Int64
 	// editing admits one edit at a time, and no reader of the family's own
 	// state during it; see editOn and look.
-	editing     sync.RWMutex
-	yield       chan struct{}
-	wg          sync.WaitGroup
-	parentTools sync.Mutex
+	editing sync.RWMutex
+	yield   chan struct{}
+	wg      sync.WaitGroup
+	// parentTools keeps an operation of the parent's, which reads the family
+	// and then edits it, whole against the members' finishes: the operation
+	// holds it alone, and no finish begins or is still waiting for its write
+	// meanwhile. Finishes hold it together, since each is one edit.
+	parentTools sync.RWMutex
 }
 
 func New(c Config) (*Runtime, error) {
@@ -2079,8 +2083,8 @@ func mergeUsage(a, b Usage) Usage {
 	return Usage{Samples: a.Samples + b.Samples, InputTokens: add(a.InputTokens, b.InputTokens), OutputTokens: add(a.OutputTokens, b.OutputTokens), CachedInputTokens: add(a.CachedInputTokens, b.CachedInputTokens)}
 }
 func (r *Runtime) finish(i *invocation) (again bool) {
-	r.parentTools.Lock()
-	defer r.parentTools.Unlock()
+	r.parentTools.RLock()
+	defer r.parentTools.RUnlock()
 	c, stop := context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 	defer stop()
 	var exhausted *IterationLimitError
