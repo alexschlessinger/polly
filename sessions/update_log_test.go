@@ -441,6 +441,10 @@ func TestRecoveryLeavesUpdatesTheCheckpointWrote(t *testing.T) {
 		t.Fatal(err)
 	}
 	updateFrom(t, coord, changeRecord("task", "a", `{"n":2}`, "old one", "old two"))
+	// The log holds the update before a checkpoint writes it.
+	if err := store.writer.wait(ctx, accepted(store)); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
