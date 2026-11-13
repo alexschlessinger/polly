@@ -1095,7 +1095,9 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			meta.SystemPrompt = ""
 			meta.Model, meta.ModelHost = model, modelHost
 		}
-		session, err := r.createMemberSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName}, req.Label, describe)
+		// The store makes the session a member of the family as it creates
+		// it, and keeps it from then on until the family's root is removed.
+		session, err := r.createMemberSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName, Member: true}, req.Label, describe)
 		if err != nil {
 			return nil, err
 		}
@@ -1105,19 +1107,19 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if req.TaskName == "" {
 			m.AgentName = agentName(&Member{ID: identity})
 		}
-		err = r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
+		err = r.editOn(ctx, r.parent, func(_ *sessions.CoordinationState, s *State) error {
 			put(s, "member", &s.Members, m.ID, m)
 			c.Owner = m.ID
 			put(s, "context", &s.Contexts, c.ID, c)
-			raw.Members = append(raw.Members, m.ID)
 			return nil
 		})
 		closeErr := session.Close()
-		if err == nil {
-			err = closeErr
-		}
 		if err != nil {
+			r.dropUnrecordedMember(ctx, m.ID, name)
 			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
 		}
 	}
 	// Reserve synchronously before waiting for a slot, so concurrent callers

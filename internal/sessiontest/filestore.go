@@ -176,14 +176,21 @@ func freshConversation(name, parent string) *conversation {
 }
 
 func (s *fileStore) Acquire(ctx context.Context, name string, o sessions.AcquireOptions) (sessions.Session, error) {
+	if o.Member {
+		return nil, errors.New("only Create makes a session a member")
+	}
 	return s.acquire(ctx, name, o, false, nil)
 }
 
 // Create is Acquire for a session that must not exist yet, stored as
-// configure leaves its metadata.
+// configure leaves its metadata and, with o.Member, as a member of the
+// family its parent roots.
 func (s *fileStore) Create(ctx context.Context, name string, o sessions.AcquireOptions, configure func(*sessions.Metadata)) (sessions.Session, error) {
 	if o.ExistingOnly || o.ExpectedID != "" {
 		return nil, errors.New("a session to create cannot be an existing one")
+	}
+	if o.Member && o.Parent == "" {
+		return nil, errors.New("a member needs a parent")
 	}
 	return s.acquire(ctx, name, o, true, configure)
 }
@@ -213,6 +220,13 @@ func (s *fileStore) acquire(ctx context.Context, name string, o sessions.Acquire
 				configure(&c.Metadata)
 				c.Metadata.Name, c.Metadata.Created, c.Metadata.LastUsed = fresh.Name, fresh.Created, fresh.LastUsed
 				c.Metadata.Parent, c.Metadata.Transcript = fresh.Parent, nil
+			}
+			if o.Member {
+				// A family's members are its root's to name.
+				if held := s.db.leases[parent]; held == nil || held.store != s {
+					return errors.New("a member's parent must be open in the store that creates it")
+				}
+				v.Sessions[parent].Members[id] = true
 			}
 			v.Sessions[id] = c
 		}

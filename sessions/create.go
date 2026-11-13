@@ -14,7 +14,8 @@ var ErrSessionExists = errors.New("session already exists")
 // that creates it. configure, when given, edits the metadata the session
 // starts with, the store's defaults, and may give it a title; the store sets
 // the name, the parent and the times after it. It may run more than once and
-// must not call the store.
+// must not call the store. With AcquireOptions.Member the same transaction
+// makes the session a member of its parent's family.
 type SessionCreator interface {
 	Create(ctx context.Context, name string, options AcquireOptions, configure func(*Metadata)) (Session, error)
 }
@@ -22,6 +23,9 @@ type SessionCreator interface {
 func (s *SQLiteStore) Create(ctx context.Context, name string, options AcquireOptions, configure func(*Metadata)) (Session, error) {
 	if options.ExistingOnly || options.ExpectedID != "" {
 		return nil, errors.New("a session to create cannot be an existing one")
+	}
+	if options.Member && options.Parent == "" {
+		return nil, errors.New("a member needs a parent")
 	}
 	options.create, options.configure = true, configure
 	return s.Acquire(ctx, name, options)

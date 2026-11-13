@@ -177,7 +177,9 @@ Use the existing [session interfaces](../sessions/interface.go),
 
 Managed sessions need `CoordinationSession` on both parent and child handles,
 `SpawnOutcomeSession` on child handles, and a store that implements
-`SessionCreator`. The runtime refuses a store that does not, checks each child
+`SessionCreator`, whose `Create` makes the new session a member of its
+parent's family when asked to (`AcquireOptions.Member`). The runtime refuses
+a store without `SessionCreator`, checks each child
 acquisition, including recovery after a rename, and closes incompatible
 handles before returning an error. CLI/TUI adapters also
 need the view and title capabilities they consume.

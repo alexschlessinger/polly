@@ -45,6 +45,12 @@ type AcquireOptions struct {
 	// id, so Metadata.Parent follows the parent's renames; ErrSessionNotFound
 	// when no session has the name.
 	Parent string
+	// Member, for Create alone, makes the new session a member of the
+	// family its Parent roots, in the transaction that creates it: the
+	// family keeps the session until the parent is removed, as
+	// CoordinationState.Members has it keep one that exists. The parent
+	// must be open in the store that creates the member.
+	Member bool
 
 	// create and configure are Create's: the session must not exist, and
 	// starts as configure leaves the default metadata.

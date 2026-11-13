@@ -766,7 +766,7 @@ func TestAcquireKeepsExpiredSessionWithLiveLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, busy, err := store.tryAcquire(ctx, "held", AcquireOptions{}, owner, false)
+	_, _, busy, err := store.tryAcquire(ctx, "held", AcquireOptions{}, owner, false)
 	if err != nil || !busy {
 		t.Fatalf("expired-but-leased acquire busy = %v, %v", busy, err)
 	}

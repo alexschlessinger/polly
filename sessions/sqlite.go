@@ -1477,6 +1477,9 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 			return nil, fmt.Errorf("parent: %w", err)
 		}
 	}
+	if options.Member && !options.create {
+		return nil, errors.New("only Create makes a session a member")
+	}
 	if session := s.retake(name, options.ExpectedID); session != nil {
 		return session, nil
 	}
@@ -1508,7 +1511,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 	for {
 		// Taken before the lease is, so it never outlasts the stored one.
 		_, expiry := leaseWindow()
-		id, busy, err := s.tryAcquire(waitCtx, name, options, owner, recovered)
+		id, created, busy, err := s.tryAcquire(waitCtx, name, options, owner, recovered)
 		if errors.Is(err, errRecoverLogs) {
 			recovered = true
 			if err = s.recoverLogs(waitCtx, false); err == nil {
@@ -1532,6 +1535,12 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 			// drives the family, and reads it once more to start from.
 			s.coordination.held <- struct{}{}
 			s.coordination.forget(id)
+			if created != nil && options.Member {
+				// A member's handle knows the row just written for it, so
+				// its first update of the family asks the database for
+				// nothing, and the store can keep its lease when it closes.
+				session.remember(created.root, created.sequence)
+			}
 			<-s.coordination.held
 			return session, nil
 		}
@@ -1607,7 +1616,7 @@ func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...a
 // that is left of a store whose update log still holds the session's last
 // messages, so unless recovered says the log was just recovered, tryAcquire
 // asks for that with errRecoverLogs before it takes such a lease.
-func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte, recovered bool) (id []byte, busy bool, err error) {
+func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte, recovered bool) (id []byte, created *createdSession, busy bool, err error) {
 	now, expiresNS := leaseWindow()
 	nowNS := now.UnixNano()
 	err = s.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
@@ -1638,9 +1647,10 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			if options.ExistingOnly || options.ExpectedID != "" {
 				return ErrSessionNotFound
 			}
-			if storedID, err = s.createSession(ctx, conn, name, options, now); err != nil {
+			if created, err = s.createSession(ctx, conn, name, options, now); err != nil {
 				return err
 			}
+			storedID = created.id
 		} else if err != nil {
 			return err
 		}
@@ -1673,12 +1683,25 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 		id, busy = storedID, changed == 0
 		return nil
 	})
-	return id, busy, err
+	if err != nil {
+		created = nil
+	}
+	return id, created, busy, err
+}
+
+// createdSession is what createSession wrote of a new session's row: its id,
+// the root of its family, which is its parent or itself, and its
+// transcript's next sequence.
+type createdSession struct {
+	id, root []byte
+	sequence int64
 }
 
 // createSession inserts the session name with the store's default settings,
-// its transcript seeded with the default system prompt, and returns its id.
-func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name string, options AcquireOptions, now time.Time) ([]byte, error) {
+// its transcript seeded with the default system prompt, and returns what it
+// wrote. With options.Member it also makes the session a member of the
+// family its parent roots, which only the store that holds the parent does.
+func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name string, options AcquireOptions, now time.Time) (*createdSession, error) {
 	id, err := randomBytes(16)
 	if err != nil {
 		return nil, err
@@ -1730,7 +1753,33 @@ func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name st
 			return nil, err
 		}
 	}
-	return id, nil
+	created := &createdSession{id: id, root: id, sequence: next}
+	if parentID != nil {
+		created.root = parentID
+	}
+	if options.Member {
+		if err := s.registerCreated(ctx, conn, parentID, id); err != nil {
+			return nil, fmt.Errorf("parent %q: %w", options.Parent, err)
+		}
+	}
+	return created, nil
+}
+
+// registerCreated makes the session a transaction is creating a member of
+// the family its parent roots. A family's members are its root's to name, so
+// this store must hold the parent's lease.
+func (s *SQLiteStore) registerCreated(ctx context.Context, conn *sql.Conn, parent, member []byte) error {
+	root := s.handle(string(parent))
+	if root == nil {
+		return errors.New("a member's parent must be open in the store that creates it")
+	}
+	if _, held, err := leasedSequence(ctx, conn, parent, root.ownerToken); err != nil {
+		return err
+	} else if !held {
+		return ErrSessionLeaseLost
+	}
+	_, err := conn.ExecContext(ctx, `INSERT INTO swarm_members VALUES(?,?)`, parent, member)
+	return err
 }
 
 func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error {

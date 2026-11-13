@@ -3,6 +3,8 @@ package swarm
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
@@ -54,6 +56,23 @@ func (r *Runtime) createMemberSession(ctx context.Context, name string, options 
 		return nil, errors.Join(errors.New("member session does not support coordination"), session.Close())
 	}
 	return coordinated, nil
+}
+
+// dropUnrecordedMember deletes the session of a member whose spawn failed
+// before a record named it. The family keeps a member's session until its
+// root is removed, and nothing else would remove this one. An edit that
+// failed only in waiting to be written has recorded the member, whose
+// session then stays.
+func (r *Runtime) dropUnrecordedMember(ctx context.Context, id, name string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	recorded := true
+	if err := r.look(ctx, func(s *State) { recorded = s.Members[id] != nil }); err != nil || recorded {
+		return
+	}
+	if err := r.config.Store.Delete(ctx, name); err != nil {
+		slog.Warn("member_session_retained", "member", id, "error", err)
+	}
 }
 
 // Member names are cached display labels. If a handle changed, resolve the

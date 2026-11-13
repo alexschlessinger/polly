@@ -196,6 +196,56 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			t.Fatal("Create took a session that must exist")
 		}
 	})
+	t.Run("create_makes_a_member_with_the_session", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		s := f.Open()
+		parent := acquire(t, s, "parent", "")
+		creator, ok := s.(sessions.SessionCreator)
+		if !ok {
+			t.Fatal("missing SessionCreator")
+		}
+		kinds := map[string]bool{"member": true, "child": false}
+		ids := map[string]string{}
+		for name, member := range kinds {
+			created, err := creator.Create(t.Context(), name, sessions.AcquireOptions{Parent: "parent", Member: member}, nil)
+			must(t, err)
+			ids[name] = coord(t, created).ViewID()
+			must(t, created.Close())
+		}
+		// Its parent names a family's members, and only at their creation.
+		if _, err := creator.Create(t.Context(), "orphan", sessions.AcquireOptions{Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of no family")
+		}
+		if _, err := s.Acquire(t.Context(), "late", sessions.AcquireOptions{Parent: "parent", Member: true}); err == nil {
+			t.Fatal("Acquire made a member")
+		}
+		must(t, parent.Close())
+		if _, err := creator.Create(t.Context(), "unheld", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a family whose root is not open")
+		}
+		for _, name := range []string{"orphan", "late", "unheld"} {
+			exists, err := s.Exists(t.Context(), name)
+			must(t, err)
+			if exists {
+				t.Fatalf("a refused Create or Acquire left the session %q", name)
+			}
+		}
+		// The family keeps a member past its TTL, and no session beside it.
+		must(t, s.Close())
+		for _, id := range ids {
+			f.ExpireNow(id)
+		}
+		s = f.Open()
+		must(t, s.Expire(t.Context()))
+		for name, member := range kinds {
+			exists, err := s.Exists(t.Context(), name)
+			must(t, err)
+			if exists != member {
+				t.Fatalf("after its TTL the session %q exists = %v", name, exists)
+			}
+		}
+	})
 
 	t.Run("spawn_outcome_is_recorded_once", func(t *testing.T) {
 		t.Parallel()

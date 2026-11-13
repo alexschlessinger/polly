@@ -156,3 +156,86 @@ func TestHandleAnswersItsNameFromMemory(t *testing.T) {
 		t.Fatal("a closed handle answered for its name")
 	}
 }
+
+// Create makes a session a member of its parent's family in the transaction
+// that creates it. The member's handle knows its family from then on, so its
+// updates of the family, its close and the next handle on it ask the
+// database for nothing: all of them run while the store's only connection
+// is taken.
+func TestCreatedMemberAsksNoMoreOfTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	holdCheckpoints(t)
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	parent := acquireNamed(t, store, "parent")
+	if err := parent.(CoordinationSession).UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Create(ctx, "child", AcquireOptions{Auto: true, Parent: "parent", Member: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := child.(*sqliteSession).id
+	var registered int
+	if err := store.db.QueryRow(`SELECT count(*) FROM swarm_members WHERE parent_id = ? AND member_id = ?`, parent.(*sqliteSession).id, id).Scan(&registered); err != nil || registered != 1 {
+		t.Fatalf("the family names the new session as a member %d times, %v", registered, err)
+	}
+
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	brief, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	revision, err := child.(CoordinationRevisionSession).CoordinationRevision(brief)
+	if err != nil {
+		t.Fatalf("the member's first read of the family: %v", err)
+	}
+	if err := child.(CoordinationDeltaSession).UpdateCoordinationFrom(brief, revision, changeRecord("task", "a", `{"n":2}`, "one")); err != nil {
+		t.Fatalf("the member's first update of the family: %v", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- child.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-brief.Done():
+		t.Fatal("the member's close waited for the database")
+	}
+	store.mu.Lock()
+	kept := store.kept[string(id)] != nil
+	store.mu.Unlock()
+	if !kept {
+		t.Fatal("the store did not keep the lease of a member it had just created")
+	}
+	again, err := store.Acquire(brief, "child", AcquireOptions{ExpectedID: hex.EncodeToString(id), ExistingOnly: true})
+	if err != nil {
+		t.Fatalf("the next handle on the member: %v", err)
+	}
+	defer again.Close()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := historyText(t, again); got != "one" {
+		t.Fatalf("transcript = %q", got)
+	}
+}
+
+// Only the store that holds a family's root makes members of it: a Create
+// whose parent's lease is gone creates nothing.
+func TestCreateRefusesAMemberOfAFamilyItsStoreLost(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent := acquireNamed(t, store, "parent")
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM session_leases WHERE session_id = ?`, parent.(*sqliteSession).id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(ctx, "child", AcquireOptions{Auto: true, Parent: "parent", Member: true}, nil); !errors.Is(err, ErrSessionLeaseLost) {
+		t.Fatalf("creating a member of a family whose root's lease is gone: %v", err)
+	}
+	if exists, err := store.Exists(ctx, "child"); err != nil || exists {
+		t.Fatalf("the refused member exists = %v, %v", exists, err)
+	}
+}
