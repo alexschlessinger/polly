@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -90,8 +91,9 @@ func TestJournalToolBatchLeavesOutBatchesThatOnlyRead(t *testing.T) {
 		"unknown tool": {[]string{"look", "missing"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ran := 0
-			run := func(context.Context, tools.Args) (string, error) { ran++; return "result", nil }
+			// A batch's tools run side by side.
+			var ran atomic.Int32
+			run := func(context.Context, tools.Args) (string, error) { ran.Add(1); return "result", nil }
 			registry := tools.NewToolRegistry([]tools.Tool{
 				&tools.Func{Name: "look", ReadOnly: true, Run: run},
 				&tools.Func{Name: "work", Run: run},
@@ -106,15 +108,15 @@ func TestJournalToolBatchLeavesOutBatchesThatOnlyRead(t *testing.T) {
 			journaled := false
 			_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
 				JournalToolBatch: func(context.Context, AgentCheckpoint) error {
-					if ran != 0 {
+					if ran.Load() != 0 {
 						t.Error("a tool ran before the journal")
 					}
 					journaled = true
 					return nil
 				},
 			})
-			if err != nil || journaled != tc.journaled || ran == 0 {
-				t.Fatalf("err=%v journaled=%v, want %v, with %d tools run", err, journaled, tc.journaled, ran)
+			if err != nil || journaled != tc.journaled || ran.Load() == 0 {
+				t.Fatalf("err=%v journaled=%v, want %v, with %d tools run", err, journaled, tc.journaled, ran.Load())
 			}
 		})
 	}
