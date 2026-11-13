@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
 // maxCachedFamilies bounds the families whose records stay in memory. A
@@ -13,8 +13,12 @@ import (
 const maxCachedFamilies = 64
 
 // coordinationCache holds each family's records in memory so a read or an
-// update does not scan the table for them. The table stays the durable copy;
-// coordinationWriter writes the changes an update made in memory.
+// update does not scan the table for them. For a family this store drives,
+// one whose root session it holds, memory is ahead of the table between
+// checkpoints and is what every read and update answers from;
+// coordinationWriter writes the changes behind them. For any other family the
+// table is the truth and memory only spares a scan while nothing was
+// committed through another connection.
 //
 // Callers hold the cache across their whole transaction and the bookkeeping
 // that follows its commit, so nobody sees a family between the two. A caller
@@ -34,28 +38,36 @@ type coordinationCache struct {
 	// revisions never repeats, so equal revisions mean equal records even
 	// after a family was dropped and read again.
 	revisions uint64
+	// distrusted is set by a checkpoint that could not write a family's
+	// records: memory then holds what the table never will, and the next
+	// holder forgets every family.
+	distrusted atomic.Bool
 }
 
 type cachedFamily struct {
 	records  map[string]map[string]json.RawMessage
 	revision uint64
-	// checked is when the database last confirmed these records.
-	checked time.Time
 }
 
-// current returns the family when the database confirmed it recently enough
-// for an update or a read to be answered without asking again.
-func (c *coordinationCache) current(parent []byte) (cachedFamily, bool) {
+// family returns the family as memory holds it. The caller holds the cache
+// and has made sure this store drives the family.
+func (c *coordinationCache) family(parent []byte) (cachedFamily, bool) {
+	if c.distrusted.CompareAndSwap(true, false) {
+		c.clear()
+	}
 	family, ok := c.families[string(parent)]
-	return family, ok && time.Since(family.checked) < familyCheckEvery
+	return family, ok
 }
 
-// peek is current's revision for a caller that does not hold the cache.
+// peek is family's revision for a caller that does not hold the cache.
 func (c *coordinationCache) peek(parent string) (uint64, bool) {
+	if c.distrusted.Load() {
+		return 0, false
+	}
 	c.mu.RLock()
 	family, ok := c.families[parent]
 	c.mu.RUnlock()
-	return family.revision, ok && time.Since(family.checked) < familyCheckEvery
+	return family.revision, ok
 }
 
 func (c *coordinationCache) set(parent []byte, family cachedFamily) {
@@ -88,9 +100,12 @@ func (c *coordinationCache) release() { <-c.held }
 
 // records returns the family's records as conn's open transaction sees them,
 // and their revision, reading the table only when memory does not hold them.
-// The caller holds the cache, has already read from the transaction, and must
-// not modify the result.
-func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent []byte) (map[string]map[string]json.RawMessage, uint64, error) {
+// A commit through another connection discards the families this store does
+// not drive, as driven reports: nobody else changes the records of one it
+// does, and memory may hold values of theirs that were never written. The
+// caller holds the cache, has already read from the transaction, and must not
+// modify the result.
+func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent []byte, driven func(root string) bool) (map[string]map[string]json.RawMessage, uint64, error) {
 	var version int64
 	if err := conn.QueryRowContext(ctx, `PRAGMA data_version`).Scan(&version); err != nil {
 		return nil, 0, err
@@ -99,13 +114,20 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 	if err := conn.Raw(func(d any) error { driver = d; return nil }); err != nil {
 		return nil, 0, err
 	}
-	if driver != c.conn || version != c.version {
+	if c.distrusted.CompareAndSwap(true, false) {
 		c.clear()
+	}
+	if driver != c.conn || version != c.version {
+		c.mu.Lock()
+		for root := range c.families {
+			if driver != c.conn || !driven(root) {
+				delete(c.families, root)
+			}
+		}
+		c.mu.Unlock()
 		c.conn, c.version = driver, version
 	}
 	if family, ok := c.families[string(parent)]; ok {
-		family.checked = time.Now()
-		c.set(parent, family)
 		return family.records, family.revision, nil
 	}
 	records, err := readSwarmRecords(ctx, conn, parent)
@@ -116,7 +138,7 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		c.clear()
 	}
 	c.revisions++
-	c.set(parent, cachedFamily{records, c.revisions, time.Now()})
+	c.set(parent, cachedFamily{records, c.revisions})
 	return records, c.revisions, nil
 }
 
@@ -124,8 +146,8 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 // The caller holds the cache and gives up records.
 func (c *coordinationCache) replace(parent []byte, records map[string]map[string]json.RawMessage) uint64 {
 	c.revisions++
-	if family, ok := c.families[string(parent)]; ok {
-		c.set(parent, cachedFamily{records, c.revisions, family.checked})
+	if _, ok := c.families[string(parent)]; ok {
+		c.set(parent, cachedFamily{records, c.revisions})
 	}
 	return c.revisions
 }

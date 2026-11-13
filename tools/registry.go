@@ -76,6 +76,10 @@ func (n *NamespacedTool) Coordinates() bool {
 	return ok && t.Coordinates()
 }
 
+func (n *NamespacedTool) ReadsOnly() bool {
+	return ReadsOnly(n.Tool)
+}
+
 // GetSchema returns a schema with the namespaced title
 func (n *NamespacedTool) GetSchema() *schema.ToolSchema {
 	c := n.Tool.GetSchema().Copy()

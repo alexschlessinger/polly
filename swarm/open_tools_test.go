@@ -66,12 +66,12 @@ func (o *openRecorder) open(ctx context.Context, scope tools.ToolScope) (tools.T
 // recordingStore records every session acquisition next to the recorder's
 // open and close events.
 type recordingStore struct {
-	sessions.SessionStore
+	memberStore
 	rec *openRecorder
 }
 
 func (s *recordingStore) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
-	session, err := s.SessionStore.Acquire(ctx, name, opts)
+	session, err := s.memberStore.Acquire(ctx, name, opts)
 	if err == nil {
 		s.rec.record("acquire:" + name)
 	}
@@ -85,7 +85,7 @@ func runtimeWithOpen(t *testing.T, r *Runtime, o *openRecorder) *Runtime {
 	return rebuildRuntime(t, r, func(c *Config) {
 		o.inner = c.OpenTools
 		c.OpenTools = o.open
-		c.Store = &recordingStore{SessionStore: c.Store, rec: o}
+		c.Store = &recordingStore{memberStore: c.Store.(memberStore), rec: o}
 	})
 }
 

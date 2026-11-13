@@ -67,8 +67,14 @@ func useRegistry(c *Config, registry *tools.ToolRegistry) {
 
 func runtimeTestWithParent(t testing.TB, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
 	t.Helper()
+	return runtimeTestOn(t, sessions.StoreConfig{Mode: sessions.ModeMemory}, model, concurrent, starts, wrap)
+}
+
+// runtimeTestOn is runtimeTestWithParent on a store of the test's choosing.
+func runtimeTestOn(t testing.TB, config sessions.StoreConfig, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
+	t.Helper()
 	ctx := context.Background()
-	store, err := sessions.OpenStore(sessions.StoreConfig{Mode: sessions.ModeMemory})
+	store, err := sessions.OpenStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +93,15 @@ func runtimeTestWithParent(t testing.TB, model llm.LLM, concurrent, starts int, 
 	}
 	t.Cleanup(func() { r.Close(); parent.Close(); registry.Close(); store.Close() })
 	return r
+}
+
+// setParent has the runtime reach its family through parent from here on.
+// The runtime reads the session under its edit lock, also from the wake that
+// follows a member's last slice, so a test changes it there.
+func setParent(r *Runtime, parent sessions.CoordinationSession) {
+	r.editing.Lock()
+	defer r.editing.Unlock()
+	r.parent = parent
 }
 
 func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {

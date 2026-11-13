@@ -173,10 +173,18 @@ func TestStorageReopenRecoversExecutionWithoutReplayingEffects(t *testing.T) {
 
 // Capability support is per acquired handle, not implied by the root session.
 type plainSession struct{ sessions.Session }
-type unsupportedChildren struct{ sessions.SessionStore }
+type unsupportedChildren struct{ memberStore }
 
 func (s *unsupportedChildren) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
-	h, err := s.SessionStore.Acquire(ctx, name, opts)
+	h, err := s.memberStore.Acquire(ctx, name, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &plainSession{h}, nil
+}
+
+func (s *unsupportedChildren) Create(ctx context.Context, name string, opts sessions.AcquireOptions, configure func(*sessions.Metadata)) (sessions.Session, error) {
+	h, err := s.memberStore.Create(ctx, name, opts, configure)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +196,7 @@ func TestStorageRejectsUnsupportedChildCapabilities(t *testing.T) {
 	t.Run("spawn", func(t *testing.T) {
 		r := runtimeTest(t, doneModel(), 1, 1)
 		underlying := r.config.Store
-		r.config.Store = &unsupportedChildren{underlying}
+		r.config.Store = &unsupportedChildren{underlying.(memberStore)}
 		_, err := r.Spawn(t.Context(), subagent.Request{Label: "test", Task: "test", ReadOnly: true})
 		if err == nil || !strings.Contains(err.Error(), "coordination") {
 			t.Fatalf("spawn error: %v", err)
@@ -223,7 +231,7 @@ func TestStorageRejectsUnsupportedChildCapabilities(t *testing.T) {
 			if err := r.update(t.Context(), func(s *State) error { s.Members[member.ID] = member; return nil }); err != nil {
 				t.Fatal(err)
 			}
-			r.config.Store = &unsupportedChildren{underlying}
+			r.config.Store = &unsupportedChildren{underlying.(memberStore)}
 			got, err := r.acquireMemberSession(t.Context(), member)
 			if got != nil {
 				got.Close()

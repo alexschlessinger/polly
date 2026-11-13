@@ -44,6 +44,10 @@ Before starting or recovering a swarm:
 3. Ensure parent and acquired member handles implement
    `sessions.CoordinationSession`. Incompatible child handles are closed and
    rejected at acquisition, including on resume.
+4. Ensure the session store implements `sessions.SessionCreator` and that its
+   `Create` honors `AcquireOptions.Member`: the runtime creates each member
+   this way and registers it in no other. A store that ignores the option
+   keeps no member past its retention limit.
 
 See [runtime construction](API.md#swarms-and-workflows) and
 [backend assembly](RUNTIME-BACKENDS.md#application-assembly).

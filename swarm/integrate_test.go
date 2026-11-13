@@ -29,7 +29,7 @@ func integrateFixture(t *testing.T) (*Runtime, worktree.Snapshot, *countingSessi
 		t.Fatal(err)
 	}
 	counter := newCountingSession(r.config.Parent)
-	r.parent = counter
+	setParent(r, counter)
 	return r, plan.Parent, counter
 }
 
@@ -191,7 +191,7 @@ func TestIntegrateUnchangedPreparedCandidateDoesNotBlockForget(t *testing.T) {
 				defer r.Close()
 				suspendAutoRelease(t, r)
 				counter = newCountingSession(r.config.Parent)
-				r.parent = counter
+				setParent(r, counter)
 			}
 			s, _ = r.read(ctx)
 			if !completedUnchangedCandidate(s, s.Integrations[c.ID]) || len(s.Applies) != 0 {

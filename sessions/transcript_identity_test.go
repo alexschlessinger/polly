@@ -2,8 +2,11 @@ package sessions
 
 import (
 	"context"
+	"math"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -72,6 +75,56 @@ func TestTranscriptIdentityAtomicAndDurable(t *testing.T) {
 	saved, err := reader.ReadView(ctx, ViewTarget{ID: view.ID}, view.Revision)
 	if err != nil || saved.Unchanged || saved.Metadata.Transcript == nil || *saved.Metadata.Transcript != (TranscriptIdentity{Execution: "first", Generation: 2, Sequence: saved.Sequence}) {
 		t.Fatalf("reopened identity: %+v %v", saved, err)
+	}
+}
+
+// Binding a transcript writes the binding alone: every other setting reads
+// back as it was stored, whatever its text looks like as JSON.
+func TestTranscriptIdentityLeavesOtherSettingsAsStored(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	session := acquireNamed(t, store, "child")
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.SystemPrompt = "quotes \" and \\ slashes, <html> & 'entities', \u2028 separators, emoji \U0001F642, \u00e9\n\ttabs"
+	metadata.Description = `{"looks":"like json","n":1e3,"transcript":null}`
+	metadata.Temperature = 0.1
+	metadata.MaxTokens = 1 << 53
+	metadata.ToolTimeout = time.Duration(math.MaxInt64)
+	metadata.ActiveSkills = []string{"", "$.transcript"}
+	if err := session.SetMetadata(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	want, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coord := session.(CoordinationSession)
+	var sequence int64
+	for generation := 1; generation <= 2; generation++ {
+		if err := coord.UpdateCoordination(ctx, func(s *CoordinationState) error {
+			s.Transcript = &TranscriptIdentity{Execution: "execution", Generation: generation}
+			s.Append = messages.User("task")
+			sequence = s.Sequence + 1
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.Transcript = &TranscriptIdentity{Execution: "execution", Generation: 2, Sequence: sequence}
+	want.LastUsed = got.LastUsed
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("settings after binding:\n got %+v\nwant %+v", got, want)
 	}
 }
 

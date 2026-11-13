@@ -790,6 +790,17 @@ func readAuthorityPaths(cfg Config) []string {
 // so an explicit denial is never overridden by convenience. Callers must
 // resolve symlinks before selecting paths; their identities are then frozen.
 func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
+	cfg, err := AddReadOnlyPaths(cfg, paths...)
+	if err != nil {
+		return Config{}, err
+	}
+	return PrepareConfig(cfg)
+}
+
+// AddReadOnlyPaths is ExposeReadOnlyPaths for a caller that goes on to
+// prepare the config itself: the paths are checked and recorded, and their
+// identities are frozen with the rest of the config by PrepareConfig.
+func AddReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
 	cfg = cfg.Merge(Config{})
 	for _, path := range paths {
 		real, err := filepath.EvalSymlinks(path)
@@ -801,7 +812,7 @@ func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
 		}
 		cfg.visiblePaths = append(cfg.visiblePaths, path)
 	}
-	return PrepareConfig(cfg)
+	return cfg, nil
 }
 
 func captureAuthorityPathIdentities(paths []string) ([]authorityPathIdentity, error) {

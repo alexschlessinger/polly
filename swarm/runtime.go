@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -132,13 +133,10 @@ type invocation struct {
 	poke chan struct{}
 	// watch names the tasks a parked member's wake depends on: its own and
 	// that one's dependencies. r.mu guards it.
-	watch []string
-	// session is the member's leased conversation, kept by a slice that
-	// yielded for the next one. Only the invocation's goroutine touches it.
-	session coordinatedSession
-	cancel  context.CancelFunc
-	result  AgentResult
-	err     error
+	watch  []string
+	cancel context.CancelFunc
+	result AgentResult
+	err    error
 }
 type Runtime struct {
 	releaseMu                                      sync.Mutex
@@ -184,12 +182,18 @@ type Runtime struct {
 	view             StateCache
 	// scratchNext is where the search for a free live scratch slot starts.
 	scratchNext atomic.Int64
-	// editing admits one edit at a time, and no reader of the family's own
-	// state during it; see editOn and look.
-	editing     sync.RWMutex
-	yield       chan struct{}
-	wg          sync.WaitGroup
-	parentTools sync.Mutex
+	// editing admits one runner of edits at a time, and no reader of the
+	// family's own state meanwhile; see lead and look. edits is the edits
+	// waiting for it.
+	editing sync.RWMutex
+	edits   editQueue
+	yield   chan struct{}
+	wg      sync.WaitGroup
+	// parentTools keeps an operation of the parent's, which reads the family
+	// and then edits it, whole against the members' finishes: the operation
+	// holds it alone, and no finish begins or is still waiting for its write
+	// meanwhile. Finishes hold it together, since each is one edit.
+	parentTools sync.RWMutex
 }
 
 func New(c Config) (*Runtime, error) {
@@ -230,6 +234,9 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 	parent, ok := c.Parent.(sessions.CoordinationSession)
 	if !ok {
 		return nil, nil, errors.New("store does not support coordination")
+	}
+	if _, ok := c.Store.(memberStore); c.Store != nil && !ok {
+		return nil, nil, errors.New("store cannot create member sessions")
 	}
 	if c.Store == nil || c.Registry == nil || c.Client == nil || c.OpenTools == nil {
 		return nil, nil, errors.New("swarm requires a store, registry, model client and OpenTools")
@@ -413,6 +420,9 @@ func (r *Runtime) prepare(ctx context.Context) error {
 				e.Generation++
 				e.Status = "paused"
 				e.Error = "process interrupted; explicit resume required"
+				// The process that ran it may have ended with calls counted
+				// only in its memory.
+				e.Uncounted = true
 			}
 		}
 		for id, f := range s.Followups {
@@ -1067,11 +1077,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return nil, err
 		}
 		name := "agent-" + ids.New()[:12]
-		session, err := r.acquireCoordinatedSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
-		if err != nil {
-			return nil, err
-		}
-		identity := session.ViewID()
 		model, modelHost := req.Model, req.ModelHost
 		if model == "" {
 			model = defaults.request.Model
@@ -1079,46 +1084,42 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 				modelHost = defaults.request.ModelHost
 			}
 		}
-		meta, err := session.GetMetadata(ctx)
-		if err == nil {
+		describe := func(meta *sessions.Metadata) {
 			meta.Description = req.Label
 			meta.SpawnCallID = req.CallID
 			meta.SwarmID = r.ID
 			meta.ExecutionContext = c.ID
-			// Acquire may have seeded the store's launch-time system prompt.
-			// New members compose their own prompt from the current parent
+			// The store's defaults carry its launch-time system prompt. New
+			// members compose their own prompt from the current parent
 			// instructions when their first request is ready to be sent.
 			meta.SystemPrompt = ""
 			meta.Model, meta.ModelHost = model, modelHost
-			err = session.Reset(ctx, meta)
 		}
-		if err == nil {
-			if setter, ok := session.(sessions.TitleSession); ok {
-				_, err = setter.SetTitle(ctx, req.Label, sessions.TitleSourceAgent)
-			}
-		}
+		// The store makes the session a member of the family as it creates
+		// it, and keeps it from then on until the family's root is removed.
+		session, err := r.createMemberSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName, Member: true}, req.Label, describe)
 		if err != nil {
-			session.Close()
 			return nil, err
 		}
+		identity := session.ViewID()
 		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, SandboxPresets: sandboxPresets(c.SandboxPresets), ReadOnly: c.ReadOnly}
 		m.AgentName = "/root/" + req.TaskName
 		if req.TaskName == "" {
 			m.AgentName = agentName(&Member{ID: identity})
 		}
-		err = r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
+		err = r.editOn(ctx, r.parent, func(_ *sessions.CoordinationState, s *State) error {
 			put(s, "member", &s.Members, m.ID, m)
 			c.Owner = m.ID
 			put(s, "context", &s.Contexts, c.ID, c)
-			raw.Members = append(raw.Members, m.ID)
 			return nil
 		})
 		closeErr := session.Close()
-		if err == nil {
-			err = closeErr
-		}
 		if err != nil {
+			r.dropUnrecordedMember(ctx, m.ID, name)
 			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
 		}
 	}
 	// Reserve synchronously before waiting for a slot, so concurrent callers
@@ -1398,7 +1399,6 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 	defer r.wg.Done()
 	defer func() {
 		i.cancel()
-		i.releaseSession()
 		r.mu.Lock()
 		r.settleTranscript(i)
 		delete(r.active, i.member)
@@ -1410,14 +1410,19 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			go r.wake(i.member)
 		}
 	}()
+	// held says the invocation took its slot when it woke.
+	held := false
 	for {
-		select {
-		case r.slots <- struct{}{}:
-		case <-ctx.Done():
-			i.err = ctx.Err()
-			r.finish(i)
-			return
+		if !held {
+			select {
+			case r.slots <- struct{}{}:
+			case <-ctx.Done():
+				i.err = ctx.Err()
+				r.finish(i)
+				return
+			}
 		}
+		held = false
 		again := r.executeSlice(ctx, i)
 		if !errors.Is(i.err, ErrYielded) {
 			if again {
@@ -1435,17 +1440,20 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			r.finish(i)
 			return
 		}
-		// A wake re-queues the same execution: the record says queued while
-		// the invocation waits for a slot and running once the slice starts.
-		if err := r.edit(ctx, func(s *State) error {
-			if e := s.Executions[i.id]; e != nil && e.Generation == i.generation && e.Status == "waiting" {
-				s.ownExecution(i.id).Status = "queued"
+		// A wake re-queues the same execution. With a slot free the slice
+		// starts at once, and its first request says the member is running;
+		// the record says queued only while the invocation waits for a slot.
+		select {
+		case r.slots <- struct{}{}:
+			held = true
+		default:
+			if err := r.editLive(ctx, i.id, "queued", func(e *Execution) bool {
+				return e.Generation == i.generation && e.Status == "waiting"
+			}); err != nil {
+				i.err = err
+				r.finish(i)
+				return
 			}
-			return nil
-		}); err != nil {
-			i.err = err
-			r.finish(i)
-			return
 		}
 	}
 }
@@ -1469,11 +1477,8 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 }
 
 // park returns once the yielded member i has something to wake for, or its
-// wait runs out. A member that wakes soon runs its next slice on the session
-// it holds; one that stays parked gives the lease up.
+// wait runs out.
 func (r *Runtime) park(ctx context.Context, i *invocation) error {
-	held := time.NewTimer(parkedSessionHold)
-	defer held.Stop()
 	defer r.watchTasks(i, nil)
 	for {
 		// An edit pokes the members its records concern, so a parked
@@ -1503,24 +1508,8 @@ func (r *Runtime) park(ctx context.Context, i *invocation) error {
 			return ctx.Err()
 		case <-i.poke:
 		case <-timer.C:
-		case <-held.C:
-			i.releaseSession()
 		}
 		timer.Stop()
-	}
-}
-
-// parkedSessionHold is how long a parked member keeps its session's lease,
-// which is shorter than the lease's heartbeat: a member that wakes within it
-// saves releasing and acquiring the session, and one that does not costs no
-// renewal.
-const parkedSessionHold = time.Second
-
-// releaseSession gives up the session a yielded slice kept.
-func (i *invocation) releaseSession() {
-	if i.session != nil {
-		_ = i.session.Close()
-		i.session = nil
 	}
 }
 
@@ -1599,26 +1588,14 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 	if err != nil {
 		return AgentResult{}, err
 	}
-	// A slice that follows a yield closely finds the session the last one
-	// kept, unless its lease was lost meanwhile.
-	session := i.session
-	i.session = nil
-	if session != nil && session.Context().Err() != nil {
-		_ = session.Close()
-		session = nil
+	// Each slice runs on a handle of its own. A store that drives the
+	// family keeps the member's lease between them, so a slice that follows
+	// a yield takes it up without asking the database.
+	session, err := r.acquireMemberSession(ctx, m)
+	if err != nil {
+		return AgentResult{}, err
 	}
-	if session == nil {
-		if session, err = r.acquireMemberSession(ctx, m); err != nil {
-			return AgentResult{}, err
-		}
-	}
-	defer func() {
-		if errors.Is(runErr, ErrYielded) && session.Context().Err() == nil {
-			i.session = session
-			return
-		}
-		session.Close()
-	}()
+	defer session.Close()
 	// The parent owns the scheduler, but this invocation also owns a leased
 	// child conversation. Losing either lease must stop its current work.
 	ctx, cancelMember := context.WithCancelCause(ctx)
@@ -1656,11 +1633,10 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		return AgentResult{}, err
 	}
 	cb := &local
-	if err = r.edit(ctx, func(s *State) error {
-		s.ownExecution(i.id).Status = "running"
-		return nil
-	}); err != nil {
-		return AgentResult{}, err
+	if e.Uncounted {
+		if e, err = r.recount(ctx, session, e); err != nil {
+			return AgentResult{}, err
+		}
 	}
 	history, err := session.GetHistory(ctx)
 	if err != nil {
@@ -1723,7 +1699,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 					raw.Append = append(raw.Append, initial...)
 				}
 				raw.Append = append(raw.Append, input)
-				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation}
+				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation, Counts: countsNote(current)}
 				current.InputSaved = true
 				return nil
 			})
@@ -1885,22 +1861,18 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		if errors.Is(runErr, ErrYielded) {
 			return
 		}
-		persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		metadata, metadataErr := session.GetMetadata(persistCtx)
-		if metadataErr == nil && metadata.SpawnOutcome == "" {
-			metadata.SpawnOutcome = sessions.ReportFinished
-			if runErr != nil {
-				metadata.SpawnOutcome = sessions.ReportFailed
-				if i.interrupted.Load() || ctx.Err() != nil || retryCanceled(runErr) {
-					metadata.SpawnOutcome = sessions.ReportCanceled
-				} else if llm.IsIterationLimit(runErr) || committedPause {
-					metadata.SpawnOutcome = sessions.ReportPaused
-				}
+		outcome := sessions.ReportFinished
+		if runErr != nil {
+			outcome = sessions.ReportFailed
+			if i.interrupted.Load() || ctx.Err() != nil || retryCanceled(runErr) {
+				outcome = sessions.ReportCanceled
+			} else if llm.IsIterationLimit(runErr) || committedPause {
+				outcome = sessions.ReportPaused
 			}
-			metadataErr = session.SetMetadata(persistCtx, metadata)
 		}
-		stop()
-		runErr = errors.Join(runErr, metadataErr)
+		persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer stop()
+		runErr = errors.Join(runErr, session.RecordSpawnOutcome(persistCtx, outcome))
 	}()
 	_ = r.look(context.WithoutCancel(ctx), func(current *State) {
 		if current.Members[m.ID] == nil {
@@ -1993,6 +1965,54 @@ func chainToolContext(prior func(context.Context, messages.ChatMessageToolCall, 
 		return next(ctx)
 	}
 }
+
+// executionCounts is what an execution notes of itself at each boundary of
+// its member's transcript it saves: the model calls answered so far and their
+// usage. The record is not written for a call whose tools only read, so after
+// a crash this note is what still counts it.
+type executionCounts struct {
+	Iterations int   `json:"iterations"`
+	Usage      Usage `json:"usage"`
+}
+
+func countsNote(e *Execution) string {
+	data, err := json.Marshal(executionCounts{e.Iterations, e.Usage})
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// recount brings e's record up to the counts its member's transcript was last
+// saved with, for an execution a restart found live, and returns the record
+// as it then stands.
+func (r *Runtime) recount(ctx context.Context, session coordinatedSession, e *Execution) (*Execution, error) {
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var saved executionCounts
+	if note := metadata.Transcript; note != nil && note.Execution == e.ID && note.Counts != "" {
+		if err := json.Unmarshal([]byte(note.Counts), &saved); err != nil {
+			return nil, fmt.Errorf("decode saved execution counts: %w", err)
+		}
+	}
+	var counted Execution
+	err = r.editOn(ctx, session, func(_ *sessions.CoordinationState, s *State) error {
+		current := s.ownExecution(e.ID)
+		if current == nil || current.Generation != e.Generation {
+			return errors.New("execution changed before its slice began")
+		}
+		if saved.Iterations > current.Iterations {
+			current.Iterations, current.Usage = saved.Iterations, saved.Usage
+		}
+		current.Uncounted = false
+		counted = *current
+		return nil
+	})
+	return &counted, err
+}
+
 func usageOf(msgs []messages.ChatMessage) Usage {
 	u := Usage{}
 	add := func(target **int, m messages.ChatMessage, key string, n int) {
@@ -2040,8 +2060,8 @@ func mergeUsage(a, b Usage) Usage {
 	return Usage{Samples: a.Samples + b.Samples, InputTokens: add(a.InputTokens, b.InputTokens), OutputTokens: add(a.OutputTokens, b.OutputTokens), CachedInputTokens: add(a.CachedInputTokens, b.CachedInputTokens)}
 }
 func (r *Runtime) finish(i *invocation) (again bool) {
-	r.parentTools.Lock()
-	defer r.parentTools.Unlock()
+	r.parentTools.RLock()
+	defer r.parentTools.RUnlock()
 	c, stop := context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 	defer stop()
 	var exhausted *IterationLimitError
@@ -2418,8 +2438,11 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 			if e.Generation != resume.Generation {
 				return errors.New("recovery generation changed")
 			}
-			appendInterruptedIntent(raw, e.Intent)
-			e.Intent = nil
+			// A transcript past the journal's mark already holds the batch.
+			if e.IntentAt == 0 || e.IntentAt == raw.Sequence {
+				appendInterruptedIntent(raw, e.Intent)
+			}
+			e.Intent, e.IntentAt = nil, 0
 			return nil
 		})
 		closeErr := session.Close()

@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"reflect"
 	"runtime"
-	"sort"
+	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -35,9 +35,6 @@ type editBase struct {
 	// cloned names the kinds whose map no reader holds, so a write needs no
 	// copy. It outlives the edit: see StateCache.lend.
 	cloned map[string]bool
-	// before is a copy of every map as the edit began, kept by an edit that
-	// confirms nothing changed outside own, put and drop.
-	before *State
 }
 
 // has reports whether the edit already took record id of kind.
@@ -99,6 +96,14 @@ func (s *State) revert() {
 // State's maps goes through put, drop or an own method: inside an edit the
 // maps are the family's, and a write has to be noted and may need a copy.
 func put[T any](s *State, kind string, table *map[string]*T, id string, value *T) {
+	if failOnSharedChange && s.editing != nil && value != nil && kind != "workflow" && !s.editing.has(kind, id) && (*table)[id] == value {
+		// A test's edit puts the shared record back under its own name: it
+		// must still be what is stored. A report is stored in parts, and
+		// is checked with the whole family after the edit.
+		if data, err := json.Marshal(value); err == nil && !bytes.Equal(data, s.editing.raw[kind][id]) {
+			panic("swarm: the edit at " + editSite() + " changed the shared " + kind + " " + id + " in place before putting it back; take it through own")
+		}
+	}
 	writable(s, kind, table)
 	remember(s, kind, table, id)
 	(*table)[id] = value
@@ -115,10 +120,7 @@ func drop[T any](s *State, kind string, table *map[string]*T, id string) {
 // reports, which span several records.
 type recordKind struct {
 	kind string
-	// changes adds to out the records work holds that shared does not, and
-	// names in edited every shared record whose content no longer matches raw.
-	changes func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error
-	// touched is changes for the one record an edit says it touched.
+	// touched adds to out what an edit did to the one record it says it touched.
 	touched func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error
 	// adopt replaces work's record with a decode of data, or drops it.
 	adopt func(work *State, id string, data json.RawMessage) error
@@ -127,27 +129,6 @@ type recordKind struct {
 func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 	return recordKind{
 		kind: kind,
-		changes: func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error {
-			before, after := table(shared), table(work)
-			for id, value := range after {
-				if previous, ok := before[id]; ok && previous == value {
-					var stored T
-					if err := json.Unmarshal(raw[kind][id], &stored); err == nil && reflect.DeepEqual(&stored, value) {
-						continue
-					}
-					*edited = append(*edited, kind+"/"+id)
-				}
-				if _, err := encodeChange(raw, out, kind, id, value); err != nil {
-					return err
-				}
-			}
-			for id := range before {
-				if _, ok := after[id]; !ok {
-					setChange(out, kind, id, nil)
-				}
-			}
-			return nil
-		},
 		touched: func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error {
 			value, ok := table(work)[id]
 			if !ok {
@@ -156,8 +137,7 @@ func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 				}
 				return nil
 			}
-			_, err := encodeChange(raw, out, kind, id, value)
-			return err
+			return encodeChange(raw, out, kind, id, value)
 		},
 		adopt: func(work *State, id string, data json.RawMessage) error {
 			if data == nil {
@@ -182,14 +162,14 @@ func setChange(out map[string]map[string]json.RawMessage, kind, id string, data 
 }
 
 // encodeChange adds value to out as record kind/id unless raw already stores
-// those bytes, and reports whether it did.
-func encodeChange(raw, out map[string]map[string]json.RawMessage, kind, id string, value any) (bool, error) {
+// those bytes.
+func encodeChange(raw, out map[string]map[string]json.RawMessage, kind, id string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil || bytes.Equal(data, raw[kind][id]) {
-		return false, err
+		return err
 	}
 	setChange(out, kind, id, data)
-	return true, nil
+	return nil
 }
 
 // workflowStepKey is the record ID of a report's step.
@@ -214,24 +194,13 @@ var recordKinds = []recordKind{
 
 // editable returns a state for an edit's callback, which changes it through
 // put, drop and the own methods. Those write s's own maps, copying one first
-// unless cloned says no reader holds it. With confirm set the edit also keeps
-// a copy of every map, so a comparison finds a write that went around them.
-func (s *State) editable(raw map[string]map[string]json.RawMessage, confirm bool, cloned map[string]bool) *State {
+// unless cloned says no reader holds it.
+func (s *State) editable(raw map[string]map[string]json.RawMessage, cloned map[string]bool) *State {
 	if cloned == nil {
 		cloned = map[string]bool{}
 	}
 	work := *s
 	work.editing = &editBase{raw: raw, format: s.Format, cloned: cloned}
-	if confirm {
-		work.editing.before = &State{
-			Followups: maps.Clone(s.Followups), Integrations: maps.Clone(s.Integrations), Applies: maps.Clone(s.Applies),
-			ParentTurns: maps.Clone(s.ParentTurns), Parents: maps.Clone(s.Parents), Runs: maps.Clone(s.Runs),
-			Members: maps.Clone(s.Members), Tasks: maps.Clone(s.Tasks), Messages: maps.Clone(s.Messages),
-			Publications: maps.Clone(s.Publications), Executions: maps.Clone(s.Executions), Contexts: maps.Clone(s.Contexts),
-			Snapshots: maps.Clone(s.Snapshots), Previews: maps.Clone(s.Previews), Workflows: maps.Clone(s.Workflows),
-			Format: s.Format,
-		}
-	}
 	return &work
 }
 
@@ -288,46 +257,10 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 	return mine
 }
 
-// changesByWalk compares every record of an edit with the shared state it
-// started from. It returns the records that differ and names the shared
-// records a callback changed in place.
-func (s *State) changesByWalk() (out map[string]map[string]json.RawMessage, edited []string, err error) {
-	shared, raw := s.editing.before, s.editing.raw
-	out = map[string]map[string]json.RawMessage{}
-	for _, kind := range recordKinds {
-		if err := kind.changes(shared, s, raw, out, &edited); err != nil {
-			return nil, nil, err
-		}
-	}
-	for id, report := range s.Workflows {
-		previous, ok := shared.Workflows[id]
-		differs, err := s.workflowChanges(out, id, previous)
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok && previous == report && differs {
-			edited = append(edited, "workflow/"+id)
-		}
-	}
-	for id, previous := range shared.Workflows {
-		if _, ok := s.Workflows[id]; !ok {
-			if _, err := s.workflowChanges(out, id, previous); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-	if err := s.formatChanges(out); err != nil {
-		return nil, nil, err
-	}
-	sort.Strings(edited)
-	return out, edited, nil
-}
-
 // workflowChanges adds to out what an edit did to one report, which is stored
-// as a record of its own and one per step, and reports whether it differs
-// from the stored one. previous is the report as the edit began, nil for one
-// it added.
-func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string, previous *workflow.Report) (differs bool, err error) {
+// as a record of its own and one per step. previous is the report as the
+// edit began, nil for one it added.
+func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string, previous *workflow.Report) error {
 	raw, was := s.editing.raw, previous != nil
 	report, ok := s.Workflows[id]
 	if !ok {
@@ -337,25 +270,23 @@ func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id st
 				setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 			}
 		}
-		return was, nil
+		return nil
 	}
 	headers, steps := detachWorkflowSteps(map[string]*workflow.Report{id: report})
-	if differs, err = encodeChange(raw, out, "workflow", id, headers[id]); err != nil {
-		return false, err
+	if err := encodeChange(raw, out, "workflow", id, headers[id]); err != nil {
+		return err
 	}
 	for key, step := range steps {
-		changed, err := encodeChange(raw, out, "workflow_step", key, step)
-		if err != nil {
-			return false, err
+		if err := encodeChange(raw, out, "workflow_step", key, step); err != nil {
+			return err
 		}
-		differs = differs || changed
 	}
 	if was {
 		for index := len(report.Steps); index < len(previous.Steps); index++ {
 			setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 		}
 	}
-	return differs, nil
+	return nil
 }
 
 // formatChanges adds the format record to out when an edit replaced it.
@@ -367,8 +298,7 @@ func (s *State) formatChanges(out map[string]map[string]json.RawMessage) error {
 		setChange(out, formatKind, formatID, nil)
 		return nil
 	}
-	_, err := encodeChange(s.editing.raw, out, formatKind, formatID, s.Format)
-	return err
+	return encodeChange(s.editing.raw, out, formatKind, formatID, s.Format)
 }
 
 var kindsByName = func() map[string]recordKind {
@@ -380,65 +310,34 @@ var kindsByName = func() map[string]recordKind {
 }()
 
 // changes returns what an edit did to the shared state it started from, as
-// records to write: those its callback took through own, put or drop. confirm
-// also compares every other record, which costs a decode of the family, and
-// names in edited the ones a callback changed some other way. Those are
-// written too, so no change is lost, but the shared state can no longer be
-// trusted.
-func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
+// records to write: those its callback took through own, put or drop.
+func (s *State) changes() (out map[string]map[string]json.RawMessage, err error) {
 	raw := s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
 	for name, ids := range s.editing.prior {
 		if name == "workflow" {
 			for id, was := range ids {
 				previous, _ := was.(*workflow.Report)
-				if _, err := s.workflowChanges(out, id, previous); err != nil {
-					return nil, nil, err
+				if err := s.workflowChanges(out, id, previous); err != nil {
+					return nil, err
 				}
 			}
 			continue
 		}
 		kind, ok := kindsByName[name]
 		if !ok {
-			return nil, nil, fmt.Errorf("swarm: no record kind %q", name)
+			return nil, fmt.Errorf("swarm: no record kind %q", name)
 		}
 		for id := range ids {
 			if err := kind.touched(s, raw, out, id); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 	}
 	if err := s.formatChanges(out); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if !confirm {
-		return out, nil, nil
-	}
-	walked, edited, err := s.changesByWalk()
-	if err != nil {
-		return nil, nil, err
-	}
-	named := map[string]bool{}
-	for _, name := range edited {
-		named[name] = true
-	}
-	for kind, group := range walked {
-		for id := range group {
-			if _, ok := out[kind][id]; ok {
-				continue
-			}
-			name := kind + "/" + id
-			if kind == "workflow_step" {
-				name = "workflow/" + id[:strings.LastIndex(id, "/")]
-			}
-			if !named[name] {
-				named[name] = true
-				edited = append(edited, name)
-			}
-		}
-	}
-	sort.Strings(edited)
-	return walked, edited, nil
+	return out, nil
 }
 
 // edit is update for a callback that takes every record it changes through
@@ -458,55 +357,249 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 	return err
 }
 
+// editLive is edit for a change to one execution's record that says what its
+// member is doing at the moment, such as waiting for a slot. Such a change
+// is for whoever watches this runtime. It is volatile: the store keeps it in
+// memory and writes it with the record's next change, so the stored record
+// says what the member was doing when it last saved something. The record
+// gets status unless it has it already or allowed, when given, says no. That
+// a member is running is said by its slice's first request, which is an edit
+// already: see bindCheckpoint.
+func (r *Runtime) editLive(ctx context.Context, execution, status string, allowed func(*Execution) bool) error {
+	if err := r.prepare(ctx); err != nil {
+		return err
+	}
+	err := r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, s *State) error {
+		e := s.Executions[execution]
+		if e == nil || e.Status == status || allowed != nil && !allowed(e) {
+			return nil
+		}
+		s.ownExecution(execution).Status = status
+		volatile(raw, "execution", execution)
+		return nil
+	})
+	if err == nil {
+		r.changed()
+	}
+	return err
+}
+
+// volatile marks the change an edit makes to record id of kind as one the
+// store need not write: see sessions.CoordinationState.Volatile. The edit
+// must change nothing in the record that has to outlive the process.
+func volatile(raw *sessions.CoordinationState, kind, id string) {
+	if raw.Volatile == nil {
+		raw.Volatile = map[string]map[string]bool{}
+	}
+	if raw.Volatile[kind] == nil {
+		raw.Volatile[kind] = map[string]bool{}
+	}
+	raw.Volatile[kind][id] = true
+}
+
 // editOn is edit through any session of the family, for a callback that also
 // sets what the transaction appends, pins or fences on raw. raw carries no
 // Records. The callback runs at most once.
+//
+// An edit that returns nil is in the database. The store may answer it from
+// memory and write it a moment later, together with the edits made
+// meanwhile; the caller is held until then, so what it does next never rests
+// on a change that a crash of the process could take back. Readers and the
+// members the edit pokes do not wait: the family in memory has the change as
+// soon as the store accepts it.
 func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) error {
+	written, err := r.editAhead(ctx, session, fn)
+	if err != nil || written == nil {
+		return err
+	}
+	// The wait is not the caller's to cancel: the edit has happened, and an
+	// error here would tell the caller it had not.
+	if err := written(context.WithoutCancel(ctx)); err != nil {
+		// The store cannot write the edit. The family in memory has it all
+		// the same, so whoever waits on a change still hears of this one.
+		r.changed()
+		return err
+	}
+	return nil
+}
+
+// editAhead is editOn without the wait: it returns once the store has
+// accepted the edit, with the wait for its write, nil for an edit already
+// written. The store writes edits in the order it accepted them, so a caller
+// may go on without waiting when nothing it does rests on this edit before a
+// later edit of its own is written.
+func (r *Runtime) editAhead(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (written func(context.Context) error, err error) {
+	poke, written, err := r.editFamily(ctx, session, fn)
 	// The pokes an edit owes are sent after it lets go of the family's state.
-	var poke func()
+	if poke != nil {
+		poke()
+	}
+	return written, err
+}
+
+// editBatch is how many edits run under one hold of the family's state. It
+// bounds how long a reader waits for the state, and how long the caller that
+// runs the edits waits for its own to return.
+const editBatch = 32
+
+// editCall is one edit and what it came to.
+type editCall struct {
+	ctx     context.Context
+	session sessions.CoordinationSession
+	delta   sessions.CoordinationDeltaSession
+	fn      func(raw *sessions.CoordinationState, s *State) error
+	// site names the edit's caller for a test's diagnostics. It is empty
+	// in a running process.
+	site string
+
+	poke    func()
+	written func(context.Context) error
+	err     error
+	// panicked is what the edit panicked with when another caller ran it.
+	panicked any
+	// turn tells a caller that waited what became of its edit: true once
+	// another caller has run it, false when this caller is to run it and the
+	// edits behind it.
+	turn chan bool
+}
+
+// editQueue is the edits waiting for the family's state. One caller at a
+// time leads: it runs its own edit and then the ones that queued up behind
+// it, so the state passes from edit to edit without waking a caller for each.
+type editQueue struct {
+	mu      sync.Mutex
+	led     bool
+	waiting []*editCall
+}
+
+// join makes call's caller the lead when nobody leads, and otherwise queues
+// call behind the edits already waiting.
+func (q *editQueue) join(call *editCall) (lead bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.led {
+		q.led = true
+		return true
+	}
+	call.turn = make(chan bool, 1)
+	q.waiting = append(q.waiting, call)
+	return false
+}
+
+// take removes up to n of the edits that have waited longest, for the lead.
+func (q *editQueue) take(n int) []*editCall {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n = min(n, len(q.waiting))
+	if n == 0 {
+		return nil
+	}
+	taken := q.waiting[:n:n]
+	if q.waiting = q.waiting[n:]; len(q.waiting) == 0 {
+		q.waiting = nil
+	}
+	return taken
+}
+
+// pass ends a caller's lead: the caller whose edit has waited longest leads
+// next, and nobody does when none waits.
+func (q *editQueue) pass() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.waiting) == 0 {
+		q.led = false
+		return
+	}
+	heir := q.waiting[0]
+	if q.waiting = q.waiting[1:]; len(q.waiting) == 0 {
+		q.waiting = nil
+	}
+	heir.turn <- false
+}
+
+// editFamily is an edit from when it asks for the family's state until it has
+// let go of it. It returns the pokes the edit owes and, when the store
+// answered before writing the edit, the wait for that write: editAhead sends
+// the pokes, and editOn waits. Edits run one at a time, in the order they
+// asked.
+func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) (poke func(), written func(context.Context) error, err error) {
+	delta, ok := session.(sessions.CoordinationDeltaSession)
+	if !ok {
+		// The session cannot write a set of changes: the update reads and
+		// writes the family inside one transaction of its own.
+		if err := rewrite(ctx, session, fn); err != nil {
+			return nil, nil, err
+		}
+		return r.pokeAll, nil, nil
+	}
+	call := &editCall{ctx: ctx, session: session, delta: delta, fn: fn}
+	if failOnSharedChange {
+		call.site = editSite()
+	}
+	if r.edits.join(call) || !<-call.turn {
+		r.lead(call)
+	}
+	if call.panicked != nil {
+		panic(call.panicked)
+	}
+	return call.poke, call.written, call.err
+}
+
+// lead runs call, its caller's own edit, and then up to a batch of the edits
+// waiting behind it, under one hold of the family's state: no reader looks at
+// the state meanwhile. Each waiting caller goes on as soon as its edit has
+// run. The next caller in line leads after that.
+func (r *Runtime) lead(call *editCall) {
+	defer r.edits.pass()
+	r.editing.Lock()
+	defer r.editing.Unlock()
+	call.poke, call.written, call.err = r.editHeld(call)
+	for _, next := range r.edits.take(editBatch - 1) {
+		r.editFor(next)
+		next.turn <- true
+	}
+}
+
+// editFor runs an edit for the caller that waits on it. A panic in the edit
+// is that caller's: it is handed over with the result.
+func (r *Runtime) editFor(call *editCall) {
 	defer func() {
-		if poke != nil {
-			poke()
+		if p := recover(); p != nil {
+			slog.Error("swarm_edit_panicked", "site", call.site, "panic", p, "stack", string(debug.Stack()))
+			call.panicked = p
 		}
 	}()
-	delta, ok := session.(sessions.CoordinationDeltaSession)
+	call.poke, call.written, call.err = r.editHeld(call)
+}
+
+// editHeld is an edit while its runner holds the family's state.
+func (r *Runtime) editHeld(call *editCall) (poke func(), written func(context.Context) error, err error) {
+	ctx := call.ctx
 	// A family that keeps changing under an edit falls back to the update
 	// below, which reads and writes inside one transaction.
-	if ok {
-		// One edit at a time changes the family's state, and no reader looks
-		// at it meanwhile.
-		r.editing.Lock()
-		defer r.editing.Unlock()
-	}
-	for attempt := 0; ok && attempt < 3; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		// The shared state is current unless something outside this runtime
 		// wrote the family; the store says so, and then a read catches up.
 		shared, raw, revision := r.view.snapshot()
 		if shared == nil || revision == 0 || attempt > 0 {
 			if _, err := r.current(ctx); err != nil {
-				return err
+				return nil, nil, err
 			}
 			if shared, raw, revision = r.view.snapshot(); shared == nil || revision == 0 {
 				break
 			}
 		}
-		confirm := r.view.confirmEdits()
 		var committed *sessions.CoordinationState
 		var work *State
 		var changed map[string]map[string]json.RawMessage
-		var edited []string
-		err := delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
-			work = shared.editable(raw, confirm, r.view.unheld())
-			if err := fn(state, work); err != nil {
+		err := call.delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
+			work = shared.editable(raw, r.view.unheld())
+			if err := call.fn(state, work); err != nil {
 				return err
 			}
 			var err error
-			changed, edited, err = work.changes(confirm)
-			if err != nil {
+			if changed, err = work.changes(); err != nil {
 				return err
-			}
-			if len(edited) > 0 && failOnSharedChange {
-				panic("swarm: the edit at " + editSite() + " changed records without own, put or drop: " + strings.Join(edited, ", "))
 			}
 			committed, state.Changes = state, changed
 			return nil
@@ -514,34 +607,27 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		if err != nil && work != nil {
 			// Nothing was written: put the records back as they were.
 			work.revert()
-			r.view.keep(shared, work)
+			r.view.keep(shared, work, call.site)
 		}
 		if errors.Is(err, sessions.ErrCoordinationStale) {
 			continue
 		}
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		if len(edited) > 0 {
-			slog.Warn("swarm_edit_without_own", "site", editSite(), "records", strings.Join(edited, ", "))
-			r.view.drop()
-			poke = r.pokeAll
-		} else {
-			prior := work.editing.prior
-			work.reindex()
-			r.view.advance(revision, committed.Revision, work, changed)
-			poke = r.pokesFor(prior, work)
-		}
-		return nil
+		prior := work.editing.prior
+		work.reindex()
+		r.view.advance(revision, committed.Revision, work, changed, call.site)
+		return r.pokesFor(prior, work), committed.Written, nil
 	}
-	err := rewrite(ctx, session, fn)
-	if err == nil {
-		poke = r.pokeAll
+	if err := rewrite(ctx, call.session, call.fn); err != nil {
+		return nil, nil, err
 	}
-	return err
+	return r.pokeAll, nil, nil
 }
 
-// editSite names the caller of the edit in progress, for its diagnostics.
+// editSite names the caller of the edit its goroutine is making, for the
+// edit's diagnostics.
 func editSite() string {
 	for skip := 2; skip < 40; skip++ {
 		pc, file, line, ok := runtime.Caller(skip)
@@ -549,23 +635,13 @@ func editSite() string {
 			break
 		}
 		name := runtime.FuncForPC(pc).Name()
-		if !strings.Contains(name, "pollytool/swarm.") || strings.Contains(name, ").editOn") || strings.HasSuffix(name, ").edit") {
+		if !strings.Contains(name, "pollytool/swarm.") || strings.HasSuffix(name, ").edit") ||
+			strings.HasSuffix(name, ").editOn") || strings.HasSuffix(name, ").editAhead") || strings.HasSuffix(name, ").editLive") {
 			continue
 		}
 		return fmt.Sprintf("%s:%d", file[strings.LastIndex(file, "/")+1:], line)
 	}
 	return "an unknown caller"
-}
-
-// confirmEdits reports whether this edit checks every record it left alone.
-// Tests always do. A running process does about once a second while the
-// family is small enough for the check to cost what update would; between
-// checks a change made without own is not written, and the next check of the
-// shared state reverts it.
-func (c *StateCache) confirmEdits() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.due(&c.confirmed)
 }
 
 // snapshot returns the family's state with the records and revision it was
@@ -574,14 +650,6 @@ func (c *StateCache) snapshot() (*State, map[string]map[string]json.RawMessage, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state, c.raw, c.revision
-}
-
-// drop forgets the family's state, so the next read decodes the stored
-// records.
-func (c *StateCache) drop() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.forget()
 }
 
 func (c *StateCache) forget() {
@@ -619,12 +687,13 @@ func (c *StateCache) lend(s *State) *State {
 
 // keep makes work, a failed edit's state with its changes taken back, the
 // family's state in place of shared: it holds the maps the edit copied.
-func (c *StateCache) keep(shared, work *State) {
+func (c *StateCache) keep(shared, work *State, site string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	work.editing = nil
 	if c.state == shared {
 		c.state = work
+		c.check(site)
 	}
 }
 
@@ -632,7 +701,7 @@ func (c *StateCache) keep(shared, work *State) {
 // changes an edit just wrote, so the next read needs no copy of the family.
 // work is the edit's state, which becomes the family's, with each changed
 // record decoded again from what was stored.
-func (c *StateCache) advance(known, committed uint64, work *State, changed map[string]map[string]json.RawMessage) {
+func (c *StateCache) advance(known, committed uint64, work *State, changed map[string]map[string]json.RawMessage, site string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fail := c.forget
@@ -644,6 +713,7 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 	work.editing = nil
 	if committed == known {
 		c.state = work
+		c.check(site)
 		return
 	}
 	for kind, group := range changed {
@@ -689,4 +759,5 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 		}
 	}
 	c.revision, c.state, c.lent = committed, work, nil
+	c.check(site)
 }

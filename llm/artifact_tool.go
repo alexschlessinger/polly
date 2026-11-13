@@ -33,6 +33,7 @@ type readArtifactTool struct {
 }
 
 func (t *readArtifactTool) GetName() string { return "read_artifact" }
+func (t *readArtifactTool) ReadsOnly() bool { return true }
 func (t *readArtifactTool) RecallStub() string {
 	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
 }
@@ -158,6 +159,7 @@ type listArtifactsTool struct {
 }
 
 func (t *listArtifactsTool) GetName() string { return "list_artifacts" }
+func (t *listArtifactsTool) ReadsOnly() bool { return true }
 func (t *listArtifactsTool) RecallStub() string {
 	return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
 }

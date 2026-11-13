@@ -27,6 +27,14 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 	}
 	defer s.coordination.release()
 	state := &CoordinationState{ActorID: rootID, ParentID: rootID}
+	// A family this store drives is the one in memory: the handle on its
+	// root says the session is there, and the table may be a checkpoint behind.
+	if root := s.handle(string(id)); root != nil && s.driver(root, string(id)) != nil {
+		if family, ok := s.coordination.family(id); ok {
+			state.Records, state.Revision = copyRecords(family.records), family.revision
+			return state, nil
+		}
+	}
 	err = s.withRead(ctx, func(conn *sql.Conn) error {
 		var parentID []byte
 		var updatedNS, ttlNS int64
@@ -43,7 +51,7 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 		if _, err := visibleSession(ctx, conn, id, updatedNS, ttlNS, time.Now().UnixNano()); err != nil {
 			return err
 		}
-		state.Records, state.Revision, err = s.coordination.records(ctx, conn, id)
+		state.Records, state.Revision, err = s.coordination.records(ctx, conn, id, s.drives)
 		return err
 	})
 	if err != nil {

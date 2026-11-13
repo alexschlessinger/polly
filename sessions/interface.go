@@ -45,6 +45,18 @@ type AcquireOptions struct {
 	// id, so Metadata.Parent follows the parent's renames; ErrSessionNotFound
 	// when no session has the name.
 	Parent string
+	// Member, for Create alone, makes the new session a member of the
+	// family its Parent roots, in the transaction that creates it: the
+	// family keeps the session until the parent is removed, as
+	// CoordinationState.Members has it keep one that exists. The parent
+	// must be the family's root and open in the store that creates the
+	// member.
+	Member bool
+
+	// create and configure are Create's: the session must not exist, and
+	// starts as configure leaves the default metadata.
+	create    bool
+	configure func(*Metadata)
 }
 
 // SessionSummary combines persisted metadata with lightweight transcript
@@ -52,6 +64,7 @@ type AcquireOptions struct {
 // durable messages currently stored for the session. InUse reports a live,
 // unexpired lease on the session, whether this process or another one holds
 // it; a picker can mark or refuse such sessions instead of waiting on Acquire.
+// A lease the store itself would hand to the next Acquire does not count.
 type SessionSummary struct {
 	// ID is the stable ViewTarget identity, independent of the session name.
 	ID string

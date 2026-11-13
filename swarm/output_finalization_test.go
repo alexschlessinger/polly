@@ -153,7 +153,7 @@ func TestOutputsSurviveCommitFailure(t *testing.T) {
 			r = scratchRuntime(t, model, false)
 			suspendAutoRelease(t, r)
 			fault := &outputCommitFailure{CoordinationSession: r.parent, stage: stage, err: errors.New("injected output " + stage + " failure")}
-			r.parent = fault
+			setParent(r, fault)
 			result, err := r.Agent(ctx, "", AgentRequest{TaskName: "worker", Label: "Worker", Task: "produce file", ReadOnly: true})
 			if !errors.Is(err, fault.err) || !fault.fired.Load() {
 				t.Fatalf("injected failure not observed: %v", err)

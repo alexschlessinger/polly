@@ -93,7 +93,7 @@ func TestWorkflowBlockDuringProgressSave(t *testing.T) {
 		return answer("completed sibling")
 	})
 	r = runtimeTest(t, model, 2, 2)
-	r.parent = &blockDuringProgressSave{CoordinationSession: r.parent, saving: saving}
+	setParent(r, &blockDuringProgressSave{CoordinationSession: r.parent, saving: saving})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	report, err := r.RunWorkflow(ctx, `polly.workflow("blocked checkpoint",polly.schema.obj({}),async()=>{

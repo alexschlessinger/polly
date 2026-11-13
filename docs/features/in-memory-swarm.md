@@ -140,9 +140,8 @@ execution is bounded by cores through the tool limiter, not by agent count.
    lease check, and after a change the runtime decodes only the records whose
    bytes changed. With 40 members carrying tens of kilobytes each, a read
    after a one-record change went from 2.8 ms to 0.13 ms
-   (`BenchmarkStateCacheOneChanged`). A shared state is read-only: tests fail
-   when a reader edits one, and a running process checks about once a second
-   and returns to the stored records with a warning.
+   (`BenchmarkStateCacheOneChanged`). A shared state is read-only: a test
+   fails when a reader edits one.
 3. **Done.** An update pays for the records it touches. `edit` hands its
    callback the family's own state; the callback takes each record it changes
    through an `own` method, which gives it a private copy, and adds and
@@ -158,14 +157,14 @@ execution is bounded by cores through the tool limiter, not by agent count.
    indexes mail by recipient, which the edits keep current, so finding a
    member's mail does not look at everyone's. Nothing else
    may write a `State` map: a test reads the package source for such writes,
-   and every edit in a test also compares the whole family and fails on a
-   change it was not told about. A running process makes that comparison
-   about once a second while the family has at most 4,096 records, writes
-   what it finds and warns; between comparisons an unannounced change to a
-   record is not written. `update` remains as the whole-family form, for
-   tests, for the two recovery passes that run when a runtime takes over a
-   family, and as what `edit` falls back to against a store that cannot write
-   a set of changes.
+   and after every edit a test also compares the whole family with its
+   stored records and fails on a change the edit was not told about. A
+   running process makes no such comparison: the edit that changes a record
+   around `own`, `put` and `drop` does not write the change, and its readers
+   see it until the record is next taken through `own`. `update` remains
+   as the whole-family form, for tests, for the two recovery passes that run
+   when a runtime takes over a family, and as what `edit` falls back to
+   against a store that cannot write a set of changes.
 4. **Done for members.** An edit pokes the members its records concern: a
    mail's recipient, a member whose own record changed, the parked members
    whose task or one of its dependencies changed, and every active member
@@ -224,12 +223,9 @@ writes, about five updates a call at some 50 µs each, a quarter of it
 rereading and rewriting the session's settings to record the transcript's
 identity. The rest is what a slice does directly. A slice reads the member's
 whole transcript: the connection is held for the read alone and the
-messages are decoded after it is let go. It acquires and releases the member's session unless
-it follows a yield within a second: a parked member keeps its session that
-long, which is shorter than a lease heartbeat, so a prompt wake reuses it
-and a long wait costs no renewal. Acquiring a parked member's session from
-elsewhere waits out that second. With 5000 agents in step a member is parked
-for longer than that, which is why the hold helps the smaller runs only.
+messages are decoded after it is let go. It acquires the member's session
+and closes it: the store keeps the lease of a member it drives between
+slices, so neither asks the database.
 
 Those transcripts are a few kilobytes. `SCALE_CONTEXT` makes each agent
 take that many bytes of tool output in its first round and carry them from

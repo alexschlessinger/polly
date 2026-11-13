@@ -33,6 +33,7 @@ func NewViewImageTool(registry *ToolRegistry) OutputTool {
 }
 
 func (t *viewImageTool) GetName() string { return "view_image" }
+func (t *viewImageTool) ReadsOnly() bool { return true }
 
 // BindExecutionContext binds a copy to the bound registry's policy.
 func (t *viewImageTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {

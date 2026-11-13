@@ -124,8 +124,8 @@ func BenchmarkDecodeState(b *testing.B) {
 	}
 }
 
-// measureSharedReads turns off the per-read confirmation that tests add, so a
-// benchmark times what a running process does.
+// measureSharedReads turns off the confirmation that tests add to every read
+// and edit, so a benchmark times what a running process does.
 func measureSharedReads(b *testing.B) {
 	failOnSharedChange = false
 	b.Cleanup(func() { failOnSharedChange = true })
@@ -216,8 +216,8 @@ func TestStateSharesUnchangedRecords(t *testing.T) {
 	}
 	after.Tasks[kept.ID].Description = "edited by a reader"
 	defer func() {
-		if recover() == nil {
-			t.Fatal("a reader's edit to the shared state went unnoticed")
+		if got, _ := recover().(string); !strings.Contains(got, "returned by a read was modified") || !strings.Contains(got, "Tasks/"+kept.ID) {
+			t.Fatalf("a reader's edit to the shared state panicked with %q", got)
 		}
 	}()
 	_, _ = r.read(ctx)

@@ -70,6 +70,14 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 			if _, err := extendLease(ctx, conn, session.id, session.ownerToken, now.UnixNano(), expiry); err != nil {
 				return err
 			}
+			// The copy renamed a session whose name the destination had.
+			session.name.Store(nil)
+		}
+		for _, kept := range s.kept {
+			if _, err := extendLease(ctx, conn, kept.id, kept.token, now.UnixNano(), expiry); err != nil {
+				return err
+			}
+			kept.name = nil
 		}
 		return nil
 	})
@@ -79,11 +87,17 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 	destination.cancel(ErrStoreClosed)
 	destination.wg.Wait()
 	destination.closed.Store(true)
+	destination.writer.close()
+	destination.writer.finish()
 	old := s.db
-	s.db = destination.db
+	s.db, s.readers = destination.db, destination.readers
 	s.mode = ModeDisk
 	s.path = destination.path
 	transferred = true
+	// From here on an update answered from memory is logged first. The ones
+	// accepted in memory were never logged, so a checkpoint writes them now.
+	s.writer.openLog(s.path)
+	s.writer.checkpointSoon()
 	return old.Close()
 }
 

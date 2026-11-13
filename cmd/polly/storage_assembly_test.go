@@ -31,6 +31,9 @@ func (s *assemblyStorage) Promote(_ context.Context, path string) error {
 	s.promoted = append(s.promoted, path)
 	return nil
 }
+func (s *assemblyStorage) Create(ctx context.Context, name string, options sessions.AcquireOptions, configure func(*sessions.Metadata)) (sessions.Session, error) {
+	return s.SessionStore.(sessions.SessionCreator).Create(ctx, name, options, configure)
+}
 
 func TestStorageAssemblySharesExclusionsWithSwarm(t *testing.T) {
 	skipIfWindows(t)
