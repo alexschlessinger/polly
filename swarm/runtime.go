@@ -133,13 +133,10 @@ type invocation struct {
 	poke chan struct{}
 	// watch names the tasks a parked member's wake depends on: its own and
 	// that one's dependencies. r.mu guards it.
-	watch []string
-	// session is the member's leased conversation, kept by a slice that
-	// yielded for the next one. Only the invocation's goroutine touches it.
-	session coordinatedSession
-	cancel  context.CancelFunc
-	result  AgentResult
-	err     error
+	watch  []string
+	cancel context.CancelFunc
+	result AgentResult
+	err    error
 }
 type Runtime struct {
 	releaseMu                                      sync.Mutex
@@ -1400,7 +1397,6 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 	defer r.wg.Done()
 	defer func() {
 		i.cancel()
-		i.releaseSession()
 		r.mu.Lock()
 		r.settleTranscript(i)
 		delete(r.active, i.member)
@@ -1479,11 +1475,8 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 }
 
 // park returns once the yielded member i has something to wake for, or its
-// wait runs out. A member that wakes soon runs its next slice on the session
-// it holds; one that stays parked closes it.
+// wait runs out.
 func (r *Runtime) park(ctx context.Context, i *invocation) error {
-	held := time.NewTimer(parkedSessionHold)
-	defer held.Stop()
 	defer r.watchTasks(i, nil)
 	for {
 		// An edit pokes the members its records concern, so a parked
@@ -1513,24 +1506,8 @@ func (r *Runtime) park(ctx context.Context, i *invocation) error {
 			return ctx.Err()
 		case <-i.poke:
 		case <-timer.C:
-		case <-held.C:
-			i.releaseSession()
 		}
 		timer.Stop()
-	}
-}
-
-// parkedSessionHold is how long a parked member keeps its session open: a
-// member that wakes within it runs its next slice on the handle it has. After
-// that the session closes, and a store that keeps the lease of a member it
-// drives hands it back to the next slice.
-const parkedSessionHold = time.Second
-
-// releaseSession gives up the session a yielded slice kept.
-func (i *invocation) releaseSession() {
-	if i.session != nil {
-		_ = i.session.Close()
-		i.session = nil
 	}
 }
 
@@ -1609,26 +1586,14 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 	if err != nil {
 		return AgentResult{}, err
 	}
-	// A slice that follows a yield closely finds the session the last one
-	// kept, unless its lease was lost meanwhile.
-	session := i.session
-	i.session = nil
-	if session != nil && session.Context().Err() != nil {
-		_ = session.Close()
-		session = nil
+	// Each slice runs on a handle of its own. A store that drives the
+	// family keeps the member's lease between them, so a slice that follows
+	// a yield takes it up without asking the database.
+	session, err := r.acquireMemberSession(ctx, m)
+	if err != nil {
+		return AgentResult{}, err
 	}
-	if session == nil {
-		if session, err = r.acquireMemberSession(ctx, m); err != nil {
-			return AgentResult{}, err
-		}
-	}
-	defer func() {
-		if errors.Is(runErr, ErrYielded) && session.Context().Err() == nil {
-			i.session = session
-			return
-		}
-		session.Close()
-	}()
+	defer session.Close()
 	// The parent owns the scheduler, but this invocation also owns a leased
 	// child conversation. Losing either lease must stop its current work.
 	ctx, cancelMember := context.WithCancelCause(ctx)

@@ -222,12 +222,9 @@ writes, about five updates a call at some 50 µs each, a quarter of it
 rereading and rewriting the session's settings to record the transcript's
 identity. The rest is what a slice does directly. A slice reads the member's
 whole transcript: the connection is held for the read alone and the
-messages are decoded after it is let go. It acquires and releases the member's session unless
-it follows a yield within a second: a parked member keeps its session that
-long, which is shorter than a lease heartbeat, so a prompt wake reuses it
-and a long wait costs no renewal. Acquiring a parked member's session from
-elsewhere waits out that second. With 5000 agents in step a member is parked
-for longer than that, which is why the hold helps the smaller runs only.
+messages are decoded after it is let go. It acquires the member's session
+and closes it: the store keeps the lease of a member it drives between
+slices, so neither asks the database.
 
 Those transcripts are a few kilobytes. `SCALE_CONTEXT` makes each agent
 take that many bytes of tool output in its first round and carry them from
