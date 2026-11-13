@@ -229,7 +229,7 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	if err := encodeState(raw, shared); err != nil {
 		t.Fatal(err)
 	}
-	work := shared.editable(raw.Records, false, nil)
+	work := shared.editable(raw.Records, nil)
 	if reflect.ValueOf(work.Tasks).Pointer() != reflect.ValueOf(shared.Tasks).Pointer() {
 		t.Fatal("an edit copied a map before writing it")
 	}
@@ -242,9 +242,9 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	if reflect.ValueOf(work.Messages).Pointer() != reflect.ValueOf(shared.Messages).Pointer() {
 		t.Fatal("an edit copied a map it never wrote")
 	}
-	changed, edited, err := work.changes(false)
-	if err != nil || len(edited) != 0 {
-		t.Fatalf("changes: %v %v", edited, err)
+	changed, err := work.changes()
+	if err != nil {
+		t.Fatalf("changes: %v", err)
 	}
 	tasks := changed["task"]
 	if len(changed) != 1 || len(tasks) != 3 || tasks["gone"] != nil || !strings.Contains(string(tasks["edited"]), `"done"`) || tasks["added"] == nil {
@@ -265,7 +265,7 @@ func TestEditWritesInPlaceAndTakesBackAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	edited, gone := family.Tasks["edited"], family.Tasks["gone"]
-	work := family.editable(raw.Records, false, map[string]bool{"task": true})
+	work := family.editable(raw.Records, map[string]bool{"task": true})
 	work.ownTask("edited").Status = "done"
 	drop(work, "task", &work.Tasks, "gone")
 	put(work, "task", &work.Tasks, "added", &Task{ID: "added"})

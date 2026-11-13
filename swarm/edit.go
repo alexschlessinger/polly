@@ -8,10 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"reflect"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"sync"
 
@@ -37,9 +35,6 @@ type editBase struct {
 	// cloned names the kinds whose map no reader holds, so a write needs no
 	// copy. It outlives the edit: see StateCache.lend.
 	cloned map[string]bool
-	// before is a copy of every map as the edit began, kept by an edit that
-	// confirms nothing changed outside own, put and drop.
-	before *State
 }
 
 // has reports whether the edit already took record id of kind.
@@ -117,10 +112,7 @@ func drop[T any](s *State, kind string, table *map[string]*T, id string) {
 // reports, which span several records.
 type recordKind struct {
 	kind string
-	// changes adds to out the records work holds that shared does not, and
-	// names in edited every shared record whose content no longer matches raw.
-	changes func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error
-	// touched is changes for the one record an edit says it touched.
+	// touched adds to out what an edit did to the one record it says it touched.
 	touched func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error
 	// adopt replaces work's record with a decode of data, or drops it.
 	adopt func(work *State, id string, data json.RawMessage) error
@@ -129,27 +121,6 @@ type recordKind struct {
 func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 	return recordKind{
 		kind: kind,
-		changes: func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string) error {
-			before, after := table(shared), table(work)
-			for id, value := range after {
-				if previous, ok := before[id]; ok && previous == value {
-					var stored T
-					if err := json.Unmarshal(raw[kind][id], &stored); err == nil && reflect.DeepEqual(&stored, value) {
-						continue
-					}
-					*edited = append(*edited, kind+"/"+id)
-				}
-				if _, err := encodeChange(raw, out, kind, id, value); err != nil {
-					return err
-				}
-			}
-			for id := range before {
-				if _, ok := after[id]; !ok {
-					setChange(out, kind, id, nil)
-				}
-			}
-			return nil
-		},
 		touched: func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error {
 			value, ok := table(work)[id]
 			if !ok {
@@ -216,24 +187,13 @@ var recordKinds = []recordKind{
 
 // editable returns a state for an edit's callback, which changes it through
 // put, drop and the own methods. Those write s's own maps, copying one first
-// unless cloned says no reader holds it. With confirm set the edit also keeps
-// a copy of every map, so a comparison finds a write that went around them.
-func (s *State) editable(raw map[string]map[string]json.RawMessage, confirm bool, cloned map[string]bool) *State {
+// unless cloned says no reader holds it.
+func (s *State) editable(raw map[string]map[string]json.RawMessage, cloned map[string]bool) *State {
 	if cloned == nil {
 		cloned = map[string]bool{}
 	}
 	work := *s
 	work.editing = &editBase{raw: raw, format: s.Format, cloned: cloned}
-	if confirm {
-		work.editing.before = &State{
-			Followups: maps.Clone(s.Followups), Integrations: maps.Clone(s.Integrations), Applies: maps.Clone(s.Applies),
-			ParentTurns: maps.Clone(s.ParentTurns), Parents: maps.Clone(s.Parents), Runs: maps.Clone(s.Runs),
-			Members: maps.Clone(s.Members), Tasks: maps.Clone(s.Tasks), Messages: maps.Clone(s.Messages),
-			Publications: maps.Clone(s.Publications), Executions: maps.Clone(s.Executions), Contexts: maps.Clone(s.Contexts),
-			Snapshots: maps.Clone(s.Snapshots), Previews: maps.Clone(s.Previews), Workflows: maps.Clone(s.Workflows),
-			Format: s.Format,
-		}
-	}
 	return &work
 }
 
@@ -288,41 +248,6 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 	}
 	put(s, "workflow", &s.Workflows, id, mine)
 	return mine
-}
-
-// changesByWalk compares every record of an edit with the shared state it
-// started from. It returns the records that differ and names the shared
-// records a callback changed in place.
-func (s *State) changesByWalk() (out map[string]map[string]json.RawMessage, edited []string, err error) {
-	shared, raw := s.editing.before, s.editing.raw
-	out = map[string]map[string]json.RawMessage{}
-	for _, kind := range recordKinds {
-		if err := kind.changes(shared, s, raw, out, &edited); err != nil {
-			return nil, nil, err
-		}
-	}
-	for id, report := range s.Workflows {
-		previous, ok := shared.Workflows[id]
-		differs, err := s.workflowChanges(out, id, previous)
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok && previous == report && differs {
-			edited = append(edited, "workflow/"+id)
-		}
-	}
-	for id, previous := range shared.Workflows {
-		if _, ok := s.Workflows[id]; !ok {
-			if _, err := s.workflowChanges(out, id, previous); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-	if err := s.formatChanges(out); err != nil {
-		return nil, nil, err
-	}
-	sort.Strings(edited)
-	return out, edited, nil
 }
 
 // workflowChanges adds to out what an edit did to one report, which is stored
@@ -382,12 +307,8 @@ var kindsByName = func() map[string]recordKind {
 }()
 
 // changes returns what an edit did to the shared state it started from, as
-// records to write: those its callback took through own, put or drop. confirm
-// also compares every other record, which costs a decode of the family, and
-// names in edited the ones a callback changed some other way. Those are
-// written too, so no change is lost, but the shared state can no longer be
-// trusted.
-func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
+// records to write: those its callback took through own, put or drop.
+func (s *State) changes() (out map[string]map[string]json.RawMessage, err error) {
 	raw := s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
 	for name, ids := range s.editing.prior {
@@ -395,52 +316,25 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 			for id, was := range ids {
 				previous, _ := was.(*workflow.Report)
 				if _, err := s.workflowChanges(out, id, previous); err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 			}
 			continue
 		}
 		kind, ok := kindsByName[name]
 		if !ok {
-			return nil, nil, fmt.Errorf("swarm: no record kind %q", name)
+			return nil, fmt.Errorf("swarm: no record kind %q", name)
 		}
 		for id := range ids {
 			if err := kind.touched(s, raw, out, id); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 	}
 	if err := s.formatChanges(out); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if !confirm {
-		return out, nil, nil
-	}
-	walked, edited, err := s.changesByWalk()
-	if err != nil {
-		return nil, nil, err
-	}
-	named := map[string]bool{}
-	for _, name := range edited {
-		named[name] = true
-	}
-	for kind, group := range walked {
-		for id := range group {
-			if _, ok := out[kind][id]; ok {
-				continue
-			}
-			name := kind + "/" + id
-			if kind == "workflow_step" {
-				name = "workflow/" + id[:strings.LastIndex(id, "/")]
-			}
-			if !named[name] {
-				named[name] = true
-				edited = append(edited, name)
-			}
-		}
-	}
-	sort.Strings(edited)
-	return walked, edited, nil
+	return out, nil
 }
 
 // edit is update for a callback that takes every record it changes through
@@ -551,10 +445,8 @@ type editCall struct {
 	session sessions.CoordinationSession
 	delta   sessions.CoordinationDeltaSession
 	fn      func(raw *sessions.CoordinationState, s *State) error
-	// confirm is whether the edit checks every record it left alone, and site
-	// names its caller for the diagnostics of one that does.
-	confirm bool
-	site    string
+	// site names the edit's caller for a test's diagnostics.
+	site string
 
 	poke    func()
 	written func(context.Context) error
@@ -637,7 +529,7 @@ func (r *Runtime) editFamily(ctx context.Context, session sessions.CoordinationS
 		return r.pokeAll, nil, nil
 	}
 	call := &editCall{ctx: ctx, session: session, delta: delta, fn: fn}
-	if call.confirm = r.view.confirmEdits(); call.confirm {
+	if failOnSharedChange {
 		call.site = editSite()
 	}
 	if r.edits.join(call) || !<-call.turn {
@@ -696,19 +588,14 @@ func (r *Runtime) editHeld(call *editCall) (poke func(), written func(context.Co
 		var committed *sessions.CoordinationState
 		var work *State
 		var changed map[string]map[string]json.RawMessage
-		var edited []string
 		err := call.delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
-			work = shared.editable(raw, call.confirm, r.view.unheld())
+			work = shared.editable(raw, r.view.unheld())
 			if err := call.fn(state, work); err != nil {
 				return err
 			}
 			var err error
-			changed, edited, err = work.changes(call.confirm)
-			if err != nil {
+			if changed, err = work.changes(); err != nil {
 				return err
-			}
-			if len(edited) > 0 && failOnSharedChange {
-				panic("swarm: the edit at " + call.site + " changed records without own, put or drop: " + strings.Join(edited, ", "))
 			}
 			committed, state.Changes = state, changed
 			return nil
@@ -724,14 +611,9 @@ func (r *Runtime) editHeld(call *editCall) (poke func(), written func(context.Co
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(edited) > 0 {
-			slog.Warn("swarm_edit_without_own", "site", call.site, "records", strings.Join(edited, ", "))
-			r.view.drop()
-			return r.pokeAll, committed.Written, nil
-		}
 		prior := work.editing.prior
 		work.reindex()
-		r.view.advance(revision, committed.Revision, work, changed)
+		r.view.advance(revision, committed.Revision, work, changed, call.site)
 		return r.pokesFor(prior, work), committed.Written, nil
 	}
 	if err := rewrite(ctx, call.session, call.fn); err != nil {
@@ -758,31 +640,12 @@ func editSite() string {
 	return "an unknown caller"
 }
 
-// confirmEdits reports whether this edit checks every record it left alone.
-// Tests always do. A running process does about once a second while the
-// family is small enough for the check to cost what update would; between
-// checks a change made without own is not written, and the next check of the
-// shared state reverts it.
-func (c *StateCache) confirmEdits() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.due(&c.confirmed)
-}
-
 // snapshot returns the family's state with the records and revision it was
 // decoded from, for an edit.
 func (c *StateCache) snapshot() (*State, map[string]map[string]json.RawMessage, uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state, c.raw, c.revision
-}
-
-// drop forgets the family's state, so the next read decodes the stored
-// records.
-func (c *StateCache) drop() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.forget()
 }
 
 func (c *StateCache) forget() {
@@ -833,7 +696,7 @@ func (c *StateCache) keep(shared, work *State) {
 // changes an edit just wrote, so the next read needs no copy of the family.
 // work is the edit's state, which becomes the family's, with each changed
 // record decoded again from what was stored.
-func (c *StateCache) advance(known, committed uint64, work *State, changed map[string]map[string]json.RawMessage) {
+func (c *StateCache) advance(known, committed uint64, work *State, changed map[string]map[string]json.RawMessage, site string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fail := c.forget
@@ -845,6 +708,7 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 	work.editing = nil
 	if committed == known {
 		c.state = work
+		c.check(site)
 		return
 	}
 	for kind, group := range changed {
@@ -890,4 +754,5 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 		}
 	}
 	c.revision, c.state, c.lent = committed, work, nil
+	c.check(site)
 }

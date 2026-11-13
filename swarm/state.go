@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"slices"
 	"sort"
@@ -579,7 +578,7 @@ func attachWorkflowSteps(reports map[string]*workflow.Report, steps map[string]*
 func fail(code, message string) error { return &workflow.Error{Code: code, Message: message} }
 
 // read returns the family's state for a caller that only looks at it. The
-// result is shared with every other reader: change records inside update.
+// result is shared with every other reader: change records inside an edit.
 func (r *Runtime) read(ctx context.Context) (*State, error) { return r.State(ctx) }
 
 // readScratch returns a decode of the caller's own, for a check that works by
@@ -777,12 +776,9 @@ type StateCache struct {
 	// lent is the state readers were handed, which shares those maps, and
 	// cloned names the kinds whose map has been copied since, so that no
 	// reader holds it.
-	state   *State
-	lent    *State
-	cloned  map[string]bool
-	checked time.Time
-	// confirmed is when an edit last checked the records it left alone.
-	confirmed time.Time
+	state  *State
+	lent   *State
+	cloned map[string]bool
 }
 
 // at returns the cached state when it was decoded from the records the store
@@ -793,7 +789,7 @@ func (c *StateCache) at(revision uint64) *State {
 	if c.state == nil || revision == 0 || revision != c.revision {
 		return nil
 	}
-	c.check()
+	c.check("")
 	return c.state
 }
 
@@ -801,7 +797,7 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != nil && (raw.Revision != 0 && raw.Revision == c.revision || sameRecords(c.raw, raw.Records)) {
-		c.check()
+		c.check("")
 		c.revision = raw.Revision
 		return c.state, nil
 	}
@@ -809,7 +805,7 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	if previous == nil {
 		previous = &State{}
 	} else {
-		c.check()
+		c.check("")
 	}
 	s, err := decodeStateFrom(raw, c.raw, previous)
 	if err != nil {
@@ -820,41 +816,15 @@ func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
 	return s, nil
 }
 
-// sharedCheckRecords and sharedCheckEvery bound what a running process spends
-// confirming that no reader changed the shared state.
-const (
-	sharedCheckRecords = 4096
-	sharedCheckEvery   = time.Second
-)
-
-// failOnSharedChange makes every read of the shared state confirm it first.
+// failOnSharedChange makes a test confirm the shared state on every read of
+// it and after every edit.
 var failOnSharedChange = testing.Testing()
 
-// due reports whether a confirmation last made at *last should run again, and
-// notes that it does. Tests always confirm. A running process does about once
-// a second while the family is small enough to decode cheaply. The caller
-// holds c.mu.
-func (c *StateCache) due(last *time.Time) bool {
-	if failOnSharedChange {
-		return true
-	}
-	records := 0
-	for _, group := range c.raw {
-		records += len(group)
-	}
-	if records > sharedCheckRecords || time.Since(*last) < sharedCheckEvery {
-		return false
-	}
-	*last = time.Now()
-	return true
-}
-
-// check confirms no reader changed the shared state, whose records the next
-// decode hands on as they are. A test fails on the spot. A running process
-// looks about once a second while the family is small enough to decode
-// cheaply, and on a difference warns and returns to the stored records.
-func (c *StateCache) check() {
-	if !c.due(&c.checked) {
+// check confirms, in a test, that the shared state is what its records
+// decode to: nothing changed a record but an edit through own, put or drop.
+// site names the edit that just ran, empty for a read. The caller holds c.mu.
+func (c *StateCache) check(site string) {
+	if !failOnSharedChange {
 		return
 	}
 	fresh, err := decodeState(&sessions.CoordinationState{Records: c.raw})
@@ -864,11 +834,10 @@ func (c *StateCache) check() {
 	if err != nil || reflect.DeepEqual(fresh, c.state) {
 		return
 	}
-	if failOnSharedChange {
-		panic("swarm: a State returned by a read was modified; change records inside update: " + differingRecords(fresh, c.state))
+	if site != "" {
+		panic("swarm: the edit at " + site + " changed records without own, put or drop: " + differingRecords(fresh, c.state))
 	}
-	slog.Warn("swarm_shared_state_modified", "records", differingRecords(fresh, c.state))
-	c.state, c.lent, c.cloned = fresh, nil, nil
+	panic("swarm: a State returned by a read was modified; change records inside an edit: " + differingRecords(fresh, c.state))
 }
 
 // differingRecords names the records two states disagree on, for check.

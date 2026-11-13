@@ -140,9 +140,8 @@ execution is bounded by cores through the tool limiter, not by agent count.
    lease check, and after a change the runtime decodes only the records whose
    bytes changed. With 40 members carrying tens of kilobytes each, a read
    after a one-record change went from 2.8 ms to 0.13 ms
-   (`BenchmarkStateCacheOneChanged`). A shared state is read-only: tests fail
-   when a reader edits one, and a running process checks about once a second
-   and returns to the stored records with a warning.
+   (`BenchmarkStateCacheOneChanged`). A shared state is read-only: a test
+   fails when a reader edits one.
 3. **Done.** An update pays for the records it touches. `edit` hands its
    callback the family's own state; the callback takes each record it changes
    through an `own` method, which gives it a private copy, and adds and
@@ -158,11 +157,10 @@ execution is bounded by cores through the tool limiter, not by agent count.
    indexes mail by recipient, which the edits keep current, so finding a
    member's mail does not look at everyone's. Nothing else
    may write a `State` map: a test reads the package source for such writes,
-   and every edit in a test also compares the whole family and fails on a
-   change it was not told about. A running process makes that comparison
-   about once a second while the family has at most 4,096 records, writes
-   what it finds and warns; between comparisons an unannounced change to a
-   record is not written. `update` remains as the whole-family form, for
+   and after every edit a test also compares the whole family with its
+   stored records and fails on a change the edit was not told about. A
+   running process makes no such comparison: a change made around `own`,
+   `put` and `drop` is not written. `update` remains as the whole-family form, for
    tests, for the two recovery passes that run when a runtime takes over a
    family, and as what `edit` falls back to against a store that cannot write
    a set of changes.
