@@ -214,7 +214,9 @@ func TestLimitedToolQueueRechecksQueuedHandles(t *testing.T) {
 		calls := parallelCalls(20)
 		var results []messages.ChatMessage
 		var err error
-		go func() { results, err = a.executeToolsParallel(context.Background(), calls, nil, toolInlineTokenLimit) }()
+		go func() {
+			results, err = a.executeToolsParallel(context.Background(), calls, a.resolveTools(calls), nil, toolInlineTokenLimit)
+		}()
 		synctest.Wait()
 		if invoked.Load() != 2 {
 			t.Fatalf("active=%d", invoked.Load())
@@ -302,7 +304,8 @@ func TestLimitedToolQueueSingleWorkerRequestOrder(t *testing.T) {
 	defer registry.Close()
 	a := NewAgent(nil, registry, AgentConfig{MaxParallelTools: 1})
 	defer a.Close()
-	if _, err := a.executeToolsParallel(context.Background(), parallelCalls(100), nil, toolInlineTokenLimit); err != nil || next != 100 {
+	calls := parallelCalls(100)
+	if _, err := a.executeToolsParallel(context.Background(), calls, a.resolveTools(calls), nil, toolInlineTokenLimit); err != nil || next != 100 {
 		t.Fatalf("single worker: %v, effects=%d", err, next)
 	}
 }
@@ -316,10 +319,11 @@ func BenchmarkRuntimeStorageScaleToolQueue(b *testing.B) {
 				a := NewAgent(nil, registry, AgentConfig{MaxParallelTools: limit})
 				defer a.Close()
 				calls := parallelCalls(count)
+				handles := a.resolveTools(calls)
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if _, err := a.executeToolsParallel(context.Background(), calls, nil, toolInlineTokenLimit); err != nil {
+					if _, err := a.executeToolsParallel(context.Background(), calls, handles, nil, toolInlineTokenLimit); err != nil {
 						b.Fatal(err)
 					}
 				}
