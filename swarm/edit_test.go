@@ -115,20 +115,65 @@ func TestEditWritesTheRecordsItTouches(t *testing.T) {
 	}
 }
 
+// A test fails at the edit that changes a record without taking it through
+// own, whatever else the edit does and whatever becomes of it, and names the
+// edit and the record.
 func TestEditWithoutOwnFailsTheTest(t *testing.T) {
 	t.Parallel()
-	r := runtimeTest(t, idleModel(), 1, 1)
-	ctx := context.Background()
-	task, err := r.CreateTask(ctx, "task", "criteria", nil, "")
-	if err != nil {
-		t.Fatal(err)
+	veto := errors.New("the callback's own error")
+	for name, edit := range map[string]func(r *Runtime, owned, shared string) error{
+		"alone": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error { s.Tasks[shared].Description = "in place"; return nil })
+		},
+		"beside a record taken through own": func(r *Runtime, owned, shared string) error {
+			return r.edit(context.Background(), func(s *State) error {
+				s.ownTask(owned).Description = "through own"
+				s.Tasks[shared].Description = "in place"
+				return nil
+			})
+		},
+		"put back under its own name": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error {
+				task := s.Tasks[shared]
+				task.Description = "in place"
+				put(s, "task", &s.Tasks, shared, task)
+				return nil
+			})
+		},
+		"in an edit its callback fails": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error { s.Tasks[shared].Description = "in place"; return veto })
+		},
+		"in an edit the store refuses": func(r *Runtime, _, shared string) error {
+			return r.editOn(context.Background(), r.parent, func(raw *sessions.CoordinationState, s *State) error {
+				s.Tasks[shared].Description = "in place"
+				wrong := raw.Sequence + 99
+				raw.ExpectedSequence = &wrong
+				return nil
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := runtimeTest(t, idleModel(), 1, 1)
+			ctx := context.Background()
+			owned, err := r.CreateTask(ctx, "owned", "criteria", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shared, err := r.CreateTask(ctx, "shared", "criteria", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				got, _ := recover().(string)
+				if !strings.Contains(got, "the edit at edit_test.go:") || !strings.Contains(got, shared.ID) || strings.Contains(got, owned.ID) {
+					t.Fatalf("the edit panicked with %q, want its place and the record it changed", got)
+				}
+			}()
+			err = edit(r, owned.ID, shared.ID)
+			t.Fatalf("the edit changed a shared record unnoticed and returned %v", err)
+		})
 	}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("an edit changed a shared record unnoticed")
-		}
-	}()
-	_ = r.edit(ctx, func(s *State) error { s.Tasks[task.ID].Description = "changed in place"; return nil })
 }
 
 // hiddenDelta is a session wrapper of the kind tests and hosts put around the

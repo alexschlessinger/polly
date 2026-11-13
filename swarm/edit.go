@@ -96,6 +96,14 @@ func (s *State) revert() {
 // State's maps goes through put, drop or an own method: inside an edit the
 // maps are the family's, and a write has to be noted and may need a copy.
 func put[T any](s *State, kind string, table *map[string]*T, id string, value *T) {
+	if failOnSharedChange && s.editing != nil && value != nil && kind != "workflow" && !s.editing.has(kind, id) && (*table)[id] == value {
+		// A test's edit puts the shared record back under its own name: it
+		// must still be what is stored. A report is stored in parts, and
+		// is checked with the whole family after the edit.
+		if data, err := json.Marshal(value); err == nil && !bytes.Equal(data, s.editing.raw[kind][id]) {
+			panic("swarm: the edit at " + editSite() + " changed the shared " + kind + " " + id + " in place before putting it back; take it through own")
+		}
+	}
 	writable(s, kind, table)
 	remember(s, kind, table, id)
 	(*table)[id] = value
@@ -129,8 +137,7 @@ func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 				}
 				return nil
 			}
-			_, err := encodeChange(raw, out, kind, id, value)
-			return err
+			return encodeChange(raw, out, kind, id, value)
 		},
 		adopt: func(work *State, id string, data json.RawMessage) error {
 			if data == nil {
@@ -155,14 +162,14 @@ func setChange(out map[string]map[string]json.RawMessage, kind, id string, data 
 }
 
 // encodeChange adds value to out as record kind/id unless raw already stores
-// those bytes, and reports whether it did.
-func encodeChange(raw, out map[string]map[string]json.RawMessage, kind, id string, value any) (bool, error) {
+// those bytes.
+func encodeChange(raw, out map[string]map[string]json.RawMessage, kind, id string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil || bytes.Equal(data, raw[kind][id]) {
-		return false, err
+		return err
 	}
 	setChange(out, kind, id, data)
-	return true, nil
+	return nil
 }
 
 // workflowStepKey is the record ID of a report's step.
@@ -251,10 +258,9 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 }
 
 // workflowChanges adds to out what an edit did to one report, which is stored
-// as a record of its own and one per step, and reports whether it differs
-// from the stored one. previous is the report as the edit began, nil for one
-// it added.
-func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string, previous *workflow.Report) (differs bool, err error) {
+// as a record of its own and one per step. previous is the report as the
+// edit began, nil for one it added.
+func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string, previous *workflow.Report) error {
 	raw, was := s.editing.raw, previous != nil
 	report, ok := s.Workflows[id]
 	if !ok {
@@ -264,25 +270,23 @@ func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id st
 				setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 			}
 		}
-		return was, nil
+		return nil
 	}
 	headers, steps := detachWorkflowSteps(map[string]*workflow.Report{id: report})
-	if differs, err = encodeChange(raw, out, "workflow", id, headers[id]); err != nil {
-		return false, err
+	if err := encodeChange(raw, out, "workflow", id, headers[id]); err != nil {
+		return err
 	}
 	for key, step := range steps {
-		changed, err := encodeChange(raw, out, "workflow_step", key, step)
-		if err != nil {
-			return false, err
+		if err := encodeChange(raw, out, "workflow_step", key, step); err != nil {
+			return err
 		}
-		differs = differs || changed
 	}
 	if was {
 		for index := len(report.Steps); index < len(previous.Steps); index++ {
 			setChange(out, "workflow_step", workflowStepKey(id, index), nil)
 		}
 	}
-	return differs, nil
+	return nil
 }
 
 // formatChanges adds the format record to out when an edit replaced it.
@@ -294,8 +298,7 @@ func (s *State) formatChanges(out map[string]map[string]json.RawMessage) error {
 		setChange(out, formatKind, formatID, nil)
 		return nil
 	}
-	_, err := encodeChange(s.editing.raw, out, formatKind, formatID, s.Format)
-	return err
+	return encodeChange(s.editing.raw, out, formatKind, formatID, s.Format)
 }
 
 var kindsByName = func() map[string]recordKind {
@@ -315,7 +318,7 @@ func (s *State) changes() (out map[string]map[string]json.RawMessage, err error)
 		if name == "workflow" {
 			for id, was := range ids {
 				previous, _ := was.(*workflow.Report)
-				if _, err := s.workflowChanges(out, id, previous); err != nil {
+				if err := s.workflowChanges(out, id, previous); err != nil {
 					return nil, err
 				}
 			}
@@ -445,7 +448,8 @@ type editCall struct {
 	session sessions.CoordinationSession
 	delta   sessions.CoordinationDeltaSession
 	fn      func(raw *sessions.CoordinationState, s *State) error
-	// site names the edit's caller for a test's diagnostics.
+	// site names the edit's caller for a test's diagnostics. It is empty
+	// in a running process.
 	site string
 
 	poke    func()
@@ -603,7 +607,7 @@ func (r *Runtime) editHeld(call *editCall) (poke func(), written func(context.Co
 		if err != nil && work != nil {
 			// Nothing was written: put the records back as they were.
 			work.revert()
-			r.view.keep(shared, work)
+			r.view.keep(shared, work, call.site)
 		}
 		if errors.Is(err, sessions.ErrCoordinationStale) {
 			continue
@@ -683,12 +687,13 @@ func (c *StateCache) lend(s *State) *State {
 
 // keep makes work, a failed edit's state with its changes taken back, the
 // family's state in place of shared: it holds the maps the edit copied.
-func (c *StateCache) keep(shared, work *State) {
+func (c *StateCache) keep(shared, work *State, site string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	work.editing = nil
 	if c.state == shared {
 		c.state = work
+		c.check(site)
 	}
 }
 

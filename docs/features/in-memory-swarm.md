@@ -159,11 +159,12 @@ execution is bounded by cores through the tool limiter, not by agent count.
    may write a `State` map: a test reads the package source for such writes,
    and after every edit a test also compares the whole family with its
    stored records and fails on a change the edit was not told about. A
-   running process makes no such comparison: a change made around `own`,
-   `put` and `drop` is not written. `update` remains as the whole-family form, for
-   tests, for the two recovery passes that run when a runtime takes over a
-   family, and as what `edit` falls back to against a store that cannot write
-   a set of changes.
+   running process makes no such comparison: the edit that changes a record
+   around `own`, `put` and `drop` does not write the change, and its readers
+   see it until the record is next taken through `own`. `update` remains
+   as the whole-family form, for tests, for the two recovery passes that run
+   when a runtime takes over a family, and as what `edit` falls back to
+   against a store that cannot write a set of changes.
 4. **Done for members.** An edit pokes the members its records concern: a
    mail's recipient, a member whose own record changed, the parked members
    whose task or one of its dependencies changed, and every active member
