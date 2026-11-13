@@ -1526,8 +1526,15 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 		if err == nil && !busy {
 			session := s.newSession(id, owner, name, expiry)
 			if !s.track(session) {
+				// The store closed while the lease was taken. A session
+				// created for this handle is nobody's: it goes with the
+				// lease, since a family would keep a member for good.
 				session.cancel(ErrStoreClosed)
-				_ = s.releaseLease(context.Background(), id, owner)
+				if created != nil {
+					_ = s.discardCreated(context.Background(), id, owner)
+				} else {
+					_ = s.releaseLease(context.Background(), id, owner)
+				}
 				return nil, ErrStoreClosed
 			}
 			// What this store remembers of a family the session roots was
@@ -1767,7 +1774,7 @@ func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name st
 
 // registerCreated makes the session a transaction is creating a member of
 // the family its parent roots. A family's members are its root's to name, so
-// this store must hold the parent's lease.
+// the parent must be a root, and this store must hold its lease.
 func (s *SQLiteStore) registerCreated(ctx context.Context, conn *sql.Conn, parent, member []byte) error {
 	root := s.handle(string(parent))
 	if root == nil {
@@ -1778,8 +1785,26 @@ func (s *SQLiteStore) registerCreated(ctx context.Context, conn *sql.Conn, paren
 	} else if !held {
 		return ErrSessionLeaseLost
 	}
+	var nested bool
+	if err := conn.QueryRowContext(ctx, `SELECT parent_id IS NOT NULL FROM sessions WHERE id = ?`, parent).Scan(&nested); err != nil {
+		return err
+	}
+	if nested {
+		return errors.New("only the root of a family has members")
+	}
 	_, err := conn.ExecContext(ctx, `INSERT INTO swarm_members VALUES(?,?)`, parent, member)
 	return err
+}
+
+// discardCreated deletes a session the store created under the lease owner
+// and could not hand to its caller.
+func (s *SQLiteStore) discardCreated(ctx context.Context, id, owner []byte) error {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return s.execNow(ctx, `DELETE FROM sessions WHERE id = ? AND EXISTS
+		(SELECT 1 FROM session_leases WHERE session_id = sessions.id AND owner_token = ?)`, id, owner)
 }
 
 func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error {

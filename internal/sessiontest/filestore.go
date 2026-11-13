@@ -226,6 +226,9 @@ func (s *fileStore) acquire(ctx context.Context, name string, o sessions.Acquire
 				if held := s.db.leases[parent]; held == nil || held.store != s {
 					return errors.New("a member's parent must be open in the store that creates it")
 				}
+				if v.Sessions[parent].Parent != "" {
+					return errors.New("only the root of a family has members")
+				}
 				v.Sessions[parent].Members[id] = true
 			}
 			v.Sessions[id] = c

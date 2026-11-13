@@ -502,9 +502,10 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 	kept := keptChanges(state.Changes, state.Volatile)
 	next := state.Sequence + int64(len(state.Append))
 	if len(state.Pins) == 0 && len(state.Members) > 0 {
-		// Registering a member keeps its conversation with the family's. It
-		// has a row to check and none that a queued update writes, so it is
-		// written by itself, ahead of the records, which go the usual way.
+		// Registering a session that exists as a member keeps its
+		// conversation with the family's. It has a row to check and none
+		// that a queued update writes, so it is written by itself, ahead of
+		// the records, which go the usual way.
 		err := s.store.withTransactionNow(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
 			if err := s.requireLease(opCtx, conn); err != nil {
 				return err

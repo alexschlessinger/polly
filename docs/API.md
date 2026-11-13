@@ -1194,7 +1194,7 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `Clear`, `Reset` | Clear transcript/artifacts; Reset also replaces settings |
 | `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
 | `Parent` | Link a child by stable identity, independent of rename |
-| `SessionCreator.Create` | `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included. With `AcquireOptions.Member` the same transaction makes it a member of the family its `Parent` roots, which keeps it until the parent is removed; the parent must be open in the same store |
+| `SessionCreator.Create` | `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included. With `AcquireOptions.Member` the same transaction makes it a member of the family its `Parent` roots, which keeps it until the parent is removed; the parent must be the family's root and open in the same store. A store that cannot do this refuses the option |
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
 | `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store commits without waiting for the disk, so a power loss can lose the latest commits |
 
@@ -1378,7 +1378,9 @@ A few rules of thumb:
   session retained by a family with no record of it, until the family's root
   is deleted. The swarm runtime creates its members with
   `AcquireOptions.Member` and deletes the session of one it could not
-  record. An update that pins artifacts is written whole before it returns.
+  record, as far as it can: when it cannot read the family or delete the
+  session, it logs `member_session_retained`. An update that pins artifacts
+  is written whole before it returns.
 - One store handle drives a family: the one that holds its root session. A
   second handle on the same database reads the family as of the driver's last
   checkpoint, and a change it makes to the family's records fails with
@@ -1392,8 +1394,9 @@ A few rules of thumb:
   next `Acquire` that asks for the session by its name and `ExpectedID`
   without a database transaction. The swarm runtime acquires a member this
   way for each slice, the first included: a member's handle knows its family
-  from its creation, so its lease is kept from the first close on. To the store's own callers the session is free
-  meanwhile: its `ListSummaries` and `ReadView` report it not in use, and
+  from its creation, so its lease is kept from the first close on. To the
+  store's own callers the session is free meanwhile: its `ListSummaries` and
+  `ReadView` report it not in use, and
   `Delete`, or `Acquire` by name alone, ends the kept lease first. Another
   process sees the session leased until the store gives the lease up, which
   it does at the first heartbeat after the fifteen seconds and when the

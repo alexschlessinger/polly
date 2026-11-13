@@ -213,18 +213,33 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			ids[name] = coord(t, created).ViewID()
 			must(t, created.Close())
 		}
-		// Its parent names a family's members, and only at their creation.
+		// The option is Create's alone and needs a parent: a family's root,
+		// open in the store that creates the member and still leased to it.
 		if _, err := creator.Create(t.Context(), "orphan", sessions.AcquireOptions{Member: true}, nil); err == nil {
 			t.Fatal("Create made a member of no family")
 		}
 		if _, err := s.Acquire(t.Context(), "late", sessions.AcquireOptions{Parent: "parent", Member: true}); err == nil {
 			t.Fatal("Acquire made a member")
 		}
-		must(t, parent.Close())
+		mid := acquire(t, s, "mid", "parent")
+		if _, err := creator.Create(t.Context(), "nested", sessions.AcquireOptions{Parent: "mid", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a session that is not a family's root")
+		}
+		must(t, mid.Close())
+		elsewhere := f.Open()
+		if _, err := elsewhere.(sessions.SessionCreator).Create(t.Context(), "elsewhere", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("a store that does not hold the family's root made a member of it")
+		}
+		must(t, elsewhere.Close())
+		f.Revoke(coord(t, parent).ViewID())
+		if _, err := creator.Create(t.Context(), "revoked", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a family whose root's lease is gone")
+		}
+		parent.Close()
 		if _, err := creator.Create(t.Context(), "unheld", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
 			t.Fatal("Create made a member of a family whose root is not open")
 		}
-		for _, name := range []string{"orphan", "late", "unheld"} {
+		for _, name := range []string{"orphan", "late", "nested", "elsewhere", "revoked", "unheld"} {
 			exists, err := s.Exists(t.Context(), name)
 			must(t, err)
 			if exists {

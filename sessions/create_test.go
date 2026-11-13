@@ -165,7 +165,9 @@ func TestHandleAnswersItsNameFromMemory(t *testing.T) {
 func TestCreatedMemberAsksNoMoreOfTheDatabase(t *testing.T) {
 	ctx := context.Background()
 	holdCheckpoints(t)
-	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	// The store seeds a new transcript with its system prompt, which the
+	// member's first message then follows.
+	store, _ := openTestStore(t, ModeMemory, &Metadata{SystemPrompt: "prompt"}, 0)
 	parent := acquireNamed(t, store, "parent")
 	if err := parent.(CoordinationSession).UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
 		t.Fatal(err)
@@ -218,8 +220,42 @@ func TestCreatedMemberAsksNoMoreOfTheDatabase(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := historyText(t, again); got != "one" {
+	if got := historyText(t, again); got != "prompt,one" {
 		t.Fatalf("transcript = %q", got)
+	}
+}
+
+// A store that closes while a session is being created for a caller hands
+// the caller nothing and keeps nothing: a member left behind would stay with
+// its family for good.
+func TestCreateThatLosesToACloseLeavesNoSession(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	acquireNamed(t, store, "parent")
+	// The create waits for its turn at the connection while the store
+	// closes to new handles.
+	if err := store.enter(ctx); err != nil {
+		t.Fatal(err)
+	}
+	created := make(chan error, 1)
+	go func() {
+		_, err := store.Create(ctx, "child", AcquireOptions{Auto: true, Parent: "parent", Member: true}, nil)
+		created <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	store.closed.Store(true)
+	store.leave()
+	err := <-created
+	store.closed.Store(false)
+	if !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("the create returned %v", err)
+	}
+	var sessions, members int
+	if err := store.db.QueryRow(`SELECT (SELECT count(*) FROM sessions WHERE name = 'child'), (SELECT count(*) FROM swarm_members)`).Scan(&sessions, &members); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 0 || members != 0 {
+		t.Fatalf("the refused create left %d sessions and %d members", sessions, members)
 	}
 }
 

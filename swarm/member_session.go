@@ -53,7 +53,10 @@ func (r *Runtime) createMemberSession(ctx context.Context, name string, options 
 	}
 	coordinated, ok := session.(coordinatedSession)
 	if !ok {
-		return nil, errors.Join(errors.New("member session does not support coordination"), session.Close())
+		// The session is of no use, and as a member its family would keep it.
+		err := errors.Join(errors.New("member session does not support coordination"), session.Close())
+		r.deleteMemberSession(ctx, name)
+		return nil, err
 	}
 	return coordinated, nil
 }
@@ -66,12 +69,24 @@ func (r *Runtime) createMemberSession(ctx context.Context, name string, options 
 func (r *Runtime) dropUnrecordedMember(ctx context.Context, id, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	recorded := true
-	if err := r.look(ctx, func(s *State) { recorded = s.Members[id] != nil }); err != nil || recorded {
+	recorded := false
+	if err := r.look(ctx, func(s *State) { recorded = s.Members[id] != nil }); err != nil {
+		// Whether a record names the member is unknown, so its session stays.
+		slog.Warn("member_session_retained", "session", name, "error", err)
 		return
 	}
+	if !recorded {
+		r.deleteMemberSession(ctx, name)
+	}
+}
+
+// deleteMemberSession deletes the session of a member that will never run.
+// What it cannot delete stays with the family until its root is removed.
+func (r *Runtime) deleteMemberSession(ctx context.Context, name string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if err := r.config.Store.Delete(ctx, name); err != nil {
-		slog.Warn("member_session_retained", "member", id, "error", err)
+		slog.Warn("member_session_retained", "session", name, "error", err)
 	}
 }
 
