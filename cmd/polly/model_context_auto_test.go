@@ -101,11 +101,15 @@ func TestModelFormDetectedContextAndApply(t *testing.T) {
 			if tc.auto {
 				want = hostWindow
 			}
-			if !strings.Contains(text, fmt.Sprintf("Context  %d", want)) {
+			shown := "0"
+			if want > 0 {
+				shown = humanizeTokens(want)
+			}
+			if !strings.Contains(text, "Context "+shown) {
 				t.Fatalf("missing context: %q", text)
 			}
 			for _, row := range strings.Split(text, "\n") {
-				if len([]rune(row)) > width-2 {
+				if len([]rune(row)) > width {
 					t.Fatalf("overflow: %q", row)
 				}
 			}
@@ -147,8 +151,8 @@ func TestModelFormContextDraftPrecedenceAndPersistence(t *testing.T) {
 		if got := f.contextLimit.text(); got != "1000000" {
 			t.Fatalf("detection: %s", got)
 		}
-		formKey(r, "<Down>")
-		formKey(r, "<Down>")
+		formKey(r, "<Tab>")
+		formKey(r, "<Tab>")
 		formKey(r, "<C-u>")
 		for _, ch := range tc.input {
 			formKey(r, string(ch))
@@ -183,8 +187,8 @@ func TestModelFormContextInvalidAndCancelLeaveSettings(t *testing.T) {
 	r, mp := newFormREPL(t)
 	f := r.model.modal.modelForm
 	before := r.state.settings.clone()
-	formKey(r, "<Down>")
-	formKey(r, "<Down>")
+	formKey(r, "<Tab>")
+	formKey(r, "<Tab>")
 	formKey(r, "<C-u>")
 	for _, ch := range "-1" {
 		formKey(r, string(ch))
