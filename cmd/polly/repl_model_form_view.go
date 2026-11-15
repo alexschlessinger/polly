@@ -530,8 +530,12 @@ func (f *modelForm) filterRow(width, y int) string {
 	if f.model.text() == "" {
 		value = append(value, formSpan{"type to filter", "muted", ""})
 	}
+	// The note is the catalog's status, or how many models the filter kept.
+	// With no models to list, the list's place says the status instead.
 	note := f.status
-	if note == "" && f.total > 0 {
+	if f.total == 0 {
+		note = ""
+	} else if note == "" {
 		note = fmt.Sprintf("%d models", f.total)
 		if strings.TrimSpace(f.model.text()) != "" {
 			note = fmt.Sprintf("%d of %d", len(f.suggestions), f.total)
@@ -574,8 +578,10 @@ func (f *modelForm) listRows(width, y, n int) []string {
 	}
 	rows := make([]string, 0, n+1)
 	if len(f.suggestions) == 0 {
+		// With no models at all, the status says why. A filter that matches
+		// none of the provider's models leaves the status on the filter row.
 		message := cmp.Or(f.status, "no models listed")
-		if strings.TrimSpace(f.model.text()) != "" && f.status == "" {
+		if f.total > 0 || strings.TrimSpace(f.model.text()) != "" && f.status == "" {
 			message = "no model matches · Enter uses the name as typed"
 		}
 		row, _ := formLine(width, []formSpan{{"  ", "", ""}, {message, "muted", ""}}, nil)

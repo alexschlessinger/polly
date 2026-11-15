@@ -743,7 +743,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 				}
 				f.revision++
 				f.infos = map[string]llm.ModelInfo{}
-				f.suggestions = nil
+				f.suggestions, f.total = nil, 0
 			} else {
 				f.selected = -1
 				f.updateSuggestions()
@@ -855,7 +855,7 @@ func (r *managedREPL) selectFormProvider(f *modelForm, provider string) {
 		f.provider = provider
 		f.model.clear()
 		f.infos = map[string]llm.ModelInfo{}
-		f.suggestions = nil
+		f.suggestions, f.total = nil, 0
 		f.selected = -1
 		f.completing = false
 		f.err = ""

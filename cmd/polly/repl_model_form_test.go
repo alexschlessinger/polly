@@ -1103,3 +1103,47 @@ func TestModelFormDocksInTheComposersPlace(t *testing.T) {
 		t.Fatal("a click above the form should close it and keep the draft")
 	}
 }
+
+// The picker says the catalog's status in one place: where the models would
+// be while there are none to list, and on the filter row once there are.
+func TestModelFormPickerSaysCatalogStatusOnce(t *testing.T) {
+	r, _ := newFormREPL(t)
+	f := r.model.modal.modelForm
+	render := func() string { return plainStyledText(f.text(24, 100)) }
+	for _, status := range []string{"Loading suggestions…", "catalog unavailable · metadata request failed"} {
+		f.status = status
+		if text := render(); strings.Count(text, status) != 1 {
+			t.Fatalf("%q with no models to list:\n%s", status, text)
+		}
+	}
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
+	f.status = "Partial catalog"
+	f.updateSuggestions()
+	if text := render(); strings.Count(text, "Partial catalog") != 1 || !strings.Contains(text, "second") {
+		t.Fatalf("status beside the listed models:\n%s", text)
+	}
+	// A filter that matches none of them leaves the status on its row.
+	f.model.setText("absent")
+	f.updateSuggestions()
+	if text := render(); strings.Count(text, "Partial catalog") != 1 || !strings.Contains(text, "no model matches") {
+		t.Fatalf("status beside a filter that matches nothing:\n%s", text)
+	}
+	// The count goes with the list when the provider or the key changes.
+	f.status = ""
+	f.model.clear()
+	f.updateSuggestions()
+	if text := render(); !strings.Contains(text, "2 models") {
+		t.Fatalf("no count beside the list:\n%s", text)
+	}
+	formKey(r, "<Right>")
+	if text := render(); f.total != 0 || strings.Contains(text, "2 models") {
+		t.Fatalf("the previous provider's count outlived its list:\n%s", text)
+	}
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
+	f.updateSuggestions()
+	formKey(r, "<Tab>")
+	formKey(r, "x")
+	if text := render(); !f.keyChanged || f.total != 0 || strings.Contains(text, "of 2") {
+		t.Fatalf("the old key's count outlived its list:\n%s", text)
+	}
+}
