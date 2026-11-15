@@ -8,32 +8,44 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-func (r *managedREPL) applySelectedModelHost(model, host string, window int, contextOverride *string) error {
+// applyModelHost applies the model, host, and context to the session and
+// returns the notice that reports where they were saved.
+func (r *managedREPL) applyModelHost(model, host string, window int, contextOverride *string) (string, error) {
 	ctx := newManagedReplCommandContext(r)
 	if ctx.settings == nil {
-		return fmt.Errorf("model settings unavailable")
+		return "", fmt.Errorf("model settings unavailable")
 	}
 	candidate := ctx.settings.clone()
 	if err := parseReplSetting(ctx, &candidate, "model", model); err != nil {
-		return err
+		return "", err
 	}
 	if err := parseReplSetting(ctx, &candidate, "modelhost", host); err != nil {
-		return err
+		return "", err
 	}
 	if contextOverride != nil {
 		if err := parseReplSetting(ctx, &candidate, "maxcontext", *contextOverride); err != nil {
-			return err
+			return "", err
 		}
 	}
 	candidate.MaxHistoryTokens = candidate.contextLimit(window)
 	if err := applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext"); err != nil {
-		return err
+		return "", err
 	}
 	label := model
 	if host != "" {
 		label += " · " + host
 	}
-	r.model.appendNoticeLine("model: " + label + " (" + replSettingsScope(ctx) + ")")
+	return "model: " + label + " (" + replSettingsScope(ctx) + ")", nil
+}
+
+// applySelectedModelHost applies the selection and reports it in the
+// transcript.
+func (r *managedREPL) applySelectedModelHost(model, host string, window int, contextOverride *string) error {
+	notice, err := r.applyModelHost(model, host, window, contextOverride)
+	if err != nil {
+		return err
+	}
+	r.model.appendNoticeLine(notice)
 	return nil
 }
 

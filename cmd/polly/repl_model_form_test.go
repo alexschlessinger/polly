@@ -791,9 +791,14 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
 	got := strings.Join(transcriptTexts(r.model), "\n")
-	for _, want := range []string{"defaults saved", "launch defaults saved for later launches", "model and effort applied now", "endpoint applied to this process", "key override applied to this process only", "never saved"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("setup confirmation lacks %q: %s", want, got)
+	if !strings.Contains(got, "defaults saved to "+userConfigDisplayPath) {
+		t.Fatalf("setup confirmation lacks the saved file: %s", got)
+	}
+	// Setup's confirmation is the saved file, not a line per default: the
+	// model, the process-only key, and the applied-where summary stay out.
+	for _, unwanted := range []string{"model: openai/gpt-5.4", "key override applied", "launch defaults saved"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("setup confirmation still says %q: %s", unwanted, got)
 		}
 	}
 	if strings.Contains(got, "your environment") {
@@ -1049,8 +1054,10 @@ func TestSetupFormRefusesProviderWithoutKey(t *testing.T) {
 	if r.model.modal != nil || mp.APIKeySource("anthropic") != "session" {
 		t.Fatalf("Apply with a key: modal=%v err=%q", r.model.modal != nil, f.err)
 	}
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "POLLYTOOL_ANTHROPICKEY") {
-		t.Fatalf("no reminder that the key is process-only: %q", got)
+	// The confirmation is the saved file; the process-only scope of the key
+	// is said on the form's Key row, not again in the transcript.
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "defaults saved to "+userConfigDisplayPath) || strings.Contains(got, "key override applied") {
+		t.Fatalf("setup confirmation: %q", got)
 	}
 }
 

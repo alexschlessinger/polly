@@ -922,17 +922,27 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 		r.focusModelForm(f, formFieldKey)
 		return
 	}
-	if err := r.applySelectedModelHost(model, host, f.modelContextWindow(), f.contextOverride()); err != nil {
+	notice, err := r.applyModelHost(model, host, f.modelContextWindow(), f.contextOverride())
+	if err != nil {
 		f.err = err.Error()
 		return
 	}
+	if !f.setup {
+		r.model.appendNoticeLine(notice)
+	}
 	if f.keyChanged {
+		line := ""
 		if key := strings.TrimSpace(f.key.text()); key != "" {
 			r.state.agent.SetProviderAPIKey(f.provider, key)
-			r.model.appendNoticeLine("key override applied to this process only · never saved · export " + llm.ProviderKeyEnvVar(f.provider) + " for later launches")
+			line = "key override applied to this process only · never saved · export " + llm.ProviderKeyEnvVar(f.provider) + " for later launches"
 		} else {
 			r.state.agent.ClearProviderAPIKey(f.provider)
-			r.model.appendNoticeLine("key override cleared for this process only · nothing saved")
+			line = "key override cleared for this process only · nothing saved"
+		}
+		// Setup's Key row already says the key is for this process only, and
+		// its confirmation is the saved file rather than a line per default.
+		if !f.setup {
+			r.model.appendNoticeLine(line)
 		}
 	}
 	if f.setup {
@@ -997,7 +1007,6 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	for _, notice := range notices {
 		r.model.appendNoticeLine(notice)
 	}
-	r.model.appendNoticeLine("launch defaults saved for later launches · model and effort applied now · endpoint applied to this process")
 	if f.sandbox != f.initialSandbox {
 		// The tools this launch runs were wired for its own posture, so the
 		// default can only take hold on the next launch.
