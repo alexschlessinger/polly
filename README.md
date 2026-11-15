@@ -177,7 +177,7 @@ the choice with that session.
 | `huggingface/` | `POLLYTOOL_HUGGINGFACEKEY` |
 | `codex/` | none: sign in with a ChatGPT plan, `polly --login codex` |
 
-The model picker completes the names it discovers, but you can always type one
+The model picker lists the models it discovers, but you can always type one
 in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or

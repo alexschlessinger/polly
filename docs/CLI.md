@@ -673,25 +673,41 @@ use their own endpoints.
 ### Model form
 
 Click the model in the status bar or run `/model` with no argument to open the
-model form. It includes a masked API key override field, and `/setup` adds
-fields for the endpoint, effort, theme, and sandbox defaults. For a provider
-you sign in to, the key field shows the account instead; `/login` signs in.
+model form. It opens in the composer's place, under the rule, with the
+conversation still visible above it. The title row says what Apply changes
+(`this session`, or `launch defaults` for `/setup`) and lists the keys; an
+error that stops Apply takes the place of the scope.
 
-- Up/Down moves between fields, and Left/Right cycles providers.
-- Tab completes a model name and cycles through matches; Shift-Tab goes
-  backward, and typing starts a fresh cycle. Tab doesn't move between fields.
-- Enter advances or applies, and Escape discards the draft. Fields take clicks
-  too.
-- Prices are the advertised input, output, and cached rates per million tokens.
-  A pinned host shows that host's prices, and unknown prices show as dashes or
-  stay hidden.
+`/model` is a picker:
+
+- Left/Right switches providers; the tabs take clicks too.
+- Typing filters the provider's models. Up/Down highlights one; Up from the
+  first returns to the filter, and Enter then uses the name as typed.
+- The list shows each model's context window and its input and output
+  prices per million tokens, as far as the catalog gives them. A pinned
+  host shows that host's prices.
+- Key and Context share one line under the list. Tab opens them: the key
+  field is a masked override for this process only, and Context is the
+  budget in tokens. For a provider you sign in to, the key row shows the
+  account instead; `/login` signs in.
+- Enter applies from anywhere, and a second click on a model applies it.
+  Escape, Ctrl-C, or a click outside the form discards the draft.
+
+`/setup` lists one row per field: provider, model, key, context, endpoint,
+effort, theme, and sandbox. Up/Down moves between them, Left/Right steps the
+provider, effort, theme, and sandbox, and Tab completes a model name and
+cycles through matches (Shift-Tab goes backward; typing starts a fresh
+cycle). Enter applies from any row. Notes on the right say where the key
+comes from, the model's prices and context window, and what a sandbox choice
+means; a sandbox change takes effect from the next launch.
 
 ### Discovery and completion
 
-Suggestions include only models that advertise text and tool support, but a
-name you type by hand always works, even when discovery fails. Catalogs are
-cached for an hour (keys are never stored in the cache), and Ctrl-R refreshes
-them.
+The list and completions leave out models whose catalog entry rules out text
+chat with tools, and include models it says nothing about. A name you type by
+hand always works, even when discovery fails; the form says when a catalog
+can't be loaded. Catalogs are cached for an hour (keys are never stored in
+the cache), and Ctrl-R refreshes them.
 
 ### Host pinning
 
