@@ -86,9 +86,10 @@ func TestModelFormDetectedContextAndApply(t *testing.T) {
 		r.state.session = testAcquireSession(t, store, "form")
 		r.state.settings.AutoMaxContext = tc.auto
 		r.state.settings.MaxHistoryTokens = tc.budget
-		r.openModelPicker()
+		r.openSetupForm()
 		f := r.model.modal.modelForm
 		f.provider = "openrouter"
+		f.hasKey = true
 		window, hostWindow := 1000000, 512000
 		f.infos = map[string]llm.ModelInfo{"org/model": {ID: "org/model", Routed: true, ModelCapabilities: llm.ModelCapabilities{ContextTokens: &window}, Endpoints: []llm.ModelEndpointInfo{{ID: "host", ModelCapabilities: llm.ModelCapabilities{ContextTokens: &hostWindow}}}}}
 		f.model.setText("org/model:host")
@@ -105,7 +106,7 @@ func TestModelFormDetectedContextAndApply(t *testing.T) {
 			if want > 0 {
 				shown = humanizeTokens(want)
 			}
-			if !strings.Contains(text, "Context "+shown) {
+			if !strings.Contains(text, "Context   "+shown) {
 				t.Fatalf("missing context: %q", text)
 			}
 			for _, row := range strings.Split(text, "\n") {
@@ -139,7 +140,7 @@ func TestModelFormContextDraftPrecedenceAndPersistence(t *testing.T) {
 		r.state.session = testAcquireSession(t, store, "form")
 		r.state.settings.AutoMaxContext = true
 		r.state.settings.MaxHistoryTokens = defaultContextBudget
-		r.openModelPicker()
+		r.openSetupForm()
 		f := r.model.modal.modelForm
 		f.syncContextLimit()
 		if got := f.contextLimit.text(); got != "256000" {
@@ -151,8 +152,7 @@ func TestModelFormContextDraftPrecedenceAndPersistence(t *testing.T) {
 		if got := f.contextLimit.text(); got != "1000000" {
 			t.Fatalf("detection: %s", got)
 		}
-		formKey(r, "<Tab>")
-		formKey(r, "<Tab>")
+		r.focusModelForm(f, formFieldContext)
 		formKey(r, "<C-u>")
 		for _, ch := range tc.input {
 			formKey(r, string(ch))
@@ -168,12 +168,11 @@ func TestModelFormContextDraftPrecedenceAndPersistence(t *testing.T) {
 			t.Fatal("draft changed live settings")
 		}
 		formKey(r, "<Enter>")
-		formKey(r, "<Enter>")
 		md, err := r.state.session.GetMetadata(context.Background())
 		if err != nil || md.AutoMaxContext != tc.auto || md.MaxHistoryTokens != tc.want {
 			t.Fatalf("saved: %+v %v", md, err)
 		}
-		r.openModelPicker()
+		r.openSetupForm()
 		f = r.model.modal.modelForm
 		f.infos = map[string]llm.ModelInfo{"current": {ID: "current", ModelCapabilities: llm.ModelCapabilities{ContextTokens: &window}}}
 		f.syncContextLimit()
@@ -187,15 +186,13 @@ func TestModelFormContextInvalidAndCancelLeaveSettings(t *testing.T) {
 	r, mp := newFormREPL(t)
 	f := r.model.modal.modelForm
 	before := r.state.settings.clone()
-	formKey(r, "<Tab>")
-	formKey(r, "<Tab>")
+	r.focusModelForm(f, formFieldContext)
 	formKey(r, "<C-u>")
 	for _, ch := range "-1" {
 		formKey(r, string(ch))
 	}
 	f.key.setText("draft-key")
 	f.keyChanged = true
-	formKey(r, "<Enter>")
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || f.err == "" || r.state.settings.MaxHistoryTokens != before.MaxHistoryTokens || mp.APIKeySource("openai") != "environment" {
 		t.Fatal("invalid context applied form")

@@ -30,6 +30,7 @@ func (l *fakeAccountLogin) Account() (llm.Account, bool) {
 }
 
 func TestModelFormShowsTheAccountForASignedInProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	login := &fakeAccountLogin{}
 	mp := llm.NewMultiPass(nil, llm.WithLogin("codex", login))
 	a := llm.NewAgent(mp, nil, llm.AgentConfig{})
@@ -38,18 +39,18 @@ func TestModelFormShowsTheAccountForASignedInProvider(t *testing.T) {
 	_ = r.work.close()
 	r.work = nil
 	r.state = &conversationState{agent: a, settings: Settings{Model: "codex/gpt-5.5"}}
-	r.openModelPicker()
+	r.openSetupForm()
 	f := r.model.modal.modelForm
 	if f.provider != "codex" || !f.login || f.hasKey {
 		t.Fatalf("form = provider %q, login %v, hasKey %v", f.provider, f.login, f.hasKey)
 	}
-	text := plainStyledText(f.modal.text(20, 80))
-	if !strings.Contains(text, "Account user@example.com · Context") || strings.Contains(text, "Key ") {
+	text := plainStyledText(f.modal.text(30, 80))
+	if !strings.Contains(text, "Account   user@example.com") || strings.Contains(text, "Key ") {
 		t.Fatalf("form = %q", text)
 	}
-	// Tab opens the account row, its plan in the note column.
-	formKey(r, "<Tab>")
-	text = plainStyledText(f.modal.text(20, 80))
+	// Focusing the account row keeps its plan in the note column.
+	r.focusModelForm(f, formFieldKey)
+	text = plainStyledText(f.modal.text(30, 80))
 	if f.focus != formFieldKey || !strings.Contains(text, "› Account   user@example.com") || !strings.HasSuffix(strings.Split(text, "\n")[strings.Count(text[:strings.Index(text, "› Account")], "\n")], "plus plan") {
 		t.Fatalf("form = %q", text)
 	}
@@ -62,7 +63,7 @@ func TestModelFormShowsTheAccountForASignedInProvider(t *testing.T) {
 	}
 	// Another provider brings the key row back.
 	r.selectFormProvider(f, "openai")
-	if f.login || !strings.Contains(plainStyledText(f.modal.text(20, 80)), "Key ") {
+	if f.login || !strings.Contains(plainStyledText(f.modal.text(30, 80)), "Key") {
 		t.Fatal("the key row did not come back for openai")
 	}
 

@@ -51,7 +51,7 @@ func TestModelPricingPreservesFreeAndOmitsUnspecifiedOrInvalidPrices(t *testing.
 		t.Fatal("invalid prices displayed")
 	}
 }
-func TestModelPricingInPickerColumnsAndSetupNote(t *testing.T) {
+func TestModelPricingInSetupNote(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
@@ -60,28 +60,15 @@ func TestModelPricingInPickerColumnsAndSetupNote(t *testing.T) {
 		{Item: "output", Amount: "45.25", Currency: "USD", Unit: "million tokens"},
 		{Item: "cached_input", Amount: "1.25", Currency: "USD", Unit: "million tokens"},
 	}
-	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "current", Prices: prices}, {ID: "other"}}})
-	f.updateSuggestions()
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "current", Prices: prices}}})
 	for _, width := range []int{40, 70, 100} {
 		text := plainStyledText(f.text(24, width))
-		var row string
 		for _, line := range strings.Split(text, "\n") {
 			if len([]rune(line)) > width {
 				t.Fatalf("overflow at %d: %q", width, line)
 			}
-			if strings.Contains(line, "› current") {
-				row = line
-			}
-		}
-		wantPrices := width >= 70
-		if row == "" || strings.Contains(row, "$12.75") != wantPrices || strings.Contains(row, "$45.25") != wantPrices {
-			t.Fatalf("width %d: price columns in %q", width, row)
 		}
 	}
-	r.closeModal()
-	r.openSetupForm()
-	f = r.model.modal.modelForm
-	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "current", Prices: prices}}})
 	if text := plainStyledText(f.text(24, 100)); !strings.Contains(text, "$12.75 in · $45.25 out · $1.25 cached") {
 		t.Fatalf("setup Model note:\n%s", text)
 	}

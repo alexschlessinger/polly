@@ -8,45 +8,30 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-// applyModelHost applies the model, host, and context to the session and
-// returns the notice that reports where they were saved.
-func (r *managedREPL) applyModelHost(model, host string, window int, contextOverride *string) (string, error) {
+// applySetupSessionSettings applies the setup form's session-scoped fields in
+// one atomic commit through the /set validation and persistence path.
+func (r *managedREPL) applySetupSessionSettings(model, host, effort string, window int, contextOverride *string) error {
 	ctx := newManagedReplCommandContext(r)
 	if ctx.settings == nil {
-		return "", fmt.Errorf("model settings unavailable")
+		return fmt.Errorf("model settings unavailable")
 	}
 	candidate := ctx.settings.clone()
 	if err := parseReplSetting(ctx, &candidate, "model", model); err != nil {
-		return "", err
+		return err
 	}
 	if err := parseReplSetting(ctx, &candidate, "modelhost", host); err != nil {
-		return "", err
+		return err
 	}
 	if contextOverride != nil {
 		if err := parseReplSetting(ctx, &candidate, "maxcontext", *contextOverride); err != nil {
-			return "", err
+			return err
 		}
 	}
 	candidate.MaxHistoryTokens = candidate.contextLimit(window)
-	if err := applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext"); err != nil {
-		return "", err
-	}
-	label := model
-	if host != "" {
-		label += " · " + host
-	}
-	return "model: " + label + " (" + replSettingsScope(ctx) + ")", nil
-}
-
-// applySelectedModelHost applies the selection and reports it in the
-// transcript.
-func (r *managedREPL) applySelectedModelHost(model, host string, window int, contextOverride *string) error {
-	notice, err := r.applyModelHost(model, host, window, contextOverride)
-	if err != nil {
+	if err := parseReplSetting(ctx, &candidate, "effort", effort); err != nil {
 		return err
 	}
-	r.model.appendNoticeLine(notice)
-	return nil
+	return applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext", "effort")
 }
 
 func metadataDisplayText(s string, multiline bool) string {

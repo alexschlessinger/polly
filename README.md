@@ -54,9 +54,8 @@ questions by handing `polly --setup` the answers up front with `--model`,
 `anthropic/claude-opus-5`.
 
 Keys come from the environment, such as `POLLYTOOL_ANTHROPICKEY`. A key typed
-into `/setup` or the `/model` form lasts only as long as the process, because
-Polly never saves keys. Ollama and custom `--baseurl` endpoints can run without
-one.
+into `/setup` lasts only as long as the process, because Polly never saves
+keys. Ollama and custom `--baseurl` endpoints can run without one.
 
 A ChatGPT plan works without a key: `polly --login codex` (or `/login` in the
 TUI) signs you in through your browser, keeps the sign-in in
@@ -121,7 +120,7 @@ A few commands worth knowing:
 |---|---|
 | `/help` | Browse commands |
 | `/set [key [value]]` | Inspect or change session preferences |
-| `/model`, `/setup` | Open the model/key form or save launch defaults |
+| `/setup` | Configure model, key override, theme, and launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
 | `/compact` | Summarize context now, retaining the saved transcript |
 | `/copy` | Copy the last completed response to the clipboard |
@@ -162,8 +161,8 @@ lives in `~/.pollytool/polly.db`.
 ## Models
 
 Pick a model at launch with `-m provider/model` or `POLLYTOOL_MODEL`. In a
-session, use `/set model provider/model` or open the `/model` form; either saves
-the choice with that session.
+session, use `/set model provider/model` for that session alone, or open
+`/setup` to update the session and save launch defaults.
 
 | Provider prefix | API key environment variable |
 |---|---|
@@ -177,8 +176,9 @@ the choice with that session.
 | `huggingface/` | `POLLYTOOL_HUGGINGFACEKEY` |
 | `codex/` | none: sign in with a ChatGPT plan, `polly --login codex` |
 
-The model picker lists the models it discovers, but you can always type one
-in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
+The `/setup` form completes the model names it discovers, and you can always
+type one in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama
+endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or
 `/set effort <value>`. Fast mode (`--fast`, `/set fast on`) asks `openai/` models

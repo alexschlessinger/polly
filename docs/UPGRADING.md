@@ -18,11 +18,12 @@ and [Go API reference](API.md) for the complete interfaces.
   Left/Right chooses, and Enter activates. The agent panel remains. The
   status-bar Changes count is not a workspace-diff viewer; use Git for the net
   workspace diff.
-- **Preferences:** use `/set` for session settings and `/model` for the model/key
-  form. `/effort`, `/fast`, and `/keys` remain compatibility shortcuts but are not
-  advertised in completion or help. Session preferences persist with the session;
-  API keys remain process-only. `/setup` saves launch defaults, and confirming
-  `/theme` saves the UI theme for later launches.
+- **Preferences:** use `/set` for session settings and `/setup` for launch
+  defaults and process-only key overrides. `/model`, `/effort`, `/fast`, and
+  `/keys` remain compatibility shortcuts (`/model` and `/keys` open `/setup`)
+  but are not advertised in completion or help. Session preferences persist with
+  the session; API keys remain process-only. Confirming `/theme` saves the UI
+  theme for later launches.
 - **Clipboard:** `/copy` copies the last completed answer, preserving Markdown.
   It requires a terminal that permits OSC 52 clipboard writes.
 - **Response phases:** phase-tagged commentary is retained for provider replay

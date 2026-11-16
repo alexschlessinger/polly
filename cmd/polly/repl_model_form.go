@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"slices"
@@ -16,7 +17,8 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// modelForm is a disposable draft. Only Apply writes settings or installs a key.
+// modelForm is the disposable /setup draft: Apply updates the session and saves
+// launch defaults to ~/.pollytool/config (never the key or context).
 // The key editor is never copied into messages, config, history, or metadata.
 type modelForm struct {
 	modal           *replModal
@@ -38,20 +40,14 @@ type modelForm struct {
 	login           bool
 	signedIn        bool
 	account, plan   string
-	focus           int // provider, model, key, context, then the setup extras
+	focus           int
 	completing      bool
 	completionQuery string
 	hasKey          bool
-	// picker marks the /model form: the model field is a filter over a
-	// list of the provider's models, and selected is the highlighted row
-	// (-1 for the filter as typed). In the setup form selected is the Tab
-	// completion's place in suggestions.
-	picker      bool
+	hasEnvKey       bool
+	// selected is the Tab completion's place in suggestions (-1 before completing).
 	selected    int
 	suggestions []string
-	// total counts the provider's models before the filter; listTop is the
-	// first one the picker's list shows.
-	total, listTop int
 	// hits are the last paint's click targets, in form coordinates.
 	hits        []formHit
 	catalog     llm.ModelCatalog
@@ -64,10 +60,6 @@ type modelForm struct {
 	ctx         context.Context
 	pasting     bool
 
-	// setup marks the setup form: the endpoint, thinking, theme, and sandbox
-	// fields join the four above, and Apply also saves the draft to
-	// ~/.pollytool/config as the launch defaults (never the key or context).
-	setup           bool
 	endpoint        lineEditor
 	endpointChanged bool
 	initialEndpoint string
@@ -93,26 +85,16 @@ type modelForm struct {
 	sandboxPreset  string
 }
 
-// Field order. The /model picker has no provider row: its tabs switch
-// providers from the model list.
 const (
 	formFieldProvider = iota
 	formFieldModel
 	formFieldKey
 	formFieldContext
-	formFieldEndpoint // setup only
-	formFieldThinking // setup only
-	formFieldTheme    // setup only
-	formFieldSandbox  // setup only
+	formFieldEndpoint
+	formFieldThinking
+	formFieldTheme
+	formFieldSandbox
 )
-
-// lastField is the last field the form shows.
-func (f *modelForm) lastField() int {
-	if f.setup {
-		return formFieldSandbox
-	}
-	return formFieldContext
-}
 
 // Keep a selected destination independent of asynchronously replaced catalogs.
 // The text includes the optional :host suffix shown in the combined model field.
@@ -130,7 +112,14 @@ func (f *modelForm) wipe() {
 	}
 	f.key.clear()
 }
-func (r *managedREPL) openModelForm(focus int) {
+
+// openSetupForm opens the setup form: the first run with nothing configured,
+// --setup, /setup, or clicking the model in the status bar.
+func (r *managedREPL) openSetupForm() { r.openSetupFormAt(formFieldProvider) }
+
+func (r *managedREPL) openKeyManager() { r.openSetupFormAt(formFieldKey) }
+
+func (r *managedREPL) openSetupFormAt(focus int) {
 	provider, name, _ := strings.Cut(r.currentModel(), "/")
 	if !slices.Contains(validModelProviders, provider) {
 		provider = validModelProviders[0]
@@ -143,7 +132,15 @@ func (r *managedREPL) openModelForm(focus int) {
 			name += ":" + host
 		}
 	}
-	f := &modelForm{provider: provider, initialProvider: provider, initialModel: name, focus: max(focus, formFieldModel), picker: true, selected: -1, infos: map[string]llm.ModelInfo{}, requested: map[string]bool{}}
+	f := &modelForm{
+		provider:        provider,
+		initialProvider: provider,
+		initialModel:    name,
+		focus:           max(formFieldProvider, min(formFieldSandbox, focus)),
+		selected:        -1,
+		infos:           map[string]llm.ModelInfo{},
+		requested:       map[string]bool{},
+	}
 	if model != "" {
 		f.initialRoute = &modelFormRoute{provider: provider, text: name, model: model, host: host}
 	}
@@ -152,22 +149,7 @@ func (r *managedREPL) openModelForm(focus int) {
 	} else if r.config != nil {
 		f.contextSettings = r.config.Launch.clone()
 	}
-	// The picker's filter starts empty, listing every model with the
-	// current one highlighted.
-	f.modal = &replModal{title: "Model", modelForm: f}
-	r.modelFormKeySource(f)
-	r.openModal(f.modal)
-	r.fetchFormCatalog(f, false)
-}
-
-// openSetupForm opens the model form in setup mode: the first run with
-// nothing configured, --setup, or /setup.
-func (r *managedREPL) openSetupForm() {
-	r.openModelForm(formFieldModel)
-	f := r.model.modal.modelForm
-	f.setup, f.picker, f.focus = true, false, formFieldProvider
-	f.modal.title = "Setup"
-	f.model.setText(f.initialModel)
+	f.model.setText(name)
 	if r.config != nil {
 		f.endpoint.setText(r.config.BaseURL)
 	}
@@ -175,6 +157,17 @@ func (r *managedREPL) openSetupForm() {
 	baseline := cmp.Or(f.contextSettings.ThinkingEffort, defaultThinkingEffort)
 	f.thinking, f.initialThinking = baseline, baseline
 	r.initSetupDefaults(f)
+	f.modal = &replModal{
+		title:     "Setup",
+		modelForm: f,
+		onCancel: func() {
+			r.restoreFormTheme(f)
+			r.skipSetup()
+		},
+	}
+	r.modelFormKeySource(f)
+	r.openModal(f.modal)
+	r.fetchFormCatalog(f, false)
 }
 
 // initSetupDefaults loads the two defaults that are not model settings: the
@@ -209,7 +202,7 @@ func (r *managedREPL) initSetupDefaults(f *modelForm) {
 }
 
 func (r *managedREPL) modelFormKeySource(f *modelForm) {
-	f.keyOrigin, f.hasKey = "", false
+	f.keyOrigin, f.hasKey, f.hasEnvKey = "", false, false
 	f.signedIn, f.account, f.plan = false, "", ""
 	f.login = llm.ProviderRequiresLogin(f.provider + "/model")
 	if r.state == nil || r.state.agent == nil {
@@ -221,6 +214,7 @@ func (r *managedREPL) modelFormKeySource(f *modelForm) {
 		}
 		return
 	}
+	f.hasEnvKey = r.state.agent.HasConfiguredProviderAPIKey(f.provider)
 	switch source := r.state.agent.ProviderAPIKeySource(f.provider); source {
 	case "session", "environment":
 		f.keyOrigin, f.hasKey = source, true
@@ -229,12 +223,13 @@ func (r *managedREPL) modelFormKeySource(f *modelForm) {
 
 // changed reports whether Apply would change anything.
 func (f *modelForm) changed() bool {
-	return f.contextChanged || f.keyChanged || f.provider != f.initialProvider || strings.TrimSpace(f.modelText()) != f.initialModel || f.setupChanged()
-}
-
-// setupChanged reports whether a setup-only field differs from its opening value.
-func (f *modelForm) setupChanged() bool {
-	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking || f.theme != f.initialTheme || f.sandbox != f.initialSandbox)
+	return f.contextChanged || f.keyChanged ||
+		f.provider != f.initialProvider ||
+		strings.TrimSpace(f.model.text()) != f.initialModel ||
+		strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint ||
+		f.thinking != f.initialThinking ||
+		f.theme != f.initialTheme ||
+		f.sandbox != f.initialSandbox
 }
 
 // arrowDelta is the step an arrow key takes through an ordered list.
@@ -281,7 +276,7 @@ func (r *managedREPL) cycleFormTheme(f *modelForm, delta int) {
 // The selection the startup apply recorded is the one to restore, because the
 // preview never touches it.
 func (r *managedREPL) restoreFormTheme(f *modelForm) {
-	if !f.setup || f.theme == f.initialTheme {
+	if f.theme == f.initialTheme {
 		return
 	}
 	f.theme = f.initialTheme
@@ -304,7 +299,7 @@ func (f *modelForm) thinkingCapabilities() llm.ModelCapabilities {
 // OpenRouter has no "max". A value outside that vocabulary is not in the
 // cycle, so the first press lands on its first word.
 func (f *modelForm) cycleThinking(delta int) {
-	words := llm.ThinkingEffortWordsFor(f.provider+"/"+strings.TrimSpace(f.modelText()), f.thinkingCapabilities())
+	words := llm.ThinkingEffortWordsFor(f.provider+"/"+strings.TrimSpace(f.model.text()), f.thinkingCapabilities())
 	f.thinking = cycleAmong(words, f.thinking, delta)
 }
 
@@ -372,6 +367,7 @@ func textToolsRuledOut(c llm.ModelCapabilities) bool {
 func liveModelHost(e llm.ModelEndpointInfo) bool {
 	return e.Status == "" || e.Status == "live" || e.Status == "0"
 }
+
 func (f *modelForm) updateSuggestions() {
 	previous := ""
 	if f.selected >= 0 && f.selected < len(f.suggestions) {
@@ -400,7 +396,6 @@ func (f *modelForm) updateSuggestions() {
 	}
 	slices.Sort(out)
 	out = slices.Compact(out)
-	f.total = len(out)
 	f.suggestions = nil
 	for _, name := range out {
 		if strings.Contains(strings.ToLower(name), query) {
@@ -411,50 +406,6 @@ func (f *modelForm) updateSuggestions() {
 	if previous != "" {
 		f.selected = slices.Index(f.suggestions, previous)
 	}
-	if f.picker && f.selected < 0 {
-		f.selected = f.pickerDefault(query)
-	}
-}
-
-// pickerDefault is the row the picker highlights when the list changes
-// under it: the current model while the filter is empty, else the model
-// named exactly, else the first match.
-func (f *modelForm) pickerDefault(query string) int {
-	if len(f.suggestions) == 0 {
-		return -1
-	}
-	want := query
-	if want == "" {
-		if f.provider != f.initialProvider {
-			return 0
-		}
-		want = strings.ToLower(f.initialModel)
-	}
-	for i, name := range f.suggestions {
-		if strings.ToLower(name) == want {
-			return i
-		}
-	}
-	if query == "" {
-		return -1
-	}
-	return 0
-}
-
-// modelText is the model the form would apply: the setup form's field, or
-// the picker's highlighted row. With no row highlighted the picker applies
-// its filter as typed, and the current model while the filter is empty.
-func (f *modelForm) modelText() string {
-	if !f.picker {
-		return f.model.text()
-	}
-	if f.selected >= 0 && f.selected < len(f.suggestions) {
-		return f.suggestions[f.selected]
-	}
-	if strings.TrimSpace(f.model.text()) == "" && f.provider == f.initialProvider {
-		return f.initialModel
-	}
-	return f.model.text()
 }
 
 // A stale catalog refresh can arrive after its lazy details. Keep the details
@@ -470,17 +421,17 @@ func (f *modelForm) setCatalog(cat llm.ModelCatalog) {
 		f.infos[info.ID] = info
 	}
 }
+
 func (f *modelForm) target(r *managedREPL) llm.ModelTarget {
 	t := r.browserTarget(f.provider, "")
-	if f.setup {
-		t.BaseURL = modelMetadataBaseURL(f.provider, strings.TrimSpace(f.endpoint.text()))
-	}
+	t.BaseURL = modelMetadataBaseURL(f.provider, strings.TrimSpace(f.endpoint.text()))
 	if f.keyChanged {
 		t.APIKey = strings.TrimSpace(f.key.text())
 		t.UseConfiguredKey = t.APIKey == ""
 	}
 	return t
 }
+
 func (r *managedREPL) fetchFormCatalog(f *modelForm, force bool) {
 	if f.cancel != nil {
 		f.cancel()
@@ -517,8 +468,7 @@ func (r *managedREPL) fetchFormCatalog(f *modelForm, force bool) {
 				if cat.Stale {
 					f.status = "Cached catalog · refreshing…"
 				}
-				// An empty list says why: the picker has nothing else to show.
-				if err != nil {
+				if err != nil && !errors.Is(err, llm.ErrModelMetadataUnknown) {
 					f.status = "catalog unavailable · " + err.Error()
 				} else if cat.Error != "" {
 					f.status = "catalog unavailable · " + cat.Error
@@ -612,8 +562,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		if !p.In(f.modal.bounds) {
 			// Like Escape, a click outside the painted form closes it.
 			if e.ID == "<MouseLeft>" && !f.modal.bounds.Empty() {
-				r.restoreFormTheme(f)
-				r.closeModal()
+				r.dismissModal()
 			}
 			return true
 		}
@@ -632,16 +581,9 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		}
 		return true
 	}
-	if f.picker && r.handlePickerKey(f, e.ID) {
-		return true
-	}
 	switch e.ID {
 	case "<Escape>":
-		if f.setup {
-			r.restoreFormTheme(f)
-			r.skipSetup()
-		}
-		r.closeModal()
+		r.dismissModal()
 	case "<Tab>", "<Backtab>", "<S-Tab>":
 		if f.focus == formFieldModel {
 			if !f.completing {
@@ -667,7 +609,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 	case "<C-r>":
 		r.fetchFormCatalog(f, true)
 	case "<Up>", "<Down>":
-		r.focusModelForm(f, max(0, min(f.lastField(), f.focus+arrowDelta(e.ID))))
+		r.focusModelForm(f, max(formFieldProvider, min(formFieldSandbox, f.focus+arrowDelta(e.ID))))
 	case "<Left>", "<Right>":
 		delta := arrowDelta(e.ID)
 		if f.focus == formFieldProvider {
@@ -731,19 +673,12 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 			} else if f.focus == formFieldKey {
 				f.keyChanged = true
 				_, _, _ = f.route()
-				// The catalog belongs to the old credential, so the list
-				// goes; the picker keeps its choice as the filter, where
-				// the reloaded list finds it again.
-				if f.picker && f.selected >= 0 {
-					f.model.setText(f.modelText())
-					f.selected = -1
-				}
 				if f.cancel != nil {
 					f.cancel()
 				}
 				f.revision++
 				f.infos = map[string]llm.ModelInfo{}
-				f.suggestions, f.total = nil, 0
+				f.suggestions = nil
 			} else {
 				f.selected = -1
 				f.updateSuggestions()
@@ -751,54 +686,6 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 			}
 		}
 	}
-	return true
-}
-
-// handlePickerKey takes the keys the /model picker gives other meanings:
-// on the model list the arrows choose a model and switch providers, and Tab
-// walks the list, Key and Context. Everything else falls through to the
-// field handling the setup form shares.
-func (r *managedREPL) handlePickerKey(f *modelForm, id string) bool {
-	if id == "<Tab>" || id == "<S-Tab>" || id == "<Backtab>" {
-		delta := 1
-		if id != "<Tab>" {
-			delta = -1
-		}
-		order := []int{formFieldModel, formFieldKey, formFieldContext}
-		at := max(0, slices.Index(order, f.focus))
-		r.focusModelForm(f, order[(at+delta+len(order))%len(order)])
-		return true
-	}
-	if f.focus != formFieldModel {
-		switch id {
-		case "<Up>":
-			r.focusModelForm(f, f.focus-1)
-			return true
-		case "<Down>":
-			r.focusModelForm(f, min(formFieldContext, f.focus+1))
-			return true
-		}
-		return false
-	}
-	switch id {
-	case "<Left>", "<Right>":
-		index := (slices.Index(validModelProviders, f.provider) + arrowDelta(id) + len(validModelProviders)) % len(validModelProviders)
-		r.selectFormProvider(f, validModelProviders[index])
-	case "<Up>":
-		// Above the first row is the filter itself: Enter then applies the
-		// name as typed.
-		f.selected = max(-1, f.selected-1)
-	case "<Down>":
-		f.selected = min(len(f.suggestions)-1, f.selected+1)
-	case "<PageUp>":
-		f.selected = max(min(0, len(f.suggestions)-1), f.selected-formListRows)
-	case "<PageDown>":
-		f.selected = min(len(f.suggestions)-1, f.selected+formListRows)
-	default:
-		return false
-	}
-	f.err = ""
-	_, _, _ = f.route()
 	return true
 }
 
@@ -813,18 +700,6 @@ func (r *managedREPL) clickModelForm(f *modelForm, hit formHit) {
 			key = "<Right>"
 		}
 		r.handleModelFormEvent(f, ui.Event{Type: ui.KeyboardEvent, ID: key})
-	case hitProvider:
-		r.focusModelForm(f, formFieldModel)
-		r.selectFormProvider(f, validModelProviders[hit.n])
-	case hitPick:
-		// The first click highlights a model, a second applies it.
-		again := f.focus == formFieldModel && f.selected == hit.n
-		r.focusModelForm(f, formFieldModel)
-		f.selected = hit.n
-		f.err = ""
-		if again {
-			r.applyModelForm(f)
-		}
 	case hitApply:
 		r.applyModelForm(f)
 	}
@@ -840,14 +715,13 @@ func (r *managedREPL) focusModelForm(f *modelForm, n int) {
 		f.endpointChanged = false
 		r.fetchFormCatalog(f, false)
 	}
-	// The picker's highlighted model is the choice, not a completion: it
-	// stays while Key and Context are edited.
-	if f.focus != n && !f.picker {
+	if f.focus != n {
 		f.completing = false
 		f.selected = -1
 	}
 	f.focus = n
 }
+
 func (r *managedREPL) selectFormProvider(f *modelForm, provider string) {
 	if provider != f.provider {
 		f.wipe()
@@ -855,7 +729,7 @@ func (r *managedREPL) selectFormProvider(f *modelForm, provider string) {
 		f.provider = provider
 		f.model.clear()
 		f.infos = map[string]llm.ModelInfo{}
-		f.suggestions, f.total = nil, 0
+		f.suggestions = nil
 		f.selected = -1
 		f.completing = false
 		f.err = ""
@@ -863,8 +737,9 @@ func (r *managedREPL) selectFormProvider(f *modelForm, provider string) {
 		r.fetchFormCatalog(f, false)
 	}
 }
+
 func (f *modelForm) route() (string, string, error) {
-	name := strings.TrimSpace(f.modelText())
+	name := strings.TrimSpace(f.model.text())
 	name = strings.TrimPrefix(name, f.provider+"/")
 	if name == "" || strings.ContainsAny(name, " \t\r\n") {
 		return "", "", fmt.Errorf("Enter a model name without spaces")
@@ -901,6 +776,25 @@ func (f *modelForm) route() (string, string, error) {
 	}
 	return f.provider + "/" + name, host, nil
 }
+
+func (f *modelForm) setupDefaults(model, host string) setupDefaults {
+	defaults := setupDefaults{
+		model:    model,
+		host:     host,
+		endpoint: strings.TrimSpace(f.endpoint.text()),
+		thinking: f.thinking,
+	}
+	if f.sandbox {
+		defaults.sandboxPreset = f.sandboxPreset
+	}
+	// An untouched theme writes nothing: the theme in effect is already
+	// what the launch resolved.
+	if f.theme != f.initialTheme {
+		defaults.theme = f.theme
+	}
+	return defaults
+}
+
 func (r *managedREPL) applyModelForm(f *modelForm) {
 	model, host, err := f.route()
 	if err != nil {
@@ -912,97 +806,43 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 		f.err = "Key overrides require a provider router"
 		return
 	}
-	if f.setup && f.keyMissing(model) {
+	if r.state != nil && r.state.agent != nil && f.keyMissing(model) {
 		f.err = "Enter a key for " + f.provider
 		r.focusModelForm(f, formFieldKey)
 		return
 	}
-	if f.setup && f.login && r.state != nil && r.state.agent != nil && r.state.agent.LoginRequired(model) {
+	if f.login && r.state != nil && r.state.agent != nil && r.state.agent.LoginRequired(model) {
 		f.err = "Sign in first: /login " + f.provider
 		r.focusModelForm(f, formFieldKey)
 		return
 	}
-	notice, err := r.applyModelHost(model, host, f.modelContextWindow(), f.contextOverride())
-	if err != nil {
+	defaults := f.setupDefaults(model, host)
+	if err := defaults.check(); err != nil {
+		f.err = "Saving defaults failed · " + err.Error()
+		return
+	}
+	if err := r.applySetupSessionSettings(model, host, f.thinking, f.modelContextWindow(), f.contextOverride()); err != nil {
 		f.err = err.Error()
 		return
 	}
-	if !f.setup {
-		r.model.appendNoticeLine(notice)
+	notices, err := defaults.write()
+	if err != nil {
+		f.err = "Saving defaults failed · " + err.Error()
+		return
 	}
 	if f.keyChanged {
-		line := ""
 		if key := strings.TrimSpace(f.key.text()); key != "" {
 			r.state.agent.SetProviderAPIKey(f.provider, key)
-			line = "key override applied to this process only · never saved · export " + llm.ProviderKeyEnvVar(f.provider) + " for later launches"
 		} else {
 			r.state.agent.ClearProviderAPIKey(f.provider)
-			line = "key override cleared for this process only · nothing saved"
-		}
-		// Setup's Key row already says the key is for this process only, and
-		// its confirmation is the saved file rather than a line per default.
-		if !f.setup {
-			r.model.appendNoticeLine(line)
-		}
-	}
-	if f.setup {
-		if err := r.saveSetup(f, model, host); err != nil {
-			f.err = "Saving defaults failed · " + err.Error()
-			return
-		}
-		r.saveSetupTheme(f)
-	}
-	r.closeModal()
-	r.prefetchSelectedModel(model, host)
-}
-
-// saveSetup makes the setup draft the launch defaults: the thinking effort
-// lands on the session like /set effort, the endpoint replaces the
-// process base URL, launch settings for later sessions follow, and the
-// configuration file records them for the next launch. The model and key
-// were applied by applyModelForm already; the key is never written.
-func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
-	thinking := f.thinking
-	ctx := newManagedReplCommandContext(r)
-	// The model may have changed under an untouched field, so what Apply
-	// saves is checked against the model it is saved for, not only what the
-	// field last cycled through.
-	if err := validateThinkingEffort(ctx, thinking); err != nil {
-		return err
-	}
-	defaults := setupDefaults{
-		model:    model,
-		host:     host,
-		endpoint: strings.TrimSpace(f.endpoint.text()),
-		thinking: thinking,
-	}
-	if f.sandbox {
-		defaults.sandboxPreset = f.sandboxPreset
-	}
-	// An untouched theme writes nothing: the theme in effect is already
-	// what the launch resolved.
-	if f.theme != f.initialTheme {
-		defaults.theme = f.theme
-	}
-	// Refused before anything is applied or written.
-	if err := defaults.check(); err != nil {
-		return err
-	}
-	if ctx.settings != nil && ctx.settings.ThinkingEffort != thinking {
-		if _, err := applyAndPersistSetting(ctx, "effort", thinking); err != nil {
-			return err
 		}
 	}
 	if r.config != nil {
 		r.config.BaseURL = defaults.endpoint
-		r.config.Launch.Model, r.config.Launch.ModelHost, r.config.Launch.ThinkingEffort = model, host, thinking
+		r.config.Launch.Model, r.config.Launch.ModelHost, r.config.Launch.ThinkingEffort = model, host, f.thinking
 	}
 	if r.state != nil {
 		r.state.metadataBaseURL = defaults.endpoint
-	}
-	notices, err := defaults.write()
-	if err != nil {
-		return err
 	}
 	for _, notice := range notices {
 		r.model.appendNoticeLine(notice)
@@ -1016,13 +856,15 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		}
 		r.model.appendNoticeLine(line)
 	}
-	return nil
+	r.saveSetupTheme(f)
+	r.closeModal()
+	r.prefetchSelectedModel(model, host)
 }
 
 // saveSetupTheme makes a theme the form chose the session's, the way /theme
-// does; saveSetup has already written it as the launch default. A name that
-// no longer loads is reported in the transcript by applyThemeByName and the
-// previous theme stays on screen.
+// does; applyModelForm has already written it as the launch default. A name
+// that no longer loads is reported in the transcript by applyThemeByName and
+// the previous theme stays on screen.
 func (r *managedREPL) saveSetupTheme(f *modelForm) {
 	if f.theme == f.initialTheme {
 		return
@@ -1039,10 +881,11 @@ func (r *managedREPL) saveSetupTheme(f *modelForm) {
 // keyMissing reports whether applying the draft would leave model without
 // the credential its provider needs: no configured key and no draft key.
 func (f *modelForm) keyMissing(model string) bool {
-	if f.keyChanged && strings.TrimSpace(f.key.text()) != "" {
-		return false
-	}
-	if f.hasKey && !f.keyChanged {
+	if f.keyChanged {
+		if strings.TrimSpace(f.key.text()) != "" || f.hasEnvKey {
+			return false
+		}
+	} else if f.hasKey {
 		return false
 	}
 	return llm.ProviderRequiresKey(model, strings.TrimSpace(f.endpoint.text()))

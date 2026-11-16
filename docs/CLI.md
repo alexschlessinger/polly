@@ -51,7 +51,7 @@ the session.
 ### API keys
 
 Keys come from `POLLYTOOL_<PROVIDER>KEY`, or from a process-only override in
-the `/model` form, and they're never saved. Polly needs a key for the selected
+`/setup`, and they're never saved. Polly needs a key for the selected
 provider, except for Ollama, for OpenAI-compatible providers on a custom
 `--baseurl`, and for providers you sign in to instead.
 The [README](../README.md#models) lists the providers and their variable names.
@@ -76,7 +76,7 @@ The sign-in is the one credential Polly keeps on disk: `~/.pollytool/auth.json`,
 readable by you alone, refreshed as its token expires, and hidden from
 sandboxed tools like the rest of Polly's runtime storage. `polly --logout codex`
 or `/logout` forgets it. Models are then `codex/gpt-5.5`, `codex/gpt-6-sol`,
-and whatever else your plan lists; the model form discovers them once you are
+and whatever else your plan lists; `/setup` discovers them once you are
 signed in. Requests identify themselves as `polly`, and your plan's usage
 limits apply as they do in the Codex app.
 
@@ -404,7 +404,7 @@ Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
-| Preferences and defaults | `/set [key [value]]`, `/model`, `/setup` |
+| Preferences and defaults | `/set [key [value]]`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context [text]`, `/compact`, `/attach <path>`, `/add-dir [path]` |
@@ -453,21 +453,20 @@ preferences.
 
 | Interface | Where changes apply |
 |---|---|
-| `/set <key> <value>` or the `/model` form's model, host, and Context fields | Current session, saved with it for resume |
-| API key override in `/model` or `/setup` | Running process, shared by its open sessions; never saved |
+| `/set <key> <value>` | Current session, saved with it for resume |
+| API key override in `/setup` | Running process, shared by its open sessions; never saved |
 | `/sandbox allow …`, `/sandbox forget …` | Workspace profile; forgetting session-only items is not saved |
 | `/theme` picker or `/theme <name>` | Current UI and the saved default for later launches |
 | `/setup` | Saved launch defaults, with the immediate effects below |
 
-`/model` takes no value: it opens the form. Use `/set model provider/model` to
-change a model by text; the form and text commands apply the same session
-preferences. A failed session save leaves those preferences unchanged.
-`/setup` also applies the model, host, context limit, and effort
-to the current session, the endpoint and key override to the process, and a
-changed theme to the UI. It saves the model, host, endpoint, effort, theme, and
-sandbox defaults to `~/.pollytool/config`; the context limit stays session-only
-and the key stays process-only. Its sandbox default affects later launches,
-not the sandbox already running.
+Use `/set model provider/model` to change only the current session's model; a
+failed session save leaves session preferences unchanged. Clicking the model in
+the status bar or running `/setup` opens the setup form, which applies the
+model, host, context limit, and effort to the current session, the endpoint and
+key override to the process, and a changed theme to the UI. It saves the model,
+host, endpoint, effort, theme, and sandbox defaults to `~/.pollytool/config`;
+the context limit stays session-only and the key stays process-only. Its sandbox
+default affects later launches, not the sandbox already running.
 
 ### Agent panel
 
@@ -670,40 +669,27 @@ lists provider prefixes and keys. `--baseurl` sets the inference and metadata
 endpoint for OpenAI-compatible providers and Ollama. Native Anthropic and Gemini
 use their own endpoints.
 
-### Model form
+### Setup form
 
-Click the model in the status bar or run `/model` with no argument to open the
-model form. It opens in the composer's place, under the rule, with the
-conversation still visible above it. The title row says what Apply changes
-(`this session`, or `launch defaults` for `/setup`) and lists the keys; an
-error that stops Apply takes the place of the scope.
-
-`/model` is a picker:
-
-- Left/Right switches providers; the tabs take clicks too.
-- Typing filters the provider's models. Up/Down highlights one; Up from the
-  first returns to the filter, and Enter then uses the name as typed.
-- The list shows each model's context window and its input and output
-  prices per million tokens, as far as the catalog gives them. A pinned
-  host shows that host's prices.
-- Key and Context share one line under the list. Tab opens them: the key
-  field is a masked override for this process only, and Context is the
-  budget in tokens. For a provider you sign in to, the key row shows the
-  account instead; `/login` signs in.
-- Enter applies from anywhere, and a second click on a model applies it.
-  Escape, Ctrl-C, or a click outside the form discards the draft.
+Click the model in the status bar or run `/setup` with no argument to open the
+setup form. It opens in the composer's place, under the rule, with the
+conversation still visible above it. The title row names its scope
+(`launch defaults`) and lists the keys; an error that stops Apply takes the
+place of the scope.
 
 `/setup` lists one row per field: provider, model, key, context, endpoint,
-effort, theme, and sandbox. Up/Down moves between them, Left/Right steps the
-provider, effort, theme, and sandbox, and Tab completes a model name and
-cycles through matches (Shift-Tab goes backward; typing starts a fresh
-cycle). Enter applies from any row. Notes on the right say where the key
-comes from, the model's prices and context window, and what a sandbox choice
-means; a sandbox change takes effect from the next launch.
+effort, theme, and sandbox. For a provider you sign in to, the key row shows
+the account instead; `/login` signs in. Up/Down moves between rows, Left/Right
+steps the provider, effort, theme, and sandbox, and Tab completes a model name
+and cycles through matches (Shift-Tab goes backward; typing starts a fresh
+cycle). Enter applies from any row, and Escape, Ctrl-C, or a click outside the
+form discards the draft. Notes on the right say where the key comes from, the
+model's prices and context window, and what a sandbox choice means; a sandbox
+change takes effect from the next launch.
 
 ### Discovery and completion
 
-The list and completions leave out models whose catalog entry rules out text
+Completions leave out models whose catalog entry rules out text
 chat with tools, and include models it says nothing about. A name you type by
 hand always works, even when discovery fails; the form says when a catalog
 can't be loaded. Catalogs are cached for an hour (keys are never stored in

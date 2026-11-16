@@ -13,12 +13,9 @@ import (
 	rw "github.com/mattn/go-runewidth"
 )
 
-// The model form docks in the composer's place under the rule, without a
+// The setup form docks in the composer's place under the rule, without a
 // border: a title row with the form's scope and its key hints, then one row
-// per field — caret, label, value, and a muted note in the right-hand
-// column. The /model form is a picker: provider tabs, a filter line, and
-// the provider's models with their context and prices, Key and Context
-// folded into one footer line until Tab opens them.
+// per field — caret, label, value, and a muted note in the right-hand column.
 
 const (
 	formPad           = 1  // cells of padding at each side
@@ -27,15 +24,12 @@ const (
 	formNoteGap       = 3  // least space between a value and its note
 	formMinNote       = 8  // a note with less room is dropped, not stubbed
 	formMinTranscript = 3  // transcript rows a docked form leaves above it
-	formListRows      = 8  // models the picker lists at once
-	formContextW      = 9  // the picker's context column
-	formPriceW        = 10 // each of the picker's price columns
 )
 
 // formValueX is the cell where field values start.
 const formValueX = formPad + formCaretW + formLabelW
 
-// dockedFormRows is how many rows the open model form takes in the
+// dockedFormRows is how many rows the open setup form takes in the
 // composer's place in a w×h terminal, 0 when none is open. Caller holds m.mu.
 func (m *replModel) dockedFormRows(w, h, statusRows int) int {
 	if m.modal == nil || m.modal.modelForm == nil {
@@ -53,10 +47,8 @@ func dockedFormMaxRows(h, statusRows int) int {
 type formHitKind int
 
 const (
-	hitField    formHitKind = iota // focus field n
-	hitCycle                       // step the focused field back (n < 0) or on
-	hitProvider                    // switch to validModelProviders[n]
-	hitPick                        // highlight suggestions[n]
+	hitField formHitKind = iota // focus field n
+	hitCycle                    // step the focused field back (n < 0) or on
 	hitApply
 )
 
@@ -167,23 +159,13 @@ func (f *modelForm) text(maxRows, width int) string {
 		f.modal.visible = 0
 	}
 	f.syncContextLimit()
-	var rows []string
-	if f.picker {
-		rows = f.pickerRows(maxRows, width)
-	} else {
-		rows = f.setupRows(maxRows, width)
-	}
-	return strings.Join(rows, "\n")
+	return strings.Join(f.setupRows(maxRows, width), "\n")
 }
 
 // titleRow names the form and what Apply changes, or the error that stopped
 // it, with the key hints on the right; "apply" is a link.
 func (f *modelForm) titleRow(width, y int) string {
-	title, scope := "Model", "this session"
-	if f.setup {
-		title, scope = "Setup", "launch defaults"
-	}
-	left := []formSpan{{title, "", "bold"}, {"  " + scope, "muted", ""}}
+	left := []formSpan{{"Setup", "", "bold"}, {"  launch defaults", "muted", ""}}
 	if f.err != "" {
 		left[1] = formSpan{"  " + f.err, "err", ""}
 	}
@@ -206,10 +188,6 @@ func (f *modelForm) titleRow(width, y int) string {
 func (f *modelForm) keyHints() [][2]string {
 	hints := [][2]string{{"↑↓", "move"}}
 	switch {
-	case f.picker && f.focus == formFieldModel:
-		hints = [][2]string{{"←→", "provider"}, {"↑↓", "choose"}, {"Tab", "key"}}
-	case f.picker:
-		hints = append(hints, [2]string{"Tab", "next"})
 	case f.focus == formFieldModel:
 		hints = append(hints, [2]string{"Tab", "complete"})
 	case f.cycles(f.focus):
@@ -263,7 +241,7 @@ func (f *modelForm) cycles(n int) bool {
 	return false
 }
 
-// setupRows is the setup form: the title, then a row per field. A short
+// setupRows lays out the form: the title, then a row per field. A short
 // terminal drops the blank rows first, then shows the fields around focus.
 func (f *modelForm) setupRows(maxRows, width int) []string {
 	fields := []int{formFieldProvider, formFieldModel, formFieldKey, formFieldContext, formFieldEndpoint, formFieldThinking, formFieldTheme, formFieldSandbox}
@@ -433,225 +411,4 @@ func (f *modelForm) contextField(focused bool, width int) ([]formSpan, []formSpa
 		note = mutedNote("of " + humanizeTokens(window))
 	}
 	return value, note
-}
-
-// pickerRows is the /model picker. Its height holds still while the list
-// filters and Tab opens Key and Context; a short terminal drops the blank
-// rows, then lists fewer models.
-func (f *modelForm) pickerRows(maxRows, width int) []string {
-	expanded := f.focus != formFieldModel
-	roomy := maxRows >= 8+formListRows
-	footer := 1
-	if roomy || expanded {
-		footer = 2
-	}
-	list := formListRows
-	if !roomy {
-		list = max(1, maxRows-4-footer)
-	}
-	rows := []string{f.titleRow(width, 0)}
-	if roomy {
-		rows = append(rows, "")
-	}
-	rows = append(rows, f.providerTabs(width, len(rows)))
-	rows = append(rows, f.filterRow(width, len(rows)))
-	rows = append(rows, f.listRows(width, len(rows), list)...)
-	if expanded {
-		rows = append(rows, f.fieldRow(width, len(rows), formFieldKey))
-		rows = append(rows, f.fieldRow(width, len(rows), formFieldContext))
-	} else {
-		if roomy {
-			rows = append(rows, "")
-		}
-		rows = append(rows, f.footerRow(width, len(rows)))
-	}
-	if roomy {
-		rows = append(rows, "")
-	}
-	return rows[:min(len(rows), max(1, maxRows))]
-}
-
-// providerTabs lists the providers, the current one highlighted. When they
-// do not all fit, the row starts late enough to show the current one.
-func (f *modelForm) providerTabs(width, y int) string {
-	const gap = 2
-	inner := max(1, width-2*formPad-formCaretW)
-	current := max(0, slices.Index(validModelProviders, f.provider))
-	span := func(from, to int) int {
-		w := 0
-		for i := from; i <= to; i++ {
-			w += rw.StringWidth(validModelProviders[i]) + gap
-		}
-		return w
-	}
-	start := 0
-	for start < current && span(start, current)+2 > inner {
-		start++
-	}
-	spans := []formSpan{{"  ", "", ""}}
-	x := formPad + formCaretW
-	if start > 0 {
-		spans = append(spans, formSpan{"‹ ", "muted", ""})
-		x += 2
-	}
-	used := x - formPad
-	for i := start; i < len(validModelProviders); i++ {
-		name := validModelProviders[i]
-		w := rw.StringWidth(name)
-		if used+w > inner+formCaretW {
-			spans = append(spans, formSpan{"›", "muted", ""})
-			break
-		}
-		tab := formSpan{name, "muted", ""}
-		if i == current {
-			tab = formSpan{name, "accent", "bold"}
-		}
-		spans = append(spans, tab, formSpan{strings.Repeat(" ", gap), "", ""})
-		f.hit(hitProvider, i, x, y, x+w)
-		x += w + gap
-		used += w + gap
-	}
-	row, _ := formLine(width, spans, nil)
-	return row
-}
-
-// filterRow is the picker's model field. It carries the caret while no
-// model is highlighted, when Enter applies the name as typed.
-func (f *modelForm) filterRow(width, y int) string {
-	focused := f.focus == formFieldModel
-	caret := formSpan{"  ", "", ""}
-	if focused && f.selected < 0 {
-		caret = formSpan{"› ", "accent", "bold"}
-	}
-	value := []formSpan{{f.model.text(), "", ""}}
-	if focused {
-		value = []formSpan{{formEditorText(&f.model, false, max(1, width-2*formPad-formCaretW)), "", ""}}
-	}
-	if f.model.text() == "" {
-		value = append(value, formSpan{"type to filter", "muted", ""})
-	}
-	// The note is the catalog's status, or how many models the filter kept.
-	// With no models to list, the list's place says the status instead.
-	note := f.status
-	if f.total == 0 {
-		note = ""
-	} else if note == "" {
-		note = fmt.Sprintf("%d models", f.total)
-		if strings.TrimSpace(f.model.text()) != "" {
-			note = fmt.Sprintf("%d of %d", len(f.suggestions), f.total)
-		}
-	}
-	row, _ := formLine(width, append([]formSpan{caret}, value...), mutedNote(note))
-	f.hit(hitField, formFieldModel, 0, y, width)
-	return row
-}
-
-// listRows is the column header and n rows of models scrolled to keep the
-// highlighted one in view; rows past the end stay blank, so the form's
-// height holds while the filter narrows the list.
-func (f *modelForm) listRows(width, y, n int) []string {
-	inner := max(1, width-2*formPad)
-	// A column shows when some listed model fills it and the row has room.
-	type facts struct{ context, in, out string }
-	known := make([]facts, len(f.suggestions))
-	var anyContext, anyPrice bool
-	for i, name := range f.suggestions {
-		if info, host, ok := f.suggestionInfo(name); ok {
-			if window := info.EffectiveCapabilities(host).ContextWindow(); window > 0 {
-				known[i].context = humanizeTokens(window)
-			}
-			known[i].in, known[i].out, _ = routeRates(info, host)
-		}
-		anyContext = anyContext || known[i].context != ""
-		anyPrice = anyPrice || known[i].in != "" || known[i].out != ""
-	}
-	showContext, showPrices := anyContext && inner >= 40, anyPrice && inner >= 64
-	columns := func(context, in, out string, role string) []formSpan {
-		var spans []formSpan
-		if showContext {
-			spans = append(spans, formSpan{rw.FillLeft(context, formContextW), role, ""})
-		}
-		if showPrices {
-			spans = append(spans, formSpan{rw.FillLeft(in, formPriceW), role, ""}, formSpan{rw.FillLeft(out, formPriceW), role, ""})
-		}
-		return spans
-	}
-	rows := make([]string, 0, n+1)
-	if len(f.suggestions) == 0 {
-		// With no models at all, the status says why. A filter that matches
-		// none of the provider's models leaves the status on the filter row.
-		message := cmp.Or(f.status, "no models listed")
-		if f.total > 0 || strings.TrimSpace(f.model.text()) != "" && f.status == "" {
-			message = "no model matches · Enter uses the name as typed"
-		}
-		row, _ := formLine(width, []formSpan{{"  ", "", ""}, {message, "muted", ""}}, nil)
-		rows = append(rows, "", row)
-		for len(rows) < n+1 {
-			rows = append(rows, "")
-		}
-		return rows
-	}
-	header, _ := formLine(width, nil, columns("context", "in /1M", "out /1M", "muted"))
-	if !showContext && !showPrices {
-		header = ""
-	}
-	rows = append(rows, header)
-	f.listTop = max(0, min(f.listTop, len(f.suggestions)-n))
-	if f.selected >= 0 {
-		f.listTop = min(max(f.listTop, f.selected-n+1), f.selected)
-	}
-	nameW := inner - formCaretW - spansWidth(columns("", "", "", "")) - formNoteGap
-	for i := f.listTop; i < f.listTop+n; i++ {
-		if i >= len(f.suggestions) {
-			rows = append(rows, "")
-			continue
-		}
-		name := f.suggestions[i]
-		caret, label := formSpan{"  ", "", ""}, formSpan{rw.Truncate(metadataDisplayText(name, false), max(1, nameW), "…"), "", ""}
-		// The chosen model stays marked while Key and Context have focus,
-		// but the caret goes with focus.
-		if i == f.selected && f.focus == formFieldModel {
-			caret = formSpan{"› ", "accent", "bold"}
-			label.role, label.mod = "accent", "bold"
-		} else if i == f.selected {
-			label.role = "accent"
-		}
-		row, _ := formLine(width, []formSpan{caret, label}, columns(known[i].context, known[i].in, known[i].out, ""))
-		rows = append(rows, row)
-		f.hit(hitPick, i, 0, y+len(rows)-1, width)
-	}
-	return rows
-}
-
-// suggestionInfo is the catalog entry behind a listed name, and the host a
-// "model:host" route pins.
-func (f *modelForm) suggestionInfo(name string) (llm.ModelInfo, string, bool) {
-	if info, ok := f.infos[name]; ok {
-		return info, "", true
-	}
-	if i := strings.LastIndex(name, ":"); i > 0 {
-		if info, ok := f.infos[name[:i]]; ok {
-			return info, name[i+1:], true
-		}
-	}
-	return llm.ModelInfo{}, "", false
-}
-
-// footerRow folds Key and Context into one line while the list has focus.
-func (f *modelForm) footerRow(width, y int) string {
-	label, key, keyNote := f.keyField(false, width)
-	context, contextNote := f.contextField(false, width)
-	spans := []formSpan{{"  ", "", ""}, {label + " ", "muted", ""}}
-	spans = append(spans, key...)
-	if f.login && !f.signedIn {
-		spans = append(spans, formSpan{" " + keyNote[0].text, "muted", ""})
-	}
-	spans = append(spans, formSpan{" · Context ", "muted", ""})
-	spans = append(spans, context...)
-	if len(contextNote) > 0 {
-		spans = append(spans, formSpan{" " + contextNote[0].text, "muted", ""})
-	}
-	row, _ := formLine(width, spans, nil)
-	f.hit(hitField, formFieldKey, 0, y, width)
-	return row
 }

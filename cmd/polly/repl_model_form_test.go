@@ -23,6 +23,9 @@ func formKey(r *managedREPL, key string) {
 }
 func newFormREPL(t *testing.T) (*managedREPL, *llm.MultiPass) {
 	t.Helper()
+	if os.Getenv("HOME") == testMainHome {
+		t.Setenv("HOME", t.TempDir())
+	}
 	mp := llm.NewMultiPass(map[string]string{"openai": "environment-key"})
 	a := llm.NewAgent(mp, nil, llm.AgentConfig{})
 	t.Cleanup(func() { a.Close() })
@@ -30,7 +33,7 @@ func newFormREPL(t *testing.T) (*managedREPL, *llm.MultiPass) {
 	r.work.close()
 	r.work = nil
 	r.state = &conversationState{agent: a, settings: Settings{Model: "openai/current"}}
-	r.openModelPicker()
+	r.openSetupForm()
 	return r, mp
 }
 func TestModelFormConfirmedTextToolsSuggestions(t *testing.T) {
@@ -88,7 +91,10 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	if f.key.text() != "" || mp.APIKeySource("openrouter") != "" {
 		t.Fatal("cancel retained/installed secret")
 	}
-	r.openModelPicker()
+	if after, err := os.ReadFile(path); err != nil || string(after) != launchConfig {
+		t.Fatalf("cancel rewrote launch defaults: %q, %v", after, err)
+	}
+	r.openSetupForm()
 	f = r.model.modal.modelForm
 	f.provider = "openrouter"
 	f.model.setText("org/manual:host")
@@ -106,31 +112,32 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 		t.Fatalf("session metadata: %+v %v", md, err)
 	}
 	got := strings.Join(transcriptTexts(r.model), "\n")
-	for _, want := range []string{"key override applied to this process only", "never saved", "export POLLYTOOL_OPENROUTERKEY for later launches"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("confirmation lacks %q: %s", want, got)
-		}
+	if !strings.Contains(got, "defaults saved to "+userConfigDisplayPath) {
+		t.Fatalf("confirmation lacks saved file: %s", got)
 	}
-	if strings.Contains(fmt.Sprintf("%+v", md), "draft-secret") || strings.Contains(r.model.ed.text(), "draft-secret") || strings.Contains(got, "draft-secret") {
+	savedConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", md), "draft-secret") || strings.Contains(r.model.ed.text(), "draft-secret") || strings.Contains(got, "draft-secret") || strings.Contains(string(savedConfig), "draft-secret") {
 		t.Fatal("key escaped form")
 	}
-	r.openModelPicker()
+	r.openSetupForm()
 	f = r.model.modal.modelForm
-	if f.model.text() != "" || f.modelText() != "org/manual:host" {
-		t.Fatal("pin not restored into the current model")
+	if f.model.text() != "org/manual:host" {
+		t.Fatalf("pin not restored into the current model: %q", f.model.text())
 	}
 	f.model.setText("org/next")
 	formKey(r, "<Enter>")
 	if r.state.settings.ModelHost != "" {
 		t.Fatal("old host retained")
 	}
+	mp.SetAPIKey("ollama", "old-override")
+	r.state.settings.Model = "ollama/llama3"
 	r.openKeyManager()
-	f = r.model.modal.modelForm
 	formKey(r, "<C-u>")
-	formKey(r, "<Down>")
 	formKey(r, "<Enter>")
-	formKey(r, "<Enter>")
-	if mp.APIKeySource("openrouter") != "" {
+	if mp.APIKeySource("ollama") != "" {
 		t.Fatal("clear did not remove override")
 	}
 	mp.SetAPIKey("openai", "old-override")
@@ -138,57 +145,34 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	r.openKeyManager()
 	formKey(r, "<C-u>")
 	formKey(r, "<Enter>")
-	formKey(r, "<Enter>")
-	formKey(r, "<Enter>")
 	if mp.APIKeySource("openai") != "environment" {
 		t.Fatal("clear did not restore environment")
 	}
-	got = strings.Join(transcriptTexts(r.model), "\n")
-	if !strings.Contains(got, "key override cleared for this process only · nothing saved") {
-		t.Fatalf("clear confirmation omits scope: %s", got)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || string(after) != launchConfig {
-		t.Fatalf("/model changed launch defaults: %q, %v", after, err)
-	}
 }
-func TestModelFormPickerKeysProvidersListAndPaste(t *testing.T) {
+func TestModelFormProviderRouteAndPaste(t *testing.T) {
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
-	formKey(r, "<Up>")
 	for range len(validModelProviders) {
 		if f.provider == "huggingface" {
 			break
 		}
 		formKey(r, "<Right>")
 	}
-	if f.provider != "huggingface" || f.focus != formFieldModel || r.state.settings.Model != "openai/current" {
+	if f.provider != "huggingface" || f.focus != formFieldProvider || r.state.settings.Model != "openai/current" {
 		t.Fatal("provider selection applied early")
 	}
 	yes := true
 	caps := llm.ModelCapabilities{Chat: &yes, Tools: &yes}
 	f.infos = map[string]llm.ModelInfo{"org/model": {ID: "org/model", Routed: true, ModelCapabilities: caps, Endpoints: []llm.ModelEndpointInfo{{ID: "host", ModelCapabilities: caps}}}}
+	formKey(r, "<Down>")
 	f.model.setText("org/")
 	f.updateSuggestions()
-	if f.model.text() != "org/" || f.modelText() != "org/model" {
-		t.Fatalf("the filter should highlight its first match: %q", f.modelText())
-	}
-	formKey(r, "<Down>")
-	if f.modelText() != "org/model:host" {
-		t.Fatal("Down did not move to the host route")
-	}
-	formKey(r, "<Down>")
-	if f.selected != 1 {
-		t.Fatal("Down moved past the last model")
-	}
-	formKey(r, "<Up>")
-	formKey(r, "<Up>")
-	if f.selected != -1 || f.modelText() != "org/" {
-		t.Fatal("Up from the first model should return to the filter as typed")
-	}
-	formKey(r, "<Down>")
-	formKey(r, "<Down>")
 	formKey(r, "<Tab>")
+	formKey(r, "<Tab>")
+	if f.model.text() != "org/model:host" {
+		t.Fatalf("Tab did not reach the host route: %q", f.model.text())
+	}
+	formKey(r, "<Down>")
 	formKey(r, pasteStartID)
 	for _, ch := range "secret" {
 		formKey(r, string(ch))
@@ -198,14 +182,6 @@ func TestModelFormPickerKeysProvidersListAndPaste(t *testing.T) {
 	formKey(r, pasteEndID)
 	if f.focus != formFieldKey || f.key.text() != "secret" {
 		t.Fatal("paste triggered form actions")
-	}
-	formKey(r, "<Tab>")
-	if f.focus != formFieldContext {
-		t.Fatal("Tab should walk from Key to Context")
-	}
-	formKey(r, "<Tab>")
-	if f.focus != formFieldModel || f.modelText() != "org/model:host" {
-		t.Fatal("Tab should return to the list with the highlight kept")
 	}
 	formKey(r, "<Enter>")
 	if r.state.settings.Model != "huggingface/org/model:host" || r.state.settings.ModelHost != "" {
@@ -302,7 +278,7 @@ func TestModelFormDisregardsLateDiscovery(t *testing.T) {
 			r.work = newREPLWork()
 			defer r.work.close()
 			r.uiTasks = make(chan func(), 4)
-			r.openModelPicker()
+			r.openSetupForm()
 			f := r.model.modal.modelForm
 			<-entered
 			switch change {
@@ -336,7 +312,9 @@ func TestModelFormDiscoveryUsesDraftKeyWithoutInstalling(t *testing.T) {
 	}))
 	defer server.Close()
 	r, mp := newFormREPL(t)
+	r.closeModal()
 	r.config.BaseURL = server.URL
+	r.openSetupForm()
 	r.work = newREPLWork()
 	defer r.work.close()
 	r.uiTasks = make(chan func(), 8)
@@ -395,8 +373,9 @@ func TestModelFormSavedRouteSurvivesCatalogChanges(t *testing.T) {
 			t.Run(route.model+":"+route.host+"/"+state, func(t *testing.T) {
 				r, _ := newFormREPL(t)
 				r.state.settings.Model, r.state.settings.ModelHost = "openrouter/"+route.model, route.host
-				r.openModelForm(3)
+				r.openSetupFormAt(formFieldContext)
 				f := r.model.modal.modelForm
+				f.hasKey = true
 				switch state {
 				case "loading":
 					f.status = "Loading suggestions…"
@@ -406,7 +385,7 @@ func TestModelFormSavedRouteSurvivesCatalogChanges(t *testing.T) {
 					// Even a conflicting exact catalog ID cannot reinterpret a saved pin.
 					f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: f.model.text()}}})
 				case "key-edit":
-					f.focus = 2
+					f.focus = formFieldKey
 					formKey(r, "x")
 					if !f.keyChanged || len(f.infos) != 0 {
 						t.Fatal("credential edit did not clear discovery")
@@ -435,14 +414,21 @@ func TestModelFormDiscoveredSelectionSurvivesRefreshAndKeyEdit(t *testing.T) {
 			r, _ := newFormREPL(t)
 			f := r.model.modal.modelForm
 			f.provider = "openrouter"
-			f.infos = map[string]llm.ModelInfo{"org/model:variant": {ID: "org/model:variant", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}}
-			f.suggestions = []string{"org/model:variant:host"}
-			f.selected = -1
-			formKey(r, "<Down>")
+			f.hasKey = true
+			f.focus = formFieldModel
+			f.model.clear()
+			yes := true
+			caps := llm.ModelCapabilities{Chat: &yes, Tools: &yes}
+			f.infos = map[string]llm.ModelInfo{"org/model:variant": {ID: "org/model:variant", Routed: true, ModelCapabilities: caps, Endpoints: []llm.ModelEndpointInfo{{ID: "host", ModelCapabilities: caps}}}}
+			formKey(r, "<Tab>")
+			formKey(r, "<Tab>")
+			if f.model.text() != "org/model:variant:host" {
+				t.Fatalf("Tab completion = %q", f.model.text())
+			}
 			if change == "refresh" {
 				f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "org/model:variant:host"}}})
 			} else {
-				f.focus = 2
+				f.focus = formFieldKey
 				formKey(r, "x")
 			}
 			r.applyModelForm(f)
@@ -483,38 +469,25 @@ func formClick(t *testing.T, r *managedREPL, f *modelForm, kind formHitKind, n i
 }
 
 func TestModelFormMouseTargets(t *testing.T) {
-	r, _ := newFormREPL(t)
+	r, mp := newFormREPL(t)
+	mp.SetAPIKey(validModelProviders[1], "second-key")
 	f := r.model.modal.modelForm
-	text := plainStyledText(f.modal.text(20, 60))
-	f.modal.bounds = image.Rect(0, 10, 60, 30)
-	if !strings.Contains(text, "openai") || !strings.Contains(text, "anthropic") {
-		t.Fatalf("picker should list the providers as tabs:\n%s", text)
-	}
-	formClick(t, r, f, hitProvider, 1)
-	if f.provider != validModelProviders[1] || f.focus != formFieldModel {
-		t.Fatal("mouse provider selection failed")
-	}
-	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
-	f.updateSuggestions()
-	f.modal.text(20, 60)
-	formClick(t, r, f, hitPick, 1)
-	if f.selected != 1 || r.model.modal == nil {
-		t.Fatal("the first click on a model should highlight it")
-	}
-	f.modal.text(20, 60)
-	formClick(t, r, f, hitPick, 1)
-	if r.model.modal != nil || r.state.settings.Model != validModelProviders[1]+"/second" {
-		t.Fatalf("a second click should apply the model: %q", r.state.settings.Model)
-	}
-
-	r.openModelPicker()
-	f = r.model.modal.modelForm
-	f.model.setText("manual")
 	f.modal.text(20, 80)
 	f.modal.bounds = image.Rect(0, 10, 80, 30)
+	formClick(t, r, f, hitCycle, 1)
+	if f.provider != validModelProviders[1] || f.focus != formFieldProvider {
+		t.Fatalf("mouse provider cycle failed: provider=%q focus=%d", f.provider, f.focus)
+	}
+	f.modal.text(20, 80)
+	formClick(t, r, f, hitField, formFieldModel)
+	if f.focus != formFieldModel {
+		t.Fatalf("mouse field click focus=%d", f.focus)
+	}
+	f.model.setText("manual")
+	f.modal.text(20, 80)
 	formClick(t, r, f, hitApply, 0)
-	if r.model.modal != nil || !strings.HasSuffix(r.state.settings.Model, "/manual") {
-		t.Fatal("mouse Apply failed")
+	if r.model.modal != nil || r.state.settings.Model != validModelProviders[1]+"/manual" {
+		t.Fatalf("mouse Apply failed: modal=%v model=%q err=%q", r.model.modal != nil, r.state.settings.Model, f.err)
 	}
 }
 
@@ -586,6 +559,7 @@ func TestModelFormCatalogRefreshKeepsLoadedHostCompletions(t *testing.T) {
 }
 
 func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	r.state = &conversationState{settings: Settings{Model: "openai/test-model"}}
@@ -605,8 +579,8 @@ func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
 		t.Fatal("model hover did not underline its target")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", point))
-	if m.modal == nil || m.modal.modelForm == nil || m.modal.modelForm.modelText() != "test-model" {
-		t.Fatal("model click did not open the current model form")
+	if m.modal == nil || m.modal.modelForm == nil || m.modal.title != "Setup" || m.modal.modelForm.model.text() != "test-model" {
+		t.Fatal("model click did not open the setup form")
 	}
 	if m.ed.text() != "unfinished prompt" || !m.busy {
 		t.Fatal("model click disturbed the conversation")
@@ -666,7 +640,7 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	r.closeModal()
 	r.openSetupForm()
 	f := r.model.modal.modelForm
-	if !f.setup || f.modal.title != "Setup" || f.lastField() != formFieldSandbox {
+	if f.modal.title != "Setup" {
 		t.Fatalf("setup form state: %+v", f)
 	}
 	text := plainStyledText(f.modal.text(30, 76))
@@ -1024,12 +998,21 @@ func TestSetupFormOutranksTheFormerEffortSpelling(t *testing.T) {
 	}
 }
 
-func TestSetupCommandOpensSetupForm(t *testing.T) {
+func TestSetupAndCompatibilityCommandsOpenSetupForm(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	r, _ := newFormREPL(t)
-	r.closeModal()
-	if handled, quit := r.runCommand("/setup"); !handled || quit || r.model.modal == nil || !r.model.modal.modelForm.setup {
-		t.Fatal("/setup should open the setup form")
+	for _, tc := range []struct {
+		cmd   string
+		focus int
+	}{
+		{"/setup", formFieldProvider},
+		{"/model", formFieldProvider},
+		{"/keys", formFieldKey},
+	} {
+		r.closeModal()
+		if handled, quit := r.runCommand(tc.cmd); !handled || quit || r.model.modal == nil || r.model.modal.title != "Setup" || r.model.modal.modelForm.focus != tc.focus {
+			t.Fatalf("%s: modal=%#v", tc.cmd, r.model.modal)
+		}
 	}
 }
 
@@ -1078,13 +1061,14 @@ func screenRow(screen interface {
 // The form takes the composer's rows under the rule, the status bar stays
 // below it, and the transcript shrinks to the rows left above.
 func TestModelFormDocksInTheComposersPlace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	r.state = &conversationState{settings: Settings{Model: "openai/current"}}
 	r.model.status.modelName = r.state.settings.Model
 	r.model.ed.setText("draft")
 	closed := r.frameLayoutFor(100, 32)
-	r.openModelPicker()
+	r.openSetupForm()
 	f := r.model.modal.modelForm
 	l := r.frameLayoutFor(100, 32)
 	rows := strings.Count(f.text(dockedFormMaxRows(32, l.statusRows), 100), "\n") + 1
@@ -1092,7 +1076,7 @@ func TestModelFormDocksInTheComposersPlace(t *testing.T) {
 		t.Fatalf("layout with the form: %+v (form %d rows, closed %+v)", l, rows, closed)
 	}
 	r.render()
-	if got := screenRow(screen, l.composerRow(0)); !strings.HasPrefix(got, " Model  this session") {
+	if got := screenRow(screen, l.composerRow(0)); !strings.HasPrefix(got, " Setup  launch defaults") {
 		t.Fatalf("the form's first row is not under the rule: %q", got)
 	}
 	if got := screenRow(screen, l.composerRow(0)-1); !strings.Contains(got, "─") {
@@ -1111,46 +1095,27 @@ func TestModelFormDocksInTheComposersPlace(t *testing.T) {
 	}
 }
 
-// The picker says the catalog's status in one place: where the models would
-// be while there are none to list, and on the filter row once there are.
-func TestModelFormPickerSaysCatalogStatusOnce(t *testing.T) {
+func TestSetupFormShowsCatalogStatusInModelNote(t *testing.T) {
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
 	render := func() string { return plainStyledText(f.text(24, 100)) }
-	for _, status := range []string{"Loading suggestions…", "catalog unavailable · metadata request failed"} {
+	for _, status := range []string{"Loading suggestions…", "catalog unavailable · metadata request failed", "Partial catalog"} {
 		f.status = status
 		if text := render(); strings.Count(text, status) != 1 {
-			t.Fatalf("%q with no models to list:\n%s", status, text)
+			t.Fatalf("%q in setup form:\n%s", status, text)
 		}
 	}
 	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
-	f.status = "Partial catalog"
 	f.updateSuggestions()
-	if text := render(); strings.Count(text, "Partial catalog") != 1 || !strings.Contains(text, "second") {
-		t.Fatalf("status beside the listed models:\n%s", text)
-	}
-	// A filter that matches none of them leaves the status on its row.
-	f.model.setText("absent")
-	f.updateSuggestions()
-	if text := render(); strings.Count(text, "Partial catalog") != 1 || !strings.Contains(text, "no model matches") {
-		t.Fatalf("status beside a filter that matches nothing:\n%s", text)
-	}
-	// The count goes with the list when the provider or the key changes.
-	f.status = ""
-	f.model.clear()
-	f.updateSuggestions()
-	if text := render(); !strings.Contains(text, "2 models") {
-		t.Fatalf("no count beside the list:\n%s", text)
-	}
 	formKey(r, "<Right>")
-	if text := render(); f.total != 0 || strings.Contains(text, "2 models") {
-		t.Fatalf("the previous provider's count outlived its list:\n%s", text)
+	if len(f.suggestions) != 0 {
+		t.Fatalf("switching providers retained old suggestions: %v", f.suggestions)
 	}
 	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
 	f.updateSuggestions()
-	formKey(r, "<Tab>")
+	r.focusModelForm(f, formFieldKey)
 	formKey(r, "x")
-	if text := render(); !f.keyChanged || f.total != 0 || strings.Contains(text, "of 2") {
-		t.Fatalf("the old key's count outlived its list:\n%s", text)
+	if !f.keyChanged || len(f.suggestions) != 0 {
+		t.Fatalf("editing key retained old suggestions: %v", f.suggestions)
 	}
 }

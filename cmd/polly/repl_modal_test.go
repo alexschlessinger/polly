@@ -31,14 +31,15 @@ func TestModalInputPlaceholderRendersAsStyledText(t *testing.T) {
 	}
 }
 
-func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
+func TestModelCommandRoutesThroughSetup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := &Config{Launch: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
 	r := newManagedREPL(cfg, "ctx", 0, 0)
 	r.state = &conversationState{settings: cfg.Launch}
 	settings := &r.state.settings
 	r.model.status.recordContextUsage(50_000, 156_000)
 
-	if handled, quit := r.runCommand("/model"); !handled || quit || r.model.modal == nil {
+	if handled, quit := r.runCommand("/model"); !handled || quit || r.model.modal == nil || r.model.modal.title != "Setup" {
 		t.Fatalf("/model handled=%v quit=%v modal=%#v", handled, quit, r.model.modal)
 	}
 	f := r.model.modal.modelForm
@@ -49,8 +50,8 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	if settings.Model != "openai/gpt-5.4" || r.model.status.modelName != settings.Model {
 		t.Fatalf("selected model settings=%q status=%q", settings.Model, r.model.status.modelName)
 	}
-	if cfg.Launch.Model != "anthropic/claude-sonnet-4-6" {
-		t.Fatalf("picker rewrote the launch settings: %q", cfg.Launch.Model)
+	if cfg.Launch.Model != "openai/gpt-5.4" {
+		t.Fatalf("setup did not update launch settings: %q", cfg.Launch.Model)
 	}
 	// The conversation is as large as it was, though only estimated in the
 	// new model's count, against a budget no metadata gives yet.
@@ -58,12 +59,12 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 		t.Fatalf("model switch context usage = %d/%d (estimated %v, budget %+v)", s.contextUsed, s.contextLimit, s.contextEstimated, s.contextBudget)
 	}
 	if got := r.model.status.recentModels; len(got) == 0 || got[0] != "openai/gpt-5.4" {
-		t.Fatalf("recent models after picker = %v, want the selection first", got)
+		t.Fatalf("recent models after setup = %v, want the selection first", got)
 	}
 }
 
 // Every model-change entry point shares one apply path, so /set model must
-// feed the picker's recent list exactly as a picker selection does.
+// feed the recent list without touching launch defaults.
 func TestSetModelRemembersRecentModel(t *testing.T) {
 	cfg := &Config{Launch: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
 	r := newManagedREPL(cfg, "ctx", 0, 0)
@@ -76,6 +77,9 @@ func TestSetModelRemembersRecentModel(t *testing.T) {
 	if settings.Model != "openai/gpt-5.4" || r.model.status.modelName != settings.Model {
 		t.Fatalf("set model settings=%q status=%q", settings.Model, r.model.status.modelName)
 	}
+	if cfg.Launch.Model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("/set model rewrote launch settings: %q", cfg.Launch.Model)
+	}
 	if got := r.model.status.recentModels; len(got) != 2 || got[0] != "openai/gpt-5.4" || got[1] != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("recent models after /set model = %v, want the new model ahead of the launch model", got)
 	}
@@ -86,7 +90,9 @@ func TestSetModelRemembersRecentModel(t *testing.T) {
 }
 
 func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	agent := llm.NewAgent(llm.NewMultiPass(map[string]string{"openai": "environment-key"}), nil, llm.AgentConfig{})
+	t.Cleanup(func() { agent.Close() })
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.work.close()
 	r.work = nil
