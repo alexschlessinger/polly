@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 func setRecord(kind, id, payload string) func(*CoordinationState) error {
@@ -84,7 +85,12 @@ func TestCoordinationReadsReuseTheFamilyInMemory(t *testing.T) {
 	}
 }
 
-func TestCoordinationSeesAnotherConnectionsCommit(t *testing.T) {
+// The handle that holds a family's root session drives the family: it
+// answers for the records from memory. A member driven through a second
+// handle reads the records as of the driver's last checkpoint and cannot
+// change them while the driver holds the root; once the root is free the
+// database is the family again, for whoever asks.
+func TestOneStoreHandleDrivesAFamily(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "polly.db")
 	open := func() *SQLiteStore {
@@ -100,15 +106,10 @@ func TestCoordinationSeesAnotherConnectionsCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
 	coord := parent.(CoordinationSession)
 	if err = coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readRecord(t, coord, "task", "a"); got != `{"n":1}` {
-		t.Fatalf("read = %q", got)
-	}
-	// A member driven through a second connection writes the same family.
 	child, err := there.Acquire(ctx, "child", AcquireOptions{Parent: "parent"})
 	if err != nil {
 		t.Fatal(err)
@@ -118,35 +119,42 @@ func TestCoordinationSeesAnotherConnectionsCommit(t *testing.T) {
 	if got := readRecord(t, member, "task", "a"); got != `{"n":1}` {
 		t.Fatalf("member read = %q", got)
 	}
-	for n := 2; n <= 4; n++ {
-		want := fmt.Sprintf(`{"n":%d}`, n)
-		writer, reader := member, coord
-		if n%2 == 1 {
-			writer, reader = coord, member
-		}
-		if err = writer.UpdateCoordination(ctx, setRecord("task", "a", want)); err != nil {
-			t.Fatal(err)
-		}
-		// A store answers from memory for a moment before it asks the
-		// database again, which is when it notices the other connection.
-		time.Sleep(familyCheckEvery + 10*time.Millisecond)
-		if got := readRecord(t, reader, "task", "a"); got != want {
-			t.Fatalf("read after the other connection's commit = %q, want %q", got, want)
-		}
-		view, err := here.ReadCoordinationView(ctx, coord.ViewID())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := string(view.Records["task"]["a"]); got != want {
-			t.Fatalf("view after commit = %q, want %q", got, want)
-		}
-	}
-	// An update builds on the other connection's records, not on memory.
-	if err = coord.UpdateCoordination(ctx, setRecord("task", "b", `{}`)); err != nil {
+	// The driver's update is in its memory and its log, and reaches the
+	// member with the checkpoint.
+	updateFrom(t, coord, changeRecord("task", "a", `{"n":2}`))
+	if err = here.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := readRecord(t, member, "task", "a"); got != `{"n":4}` {
-		t.Fatalf("an update from stale memory overwrote a record: %q", got)
+	if got := readRecord(t, member, "task", "a"); got != `{"n":2}` {
+		t.Fatalf("member read after the driver's checkpoint = %q", got)
+	}
+	err = member.UpdateCoordination(ctx, setRecord("task", "a", `{"n":3}`))
+	if !errors.Is(err, ErrFamilyDriven) || !errors.Is(err, ErrSessionInUse) {
+		t.Fatalf("a second handle changing a driven family's records: %v", err)
+	}
+	if got := readRecord(t, coord, "task", "a"); got != `{"n":2}` {
+		t.Fatalf("the driver's records after the refused change = %q", got)
+	}
+	// What a member saves to its own transcript is its own.
+	if err = member.UpdateCoordination(ctx, func(s *CoordinationState) error {
+		s.Append = []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "mine"}}
+		return nil
+	}); err != nil {
+		t.Fatalf("a member appending to its own transcript: %v", err)
+	}
+	if err = parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = member.UpdateCoordination(ctx, setRecord("task", "a", `{"n":4}`)); err != nil {
+		t.Fatalf("a change once the root is free: %v", err)
+	}
+	parent, err = here.Acquire(ctx, "parent", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	if got := readRecord(t, parent.(CoordinationSession), "task", "a"); got != `{"n":4}` {
+		t.Fatalf("the family read again by a new driver = %q", got)
 	}
 }
 

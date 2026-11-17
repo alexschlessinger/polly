@@ -11,7 +11,9 @@ func (s *SQLiteStore) GetModelCache(ctx context.Context, key string) ([]byte, er
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
 	var data []byte
-	err := s.db.QueryRowContext(ctx, "SELECT payload FROM model_metadata_cache WHERE cache_key = ?", key).Scan(&data)
+	err := s.look(ctx, func(db queryer) error {
+		return db.QueryRowContext(ctx, "SELECT payload FROM model_metadata_cache WHERE cache_key = ?", key).Scan(&data)
+	})
 	return data, err
 }
 
@@ -25,8 +27,7 @@ func (s *SQLiteStore) PutModelCache(ctx context.Context, key string, data []byte
 	}
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO model_metadata_cache(cache_key,payload) VALUES(?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload`, key, data)
-	return err
+	return s.execNow(ctx, `INSERT INTO model_metadata_cache(cache_key,payload) VALUES(?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload`, key, data)
 }
 func applySchemaV7(ctx context.Context, conn *sql.Conn) error {
 	return execAll(ctx, conn,

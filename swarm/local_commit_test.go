@@ -247,7 +247,7 @@ func TestLocalCommitStorageFailureDoesNotLaunch(t *testing.T) {
 			} else {
 				fault.before = func(*State) error { return errors.New("storage rollback") }
 			}
-			r.parent = fault
+			setParent(r, fault)
 			args := map[string]any{"task_name": "review", "message": "inspect", "read_only": true, "commit": commit}
 			if _, err := execParentTool(t, r, "spawn_agent", args); err == nil {
 				t.Fatal("ignored failed storage")

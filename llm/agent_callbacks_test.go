@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -70,6 +72,51 @@ func TestAgentCallerOwnsPersistenceCallbacks(t *testing.T) {
 			}
 			if response == nil || response.PersistedMessages != len(response.AllMessages) || len(final.Generated) != len(response.AllMessages) {
 				t.Fatalf("caller checkpoint did not own generated prefix: %+v", response)
+			}
+		})
+	}
+}
+
+// A batch is journaled so that recovery can say which of its effects are
+// uncertain. A batch whose tools all only read has none, so it runs without
+// the journal; one tool that might act, or a call that names no tool, brings
+// the journal back.
+func TestJournalToolBatchLeavesOutBatchesThatOnlyRead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		calls     []string
+		journaled bool
+	}{
+		"only reads":   {[]string{"look", "look"}, false},
+		"one acts":     {[]string{"look", "work"}, true},
+		"unknown tool": {[]string{"look", "missing"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// A batch's tools run side by side.
+			var ran atomic.Int32
+			run := func(context.Context, tools.Args) (string, error) { ran.Add(1); return "result", nil }
+			registry := tools.NewToolRegistry([]tools.Tool{
+				&tools.Func{Name: "look", ReadOnly: true, Run: run},
+				&tools.Func{Name: "work", Run: run},
+			})
+			defer registry.Close()
+			reply := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse}
+			for i, tool := range tc.calls {
+				reply.ToolCalls = append(reply.ToolCalls, messages.ChatMessageToolCall{ID: fmt.Sprint("call", i), Name: tool, Arguments: `{}`})
+			}
+			agent := NewAgent(&sequentialLLM{responses: []messages.ChatMessage{reply}}, registry, AgentConfig{MaxIterations: 3})
+			defer agent.Close()
+			journaled := false
+			_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
+				JournalToolBatch: func(context.Context, AgentCheckpoint) error {
+					if ran.Load() != 0 {
+						t.Error("a tool ran before the journal")
+					}
+					journaled = true
+					return nil
+				},
+			})
+			if err != nil || journaled != tc.journaled || ran.Load() == 0 {
+				t.Fatalf("err=%v journaled=%v, want %v, with %d tools run", err, journaled, tc.journaled, ran.Load())
 			}
 		})
 	}

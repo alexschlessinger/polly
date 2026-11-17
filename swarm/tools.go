@@ -53,7 +53,9 @@ func (e coordinationToolError) Unwrap() []error { return []error{e.cause, e.tool
 // coordinator and timeout traits after moving into swarm_control.
 func registerCoordinationTool(registry *tools.ToolRegistry, name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
 	coordinator := name == "workflow_run" || name == "wait_agent" || name == "followup_task" || name == "interrupt_agent" || name == "spawn_agent" || name == "swarm_control"
-	registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: coordinator, Coordinator: coordinator, Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+	// These read the family, or wait on it, and write nothing.
+	readOnly := name == "list_agents" || name == "swarm_read" || name == "wait_agent"
+	registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: coordinator, Coordinator: coordinator, ReadOnly: readOnly, Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 		v, err := fn(ctx, a)
 		return coordinationToolResult(v, err)
 	}}})

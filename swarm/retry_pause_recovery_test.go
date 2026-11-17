@@ -16,12 +16,12 @@ import (
 )
 
 type retryCheckpointStore struct {
-	sessions.SessionStore
+	memberStore
 	wrap func(coordinatedSession) coordinatedSession
 }
 
 func (s *retryCheckpointStore) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
-	handle, err := s.SessionStore.Acquire(ctx, name, opts)
+	handle, err := s.memberStore.Acquire(ctx, name, opts)
 	if err != nil || !opts.ExistingOnly {
 		return handle, err
 	}
@@ -71,7 +71,7 @@ func TestRetryPauseMemberCheckpointFailureDoesNotFabricatePause(t *testing.T) {
 				return messages.ChatMessage{}, exhaustedRetry(time.Now())
 			}), 1, 1)
 			if mode == "rollback" {
-				r.config.Store = &retryCheckpointStore{SessionStore: r.config.Store, wrap: func(s coordinatedSession) coordinatedSession {
+				r.config.Store = &retryCheckpointStore{memberStore: r.config.Store.(memberStore), wrap: func(s coordinatedSession) coordinatedSession {
 					return &retryCheckpointSession{coordinatedSession: s, before: func(*State) error { return errors.New("final checkpoint rolled back") }}
 				}}
 			} else {
@@ -145,7 +145,7 @@ func TestRetryPauseCheckpointSurvivesMissingFinish(t *testing.T) {
 	}), 1, 1)
 	path := promoteRetryTest(t, r)
 	var failed atomic.Bool
-	r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: func(before, _ *State) bool {
+	setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: func(before, _ *State) bool {
 		for _, e := range before.Executions {
 			if e.RetryPause != nil {
 				return true
@@ -155,7 +155,7 @@ func TestRetryPauseCheckpointSurvivesMissingFinish(t *testing.T) {
 	}, before: func(*State) error {
 		failed.Store(true)
 		return errors.New("crashed before finish commit")
-	}}
+	}})
 	request := AgentRequest{Label: "Worker", Task: "inspect", ReadOnly: true, CallID: "saved-call"}
 	result, err := r.Agent(ctx, "", request)
 	if err == nil || !failed.Load() || errors.Is(err, subagent.ErrRetryPaused) {
@@ -201,7 +201,7 @@ func TestRetryPauseStopAfterCheckpointClearsRecoveryAuthority(t *testing.T) {
 		calls.Add(1)
 		return messages.ChatMessage{}, exhaustedRetry(time.Now().Add(time.Hour))
 	}), 1, 1)
-	r.config.Store = &retryCheckpointStore{SessionStore: r.config.Store, wrap: func(s coordinatedSession) coordinatedSession {
+	r.config.Store = &retryCheckpointStore{memberStore: r.config.Store.(memberStore), wrap: func(s coordinatedSession) coordinatedSession {
 		return &retryCheckpointSession{coordinatedSession: s, after: func() {
 			close(checkpoint)
 			select {
@@ -210,14 +210,14 @@ func TestRetryPauseStopAfterCheckpointClearsRecoveryAuthority(t *testing.T) {
 			}
 		}}
 	}}
-	r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
+	setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
 		for _, m := range after.Members {
 			if m.Control == MemberControlStopped {
 				return true
 			}
 		}
 		return false
-	}, after: func() error { close(stopped); return nil }}
+	}, after: func() error { close(stopped); return nil }})
 	i, err := r.start(ctx, "", AgentRequest{Label: "Worker", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)

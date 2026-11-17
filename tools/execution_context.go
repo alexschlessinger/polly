@@ -126,6 +126,13 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 // grants only when the context may write, and each env value inside the
 // grant's SourceRoot rebased into the root.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
+	return r.contextPolicy(root, grant, true)
+}
+
+// contextPolicy is ExecutionPolicy. Without freeze the policy is returned for
+// a caller that prepares it once it is complete, as binding it does, so a
+// read-only root made visible here is not prepared on its own first.
+func (r *ToolRegistry) contextPolicy(root string, grant ExecutionGrant, freeze bool) (ExecutionContext, error) {
 	presets := slices.Concat(r.executionSandboxPresets, grant.SandboxPresets)
 	for _, spec := range presets {
 		if err := ValidateAgentSandboxPreset(spec); err != nil {
@@ -246,7 +253,11 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		// Keep the checkout visible inside private roots; not a write grant.
 		// The home directory itself is never exposed: a live root there sees
 		// only what the policy already grants.
-		cfg, err = sandbox.ExposeReadOnlyPaths(cfg, abs)
+		expose := sandbox.AddReadOnlyPaths
+		if freeze {
+			expose = sandbox.ExposeReadOnlyPaths
+		}
+		cfg, err = expose(cfg, abs)
 		if err != nil {
 			return ExecutionContext{}, err
 		}

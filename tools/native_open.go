@@ -45,7 +45,8 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 		if scope.SourceRoot != "" {
 			grant.SourceRoot = scope.SourceRoot
 		}
-		ec, err := source.ExecutionPolicy(scope.Root, grant)
+		// The binding prepares the policy once the scope's read paths are in.
+		ec, err := source.contextPolicy(scope.Root, grant, false)
 		if err != nil {
 			return ToolBinding{}, err
 		}

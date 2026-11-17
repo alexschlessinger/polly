@@ -221,7 +221,7 @@ func TestWorkflowDeliveryCheckpointRollback(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 1)
 	suspendAutoRelease(t, r)
 	wrapped := &rollbackWorkflowCheckpoint{CoordinationSession: r.parent}
-	r.parent = wrapped
+	setParent(r, wrapped)
 	cb, generated := stageWorkflowResult(t, r, deliveryScript)
 	wrapped.fail.Store(true)
 	if err := cb.Checkpoint(context.Background(), llm.AgentCheckpoint{Generated: generated}); err == nil {

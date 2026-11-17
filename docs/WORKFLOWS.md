@@ -55,7 +55,7 @@ or cancellation and accepts a timeout from 10 seconds to one hour.
 
 A wake is a notification, not a full status report. Read saved evidence through
 `swarm_read`. A parked member releases its execution slot, registry, and session
-lease after checkpointing; wakeup resumes the same execution and remaining allowance.
+after checkpointing; wakeup resumes the same execution and remaining allowance.
 Unread publications visible to that execution also wake it: findings from its run
 and host facts from any run. Publications do not restart idle or completed agents.
 

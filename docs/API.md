@@ -566,7 +566,7 @@ Providers may charge for attempts that fail partway through generation.
 | `OnRetry` | Observe HTTP/stream backoff: source, reason, retry count, delay, next time; `Waiting` is false when the wait ends or is canceled, with `WaitError` if another attempt could not start. May run on the provider goroutine; must be concurrency-safe. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `OnCompactionUsage` | Observe what a compaction summary spent, on its model; empty when the request's model made it |
-| `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
+| `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent. A batch whose tools all implement `ReadOnlyTool` is not journaled |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
 
 `ApproveToolCalls` returns exactly one decision per call, in order. An error
@@ -650,6 +650,7 @@ A tool can opt into more behavior by implementing any of these:
 | `OutputTool` | Return `ToolOutput{Text, Data, Media}`; wrappers must preserve all three |
 | `UntimedTool` | Exempt a long call from the per-tool timeout, not cancellation |
 | `ExclusiveTool` | Require the call to be alone in its model batch |
+| `ReadOnlyTool` | Declare that calls only read, so a batch made only of such tools needs no recovery journal |
 | `RecallTool` | Supply a stub for results reproducible on demand |
 | `CoordinationTool` | Declare trusted orchestration behavior at the execution gate |
 | `ContextTool` | Bind implementation and authority to another execution context |
@@ -939,8 +940,11 @@ and the binding is closed before the lease is released. The parent keeps its
 existing registry.
 
 `Parent` and every acquired member must implement `sessions.CoordinationSession`,
-which both SQLite disk and memory sessions do. The runtime rejects and closes
-incompatible child handles at acquisition, including resumed members.
+every member `sessions.SpawnOutcomeSession` as well, and `Store`
+`sessions.SessionCreator`, which the SQLite store and its disk and memory
+sessions do. `New` refuses a store that cannot create sessions, and the
+runtime rejects and closes incompatible child handles at acquisition,
+including resumed members.
 The [shared storage contracts](RUNTIME-BACKENDS.md#implementation-and-verification)
 exercise SQLite and an independent reopenable test store through these interfaces.
 Cross-process recovery needs persistent storage, and `Promote`
@@ -1190,8 +1194,9 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `Clear`, `Reset` | Clear transcript/artifacts; Reset also replaces settings |
 | `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
 | `Parent` | Link a child by stable identity, independent of rename |
+| `SessionCreator.Create` | `Acquire` for a session that must not exist (`ErrSessionExists`), stored in one transaction as the caller's `configure` leaves the default metadata, title included. With `AcquireOptions.Member` the same transaction makes it a member of the family its `Parent` roots, which keeps it until the parent is removed; the parent must be the family's root and open in the same store. A store that cannot do this refuses the option |
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
-| `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store writes swarm coordination updates behind their callers and commits without waiting for the disk, so a crash can lose the latest ones |
+| `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store commits without waiting for the disk, so a power loss can lose the latest commits |
 
 ### Metadata and titles
 
@@ -1206,6 +1211,12 @@ preserve who owns the title, so use `SetTitle` to change it.
 `ExtraReadDirs` stores the session's canonical read grants and survives reset
 and clear. `SpawnCallID` identifies the delegation that created a session, and
 `SpawnOutcome` records only that first run; follow-ups don't rewrite it.
+`SpawnOutcomeSession.RecordSpawnOutcome` sets it without reading or rewriting
+the rest of the session's settings; the swarm runtime calls it when a
+member's run ends. For a member of a family
+the store drives, the SQLite store queues the outcome with the family's
+updates: the member's own `GetMetadata` returns it at once, and the store's
+lease-free reads and other processes after the next checkpoint.
 `Metadata.Parent` is a display name, while the stable `ParentID` is the real
 ancestry key.
 
@@ -1349,9 +1360,57 @@ A few rules of thumb:
   `sessions.CoordinationDeltaSession` is given only the records an update
   changed, instead of a copy of the family to edit.
 - The SQLite store answers `UpdateCoordinationFrom` and coordination reads
-  from memory and writes behind them. One store handle owns a family: a
-  second handle on the same database that writes the same family is noticed
-  within a tenth of a second, not at once.
+  from memory for a family whose root session it holds, and writes the
+  updates into the database behind them, at checkpoints a fraction of a
+  second apart. A disk store first writes each update to an update log, the
+  directory `<path>-log` beside the database. An update that returned before
+  that write carries `CoordinationState.Written`, which returns once the log
+  holds it; the swarm runtime waits on it before an edit returns, so a crash
+  of the process loses nothing an edit returned from, and the next store to
+  open the database writes what the log holds. A memory store has no log and
+  nothing to wait for. The exception is a member's checkpoint before a model
+  request, which returns at once: the journal of the next tool batch that
+  can act, or the last checkpoint of the slice, waits for that write too, so
+  nothing is changed and no result is reported on a transcript a crash could
+  take back. A member is in the database, as a member, from the transaction
+  that created or registered it, and the records that describe it are queued
+  like any other update, so a crash between the two leaves a member's
+  session retained by a family with no record of it, until the family's root
+  is deleted. The swarm runtime creates its members with
+  `AcquireOptions.Member` and deletes the session of one it could not
+  record, as far as it can: when it cannot read the family or delete the
+  session, it logs `member_session_retained`. An update that pins artifacts
+  is written whole before it returns.
+- One store handle drives a family: the one that holds its root session. A
+  second handle on the same database reads the family as of the driver's last
+  checkpoint, and a change it makes to the family's records fails with
+  `sessions.ErrFamilyDriven` until the root is free. It can still save to
+  the transcript of a member it holds. An update reaches the database only
+  while the leases it was accepted under stand: when another handle has
+  taken over the root or the member since, it is dropped.
+- The SQLite store renews every lease it holds in one transaction per
+  heartbeat. When the handle on a member of a family it drives closes, the
+  store keeps the member's lease for fifteen seconds, and hands it to the
+  next `Acquire` that asks for the session by its name and `ExpectedID`
+  without a database transaction. The swarm runtime acquires a member this
+  way for each slice, the first included: a member's handle knows its family
+  from its creation, so its lease is kept from the first close on. To the
+  store's own callers the session is free meanwhile: its `ListSummaries` and
+  `ReadView` report it not in use, and
+  `Delete`, or `Acquire` by name alone, ends the kept lease first. Another
+  process sees the session leased until the store gives the lease up, which
+  it does at the first heartbeat after the fifteen seconds and when the
+  family's root closes.
+- `CoordinationState.Volatile` names record changes that say what the caller
+  is doing at the moment. A store may keep them in memory only. The SQLite
+  store does so for a family it drives: its own readers see the change at
+  once, and it is written with the record's next change that is not
+  volatile. The swarm runtime marks two things this way: that a member is
+  queued or running, and the count of a model call whose tools only read.
+  A second process therefore reads a member's status and counts as of the
+  last thing the member saved. A member's transcript is saved with its
+  counts (`TranscriptIdentity.Counts`), and after a restart the member's
+  next slice takes them from there.
 - A store whose commits may trail the disk implements `sessions.SyncStore`;
   the swarm runtime calls `Sync` after recording that it is about to apply a
   result and before it writes to the source tree, and after recording a

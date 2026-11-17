@@ -34,6 +34,7 @@ func NewReadFileTool(registry *ToolRegistry) Tool {
 }
 
 func (t *readFileTool) GetName() string { return "read_file" }
+func (t *readFileTool) ReadsOnly() bool { return true }
 
 // BindExecutionContext rebuilds the tool from the bound registry's own
 // factory, under the context's root and policy.

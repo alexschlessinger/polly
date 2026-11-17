@@ -333,10 +333,10 @@ func TestParentRetryPauseCheckpointRollbackAndFence(t *testing.T) {
 			r := runtimeTest(t, idleModel(), 1, 1)
 			path := promoteRetryTest(t, r)
 			if !fenced {
-				r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
+				setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: func(_, after *State) bool {
 					turn := after.ParentTurns[r.ID]
 					return turn != nil && turn.RetryPause != nil
-				}, before: func(*State) error { return errors.New("checkpoint rollback") }}
+				}, before: func(*State) error { return errors.New("checkpoint rollback") }})
 			}
 			cb := &llm.AgentCallbacks{}
 			r.bindParent(cb, func() bool { return !fenced })

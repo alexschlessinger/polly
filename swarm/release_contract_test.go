@@ -162,7 +162,7 @@ func TestReleaseMarkFailureRetriesThenRetains(t *testing.T) {
 	}
 	admitParent(t, r)
 	failed := &failCoordination{CoordinationSession: r.parent, remaining: 3}
-	r.parent = failed
+	setParent(r, failed)
 	for range 3 {
 		if _, err := r.releaseWorkspaces(ctx); err == nil || !strings.Contains(err.Error(), "injected") {
 			t.Fatalf("failure=%v", err)
@@ -338,7 +338,7 @@ func TestContextCreationSaveFailureDoesNotLeakCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.parent = &failCoordination{CoordinationSession: r.parent, remaining: 1}
+	setParent(r, &failCoordination{CoordinationSession: r.parent, remaining: 1})
 	if _, err := r.makeContext(ctx, r.ID, AgentRequest{ReadOnly: true}); err == nil {
 		t.Fatal("injected creation failure succeeded")
 	}

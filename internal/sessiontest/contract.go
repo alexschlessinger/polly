@@ -165,6 +165,130 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			t.Fatal("view created a row")
 		}
 	})
+	t.Run("create_stores_the_session_as_configured", func(t *testing.T) {
+		t.Parallel()
+		s := newFixture(t).Open()
+		acquire(t, s, "parent", "")
+		creator, ok := s.(sessions.SessionCreator)
+		if !ok {
+			t.Fatal("missing SessionCreator")
+		}
+		child, err := creator.Create(t.Context(), "child", sessions.AcquireOptions{Parent: "parent"}, func(md *sessions.Metadata) {
+			md.Description, md.SpawnCallID = "a task", "call"
+			md.Title, md.TitleSource = "A title", sessions.TitleSourceAgent
+			md.Name, md.Parent = "ignored", "ignored"
+		})
+		must(t, err)
+		t.Cleanup(func() { child.Close() })
+		md, err := child.GetMetadata(t.Context())
+		must(t, err)
+		if md.Name != "child" || md.Parent != "parent" || md.Description != "a task" || md.SpawnCallID != "call" ||
+			md.Title != "A title" || md.TitleSource != sessions.TitleSourceAgent {
+			t.Fatalf("created session = %+v", md)
+		}
+		if _, ok := child.(sessions.CoordinationSession); !ok {
+			t.Fatal("created session is missing CoordinationSession")
+		}
+		if _, err := creator.Create(t.Context(), "child", sessions.AcquireOptions{}, nil); !errors.Is(err, sessions.ErrSessionExists) {
+			t.Fatalf("creating a session that exists = %v", err)
+		}
+		if _, err := creator.Create(t.Context(), "other", sessions.AcquireOptions{ExistingOnly: true}, nil); err == nil {
+			t.Fatal("Create took a session that must exist")
+		}
+	})
+	t.Run("create_makes_a_member_with_the_session", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		s := f.Open()
+		parent := acquire(t, s, "parent", "")
+		creator, ok := s.(sessions.SessionCreator)
+		if !ok {
+			t.Fatal("missing SessionCreator")
+		}
+		kinds := map[string]bool{"member": true, "child": false}
+		ids := map[string]string{}
+		for name, member := range kinds {
+			created, err := creator.Create(t.Context(), name, sessions.AcquireOptions{Parent: "parent", Member: member}, nil)
+			must(t, err)
+			ids[name] = coord(t, created).ViewID()
+			must(t, created.Close())
+		}
+		// The option is Create's alone and needs a parent: a family's root,
+		// open in the store that creates the member and still leased to it.
+		if _, err := creator.Create(t.Context(), "orphan", sessions.AcquireOptions{Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of no family")
+		}
+		if _, err := s.Acquire(t.Context(), "late", sessions.AcquireOptions{Parent: "parent", Member: true}); err == nil {
+			t.Fatal("Acquire made a member")
+		}
+		mid := acquire(t, s, "mid", "parent")
+		if _, err := creator.Create(t.Context(), "nested", sessions.AcquireOptions{Parent: "mid", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a session that is not a family's root")
+		}
+		must(t, mid.Close())
+		elsewhere := f.Open()
+		if _, err := elsewhere.(sessions.SessionCreator).Create(t.Context(), "elsewhere", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("a store that does not hold the family's root made a member of it")
+		}
+		must(t, elsewhere.Close())
+		f.Revoke(coord(t, parent).ViewID())
+		if _, err := creator.Create(t.Context(), "revoked", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a family whose root's lease is gone")
+		}
+		parent.Close()
+		if _, err := creator.Create(t.Context(), "unheld", sessions.AcquireOptions{Parent: "parent", Member: true}, nil); err == nil {
+			t.Fatal("Create made a member of a family whose root is not open")
+		}
+		for _, name := range []string{"orphan", "late", "nested", "elsewhere", "revoked", "unheld"} {
+			exists, err := s.Exists(t.Context(), name)
+			must(t, err)
+			if exists {
+				t.Fatalf("a refused Create or Acquire left the session %q", name)
+			}
+		}
+		// The family keeps a member past its TTL, and no session beside it.
+		must(t, s.Close())
+		for _, id := range ids {
+			f.ExpireNow(id)
+		}
+		s = f.Open()
+		must(t, s.Expire(t.Context()))
+		for name, member := range kinds {
+			exists, err := s.Exists(t.Context(), name)
+			must(t, err)
+			if exists != member {
+				t.Fatalf("after its TTL the session %q exists = %v", name, exists)
+			}
+		}
+	})
+
+	t.Run("spawn_outcome_is_recorded_once", func(t *testing.T) {
+		t.Parallel()
+		s := newFixture(t).Open()
+		acquire(t, s, "parent", "")
+		child := acquire(t, s, "child", "parent")
+		recorder, ok := child.(sessions.SpawnOutcomeSession)
+		if !ok {
+			t.Fatal("missing SpawnOutcomeSession")
+		}
+		must(t, recorder.RecordSpawnOutcome(t.Context(), sessions.ReportPaused))
+		must(t, recorder.RecordSpawnOutcome(t.Context(), sessions.ReportFinished))
+		md, err := child.GetMetadata(t.Context())
+		must(t, err)
+		if md.SpawnOutcome != sessions.ReportPaused {
+			t.Fatalf("outcome = %q, want the first one recorded", md.SpawnOutcome)
+		}
+		if err := recorder.RecordSpawnOutcome(t.Context(), "done"); err == nil {
+			t.Fatal("an unknown outcome was recorded")
+		}
+		must(t, child.Close())
+		stored, err := s.GetMetadata(t.Context(), "child")
+		must(t, err)
+		if stored.SpawnOutcome != sessions.ReportPaused {
+			t.Fatalf("stored outcome = %q", stored.SpawnOutcome)
+		}
+	})
+
 	t.Run("lease_loss_fences_every_operation", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)

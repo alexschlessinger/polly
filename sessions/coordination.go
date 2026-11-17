@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,7 +22,9 @@ import (
 // not need to construct a swarm. Updates are fenced by the caller's lease.
 // Managed execution requires this capability on both parent and child handles.
 // UpdateCoordination invokes its callback at most once. Records, transcript
-// appends, member retention and artifact pins commit together or not at all.
+// appends, member retention and artifact pins commit together or not at all,
+// except that a store answering from memory may register members ahead of the
+// rest: a member can then be retained by a family that holds no record of it.
 // An error may represent an uncertain commit; callers must inspect durable
 // receipts rather than blindly retrying the callback or its external effects.
 type CoordinationSession interface {
@@ -44,12 +47,25 @@ type CoordinationState struct {
 	// Revision identifies the family's records within this store handle: two
 	// states with the same nonzero Revision hold the same Records. Zero means
 	// the store does not track it. After a successful UpdateCoordination the
-	// state passed to the callback carries the committed records' Revision,
-	// which is the one field a caller may read once the update returns.
+	// state passed to the callback carries the committed records' Revision.
+	// It and Written are the fields a caller may read once the update returns.
 	Revision uint64
+	// Written is set by an UpdateCoordinationFrom that returned while a crash
+	// of the process could still lose its changes. It returns once one no
+	// longer can, or with the reason that will never be so. A store that
+	// logs its updates returns from it when the log holds the update, which
+	// may be before the database does. Nil means there is nothing to wait
+	// for.
+	Written func(context.Context) error
 	// Changes is how an UpdateCoordinationFrom callback reports its work,
 	// kind then id; a nil payload deletes the record. Records is nil there.
 	Changes map[string]map[string]json.RawMessage
+	// Volatile names records among Changes, kind then id, whose new value
+	// says what the caller is doing at the moment and need not outlive the
+	// process. A store may keep such a value in memory only: its own readers
+	// see it at once, and it is written with the record's next change that
+	// is not volatile, if there is one. A store is free to write it anyway.
+	Volatile map[string]map[string]bool
 	// Append and ExpectedSequence atomically checkpoint generated output and
 	// admitted mail with the records containing its delivery receipts.
 	Append           []messages.ChatMessage
@@ -98,7 +114,7 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 		return nil, nil, err
 	}
 	state := &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(parent), Sequence: sequence}
-	state.Records, state.Revision, err = s.store.coordination.records(ctx, conn, parent)
+	state.Records, state.Revision, err = s.store.coordination.records(ctx, conn, parent, s.store.drives)
 	return state, parent, err
 }
 
@@ -126,7 +142,7 @@ func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationStat
 		return nil, err
 	}
 	defer cache.release()
-	if family, ok := s.rememberedFamily(); ok && s.coord.known {
+	if family, _, ok := s.remembered(ctx, true); ok {
 		if err := s.alive(ctx); err != nil {
 			return nil, err
 		}
@@ -162,12 +178,60 @@ func (s *sqliteSession) reload(ctx context.Context) (*CoordinationState, error) 
 
 // rememberedFamily returns the family's records when this session can answer
 // from memory: its lease cannot have been taken, the writer is working, and
-// the database confirmed the records recently. The caller holds the cache.
-func (s *sqliteSession) rememberedFamily() (cachedFamily, bool) {
+// this store drives the family. It also returns the handle on the family's
+// root. The caller holds the cache.
+func (s *sqliteSession) rememberedFamily() (cachedFamily, *sqliteSession, bool) {
 	if s.coord.parent == nil || !s.leaseFresh() || !s.store.writer.healthy() {
-		return cachedFamily{}, false
+		return cachedFamily{}, nil, false
 	}
-	return s.store.coordination.current(s.coord.parent)
+	root := s.store.driver(s, string(s.coord.parent))
+	if root == nil {
+		return cachedFamily{}, nil, false
+	}
+	family, ok := s.store.coordination.family(s.coord.parent)
+	return family, root, ok
+}
+
+// remembered is rememberedFamily for a handle that may not know its row yet:
+// one just acquired, or one whose row a transaction has written since. Such a
+// handle first reads its root and, when sequence is set, its transcript's
+// next sequence, so that a family this store drives is answered from memory
+// from the handle's first call on. With sequence set, ok also says the next
+// sequence is known. The caller holds the cache.
+func (s *sqliteSession) remembered(ctx context.Context, sequence bool) (cachedFamily, *sqliteSession, bool) {
+	if !s.leaseFresh() || !s.store.writer.healthy() {
+		return cachedFamily{}, nil, false
+	}
+	if s.coord.parent == nil || sequence && !s.coord.known && s.coord.writers == 0 {
+		if s.coord.parent != nil && s.store.driver(s, string(s.coord.parent)) == nil {
+			return cachedFamily{}, nil, false
+		}
+		if err := s.learn(ctx); err != nil {
+			return cachedFamily{}, nil, false
+		}
+	}
+	family, root, ok := s.rememberedFamily()
+	return family, root, ok && (!sequence || s.coord.known)
+}
+
+// learn reads this session's root and next sequence and remembers them. It
+// does not settle: the row is as of the last checkpoint, and the messages
+// pending for the session come after it. The caller holds the cache.
+func (s *sqliteSession) learn(ctx context.Context) error {
+	start, tail := s.store.writer.pendingTail(s.id)
+	var parent []byte
+	var sequence int64
+	err := s.leasedRead(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		return conn.QueryRowContext(ctx, `SELECT coalesce(parent_id,id),next_sequence FROM sessions WHERE id=?`, s.id).Scan(&parent, &sequence)
+	})
+	if err != nil {
+		return err
+	}
+	if len(tail) > 0 {
+		sequence = max(sequence, start+int64(len(tail)))
+	}
+	s.remember(parent, sequence)
+	return nil
 }
 
 // rememberedState is the state loadCoordination would read, without Records.
@@ -197,8 +261,8 @@ type CoordinationRevisionSession interface {
 func (s *sqliteSession) CoordinationRevision(ctx context.Context) (uint64, error) {
 	cache := s.store.coordination
 	// The usual answer needs no turn at the cache: this session's lease is
-	// fresh and the family was confirmed a moment ago.
-	if parent := s.family.Load(); parent != nil && s.leaseFresh() && s.store.writer.healthy() {
+	// fresh and this store drives the family.
+	if parent := s.family.Load(); parent != nil && s.leaseFresh() && s.store.writer.healthy() && s.store.driver(s, *parent) != nil {
 		if revision, ok := cache.peek(*parent); ok {
 			if err := s.alive(ctx); err != nil {
 				return 0, err
@@ -210,7 +274,7 @@ func (s *sqliteSession) CoordinationRevision(ctx context.Context) (uint64, error
 		return 0, err
 	}
 	defer cache.release()
-	if family, ok := s.rememberedFamily(); ok {
+	if family, _, ok := s.remembered(ctx, false); ok {
 		if err := s.alive(ctx); err != nil {
 			return 0, err
 		}
@@ -251,6 +315,9 @@ type CoordinationDeltaSession interface {
 	// records at revision known. The callback receives no Records and reports
 	// the records it changed in Changes. When the family is no longer at
 	// known, it returns ErrCoordinationStale without invoking the callback.
+	// A store may answer before it has written the update: every later read
+	// sees it, and the callback's state carries Written for a caller that
+	// must not act on the update before a crash could no longer undo it.
 	UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*CoordinationState) error) error
 }
 
@@ -271,8 +338,15 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 	}
 	defer cache.release()
 	if known != nil {
-		if family, ok := s.rememberedFamily(); ok && s.coord.known {
-			return s.updateRemembered(ctx, *known, family, fn)
+		if family, root, ok := s.remembered(ctx, true); ok {
+			return s.updateRemembered(ctx, *known, family, root, fn)
+		}
+	}
+	// A family this store does not drive is what the database holds, and a
+	// store that is gone may have left its last updates in the log.
+	if s.coord.parent == nil || s.store.driver(s, string(s.coord.parent)) == nil {
+		if err := s.store.recoverLogs(ctx, true); err != nil {
+			return s.mapError(ctx, err)
 		}
 	}
 	var parent []byte
@@ -313,6 +387,11 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 		if err != nil {
 			return err
 		}
+		if changed {
+			if err := s.requireUndriven(opCtx, conn, parent); err != nil {
+				return err
+			}
+		}
 		next, err = s.writeRest(opCtx, conn, parent, state)
 		return err
 	})
@@ -335,6 +414,29 @@ func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, f
 		committed.Revision = cache.replace(parent, records)
 	}
 	return nil
+}
+
+// ErrFamilyDriven reports a change to a family's records made through a
+// store handle that does not hold the family's root session while another
+// one does. The handle that holds the root answers for the family from
+// memory, so the records in the database are not the ones to change.
+var ErrFamilyDriven = fmt.Errorf("%w: another store handle drives its family", ErrSessionInUse)
+
+// requireUndriven fails with ErrFamilyDriven when a handle of another store
+// holds the root of the family this session's transaction is changing.
+func (s *sqliteSession) requireUndriven(ctx context.Context, conn rowQuerier, parent []byte) error {
+	var owner []byte
+	err := conn.QueryRowContext(ctx, `SELECT owner_token FROM session_leases WHERE session_id = ? AND expires_ns > ?`, parent, time.Now().UnixNano()).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if root := s.store.handle(string(parent)); root != nil && bytes.Equal(root.ownerToken, owner) {
+		return nil
+	}
+	return ErrFamilyDriven
 }
 
 // writeRest writes what an update asks for beyond its records: members, pins,
@@ -364,11 +466,13 @@ func (s *sqliteSession) writeRest(ctx context.Context, conn *sql.Conn, parent []
 
 // updateRemembered is UpdateCoordinationFrom answered from memory. The
 // callback sees what a transaction would have read. Its changes go to the
-// family in memory and to the writer's queue, and the update returns without
-// touching the database; an update that pins artifacts or registers members
-// has rows to check and is written before it returns. The caller holds the
-// cache.
-func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, family cachedFamily, fn func(*CoordinationState) error) error {
+// family in memory and to the writer, and the update returns without
+// touching the database, leaving in Written the wait for the update to be
+// safe from a crash. An update that pins artifacts has rows to check and is
+// written before it returns; one that only registers members writes the
+// registration first and queues the rest. root is the handle on the family's
+// root. The caller holds the cache.
+func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, family cachedFamily, root *sqliteSession, fn func(*CoordinationState) error) error {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return err
@@ -394,8 +498,25 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 			return err
 		}
 	}
+	// What is volatile changes the family in memory and goes no further.
+	kept := keptChanges(state.Changes, state.Volatile)
 	next := state.Sequence + int64(len(state.Append))
-	if len(state.Pins) > 0 || len(state.Members) > 0 {
+	if len(state.Pins) == 0 && len(state.Members) > 0 {
+		// Registering a session that exists as a member keeps its
+		// conversation with the family's. It has a row to check and none
+		// that a queued update writes, so it is written by itself, ahead of
+		// the records, which go the usual way.
+		err := s.store.withTransactionNow(opCtx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+			if err := s.requireLease(opCtx, conn); err != nil {
+				return err
+			}
+			return registerMembers(opCtx, conn, parent, state)
+		})
+		if err != nil {
+			return s.mapError(ctx, err)
+		}
+	}
+	if len(state.Pins) > 0 {
 		err := s.leasedUntracked(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
 			if err := writeRecordDelta(opCtx, conn, parent, state.Changes); err != nil {
 				return err
@@ -409,17 +530,26 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 			s.coord.known = false
 			return err
 		}
-	} else if changed || len(state.Append) > 0 || state.Transcript != nil {
-		update := queuedUpdate{parent: parent, changes: state.Changes, session: s.id, sequence: state.Sequence, nowNS: time.Now().UnixNano()}
+	} else if len(kept) > 0 || len(state.Append) > 0 || state.Transcript != nil {
+		update := &queuedUpdate{
+			parent: parent, parentToken: root.ownerToken, changes: kept,
+			session: s.id, sessionToken: s.ownerToken, sequence: state.Sequence, nowNS: time.Now().UnixNano(),
+		}
 		if state.Transcript != nil {
 			identity := *state.Transcript
+			identity.Sequence = next
 			update.transcript = &identity
 		}
 		if update.appended, err = encodeMessages(state.Append); err != nil {
 			return err
 		}
-		if err := s.store.writer.accept(opCtx, update); err != nil {
+		writer := s.store.writer
+		place, kept, err := writer.accept(opCtx, update)
+		if err != nil {
 			return s.mapError(ctx, err)
+		}
+		if !kept {
+			state.Written = func(ctx context.Context) error { return writer.wait(ctx, place) }
 		}
 	}
 	s.coord.sequence = next
@@ -429,6 +559,35 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 		state.Revision = cache.replace(parent, family.records)
 	}
 	return nil
+}
+
+// keptChanges returns the changes that are not volatile, nil when none is.
+func keptChanges(changes map[string]map[string]json.RawMessage, volatile map[string]map[string]bool) map[string]map[string]json.RawMessage {
+	var kept map[string]map[string]json.RawMessage
+	for kind, group := range changes {
+		passing := volatile[kind]
+		for id, value := range group {
+			if passing[id] {
+				continue
+			}
+			if len(passing) == 0 {
+				// Nothing of this kind is volatile: the group is kept whole.
+				if kept == nil {
+					kept = make(map[string]map[string]json.RawMessage, len(changes))
+				}
+				kept[kind] = group
+				break
+			}
+			if kept == nil {
+				kept = make(map[string]map[string]json.RawMessage, len(changes))
+			}
+			if kept[kind] == nil {
+				kept[kind] = map[string]json.RawMessage{}
+			}
+			kept[kind][id] = value
+		}
+	}
+	return kept
 }
 
 // checkRecord reports whether value may be stored as the record kind/id.
@@ -461,7 +620,10 @@ func deleteRecord(ctx context.Context, conn *sql.Conn, parent []byte, kind, id s
 }
 
 func putRecord(ctx context.Context, conn *sql.Conn, parent []byte, kind, id string, value json.RawMessage) error {
-	_, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value))
+	// A record that exists is changed where it lies: replacing the row would
+	// delete it and its key and insert both again.
+	_, err := conn.ExecContext(ctx, `INSERT INTO swarm_records VALUES(?,?,?,?)
+		ON CONFLICT(parent_id,kind,id) DO UPDATE SET payload_json = excluded.payload_json`, parent, kind, id, []byte(value))
 	return err
 }
 

@@ -15,12 +15,12 @@ import (
 )
 
 type memberLeaseStore struct {
-	sessions.SessionStore
+	memberStore
 	acquired chan sessions.Session
 }
 
 func (s *memberLeaseStore) Acquire(ctx context.Context, name string, opts sessions.AcquireOptions) (sessions.Session, error) {
-	got, err := s.SessionStore.Acquire(ctx, name, opts)
+	got, err := s.memberStore.Acquire(ctx, name, opts)
 	if err == nil && opts.ExistingOnly {
 		s.acquired <- got
 	}
@@ -50,7 +50,7 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 			defer parent.Close()
 			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 			defer registry.Close()
-			observed := &memberLeaseStore{SessionStore: store, acquired: make(chan sessions.Session, 1)}
+			observed := &memberLeaseStore{memberStore: store, acquired: make(chan sessions.Session, 1)}
 			started := make(chan context.Context, 1)
 			factory := make(chan context.Context, 1)
 			release := make(chan struct{})
@@ -117,6 +117,12 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
+			// The store writes behind the member, so this connection waits
+			// its turn like any other process's would.
+			db.SetMaxOpenConns(1)
+			if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 10000"); err != nil {
+				t.Fatal(err)
+			}
 			// Simulate another process taking over an expired lease, without
 			// sleeping for the production 20-second expiry and heartbeat.
 			if _, err := db.ExecContext(ctx, "UPDATE session_leases SET owner_token=zeroblob(16) WHERE session_id=(SELECT id FROM sessions WHERE name=?)", name); err != nil {

@@ -38,6 +38,7 @@ func NewListDirTool(registry *ToolRegistry) Tool {
 }
 
 func (t *listDirTool) GetName() string { return "list_dir" }
+func (t *listDirTool) ReadsOnly() bool { return true }
 
 // BindExecutionContext rebuilds the tool from the bound registry's own
 // factory, under the context's root and policy.

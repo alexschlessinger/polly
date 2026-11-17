@@ -11,10 +11,10 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
-// A member that parks keeps its session's lease for parkedSessionHold, so a
-// prompt wake needs no new one, and then gives it up; a later wake acquires
-// the session again.
-func TestParkedMemberGivesUpItsSessionAfterTheHold(t *testing.T) {
+// A parked member has no handle on its session: when the runtime says the
+// member is waiting, the store reports the session free. Another may take
+// it, and the member takes it again for the slice that follows its wake.
+func TestParkedMemberLeavesItsSessionToBeTaken(t *testing.T) {
 	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		for _, m := range req.Messages {
@@ -26,31 +26,46 @@ func TestParkedMemberGivesUpItsSessionAfterTheHold(t *testing.T) {
 	}), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// The runtime says a member is waiting once the slice that parked it
+	// has returned.
+	inUse := make(chan bool, 1)
+	r.config.OnEvent = func(e Event) {
+		if e.Kind != "waiting" {
+			return
+		}
+		summaries, err := r.config.Store.ListSummaries(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		for _, summary := range summaries {
+			if summary.ID == e.Member {
+				select {
+				case inUse <- summary.InUse:
+				default:
+				}
+			}
+		}
+	}
 	i, err := r.start(ctx, "", AgentRequest{TaskName: "waiter", Label: "Waiter", Task: "wait", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitState(t, r, ctx, func(s *State) bool { return s.Executions[i.id].Status == "waiting" })
+	select {
+	case held := <-inUse:
+		if held {
+			t.Fatal("a member that had just parked still had its session open")
+		}
+	case <-ctx.Done():
+		t.Fatal("the member never parked")
+	}
 	s, err := r.State(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	name := s.Members[i.member].Name
-	options := sessions.AcquireOptions{ExpectedID: i.member, ExistingOnly: true}
-	// Acquire waits for a held lease, so a short wait fails while the member
-	// holds it and a longer one succeeds once the hold has passed.
-	brief, stop := context.WithTimeout(ctx, parkedSessionHold/5)
-	held, err := r.config.Store.Acquire(brief, name, options)
-	stop()
-	if err == nil {
-		held.Close()
-		t.Fatal("a member that had just parked no longer held its session")
-	}
-	patient, stop := context.WithTimeout(ctx, parkedSessionHold+3*time.Second)
-	session, err := r.config.Store.Acquire(patient, name, options)
-	stop()
+	session, err := r.config.Store.Acquire(ctx, name, sessions.AcquireOptions{ExpectedID: i.member, ExistingOnly: true})
 	if err != nil {
-		t.Fatalf("a parked member still held its session after the hold: %v", err)
+		t.Fatalf("a parked member's session could not be taken: %v", err)
 	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
@@ -61,7 +76,7 @@ func TestParkedMemberGivesUpItsSessionAfterTheHold(t *testing.T) {
 	select {
 	case <-i.done:
 	case <-ctx.Done():
-		t.Fatal("the member did not finish after its session was released and it was woken")
+		t.Fatal("the member did not finish after its session was taken and given back")
 	}
 	if i.err != nil || i.result.Value != "woke" {
 		t.Fatalf("result %v, error %v", i.result.Value, i.err)

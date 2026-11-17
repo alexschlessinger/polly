@@ -44,7 +44,7 @@ func TestMemberTranscriptIdentityTracksAcceptedAssignment(t *testing.T) {
 				if view.Metadata.Transcript != nil {
 					t.Fatalf("rejected assignment claimed the saved conversation: %+v", view.Metadata.Transcript)
 				}
-			} else if view.Metadata.Transcript == nil || *view.Metadata.Transcript != (sessions.TranscriptIdentity{Execution: execution.ID, Generation: execution.Generation, Sequence: view.Sequence}) {
+			} else if view.Metadata.Transcript == nil || *view.Metadata.Transcript != (sessions.TranscriptIdentity{Execution: execution.ID, Generation: execution.Generation, Sequence: view.Sequence, Counts: countsNote(execution)}) {
 				t.Fatalf("checkpoint did not bind actual saved result: %+v sequence=%d execution=%+v", view.Metadata.Transcript, view.Sequence, execution)
 			}
 		})

@@ -10,7 +10,9 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -113,20 +115,65 @@ func TestEditWritesTheRecordsItTouches(t *testing.T) {
 	}
 }
 
+// A test fails at the edit that changes a record without taking it through
+// own, whatever else the edit does and whatever becomes of it, and names the
+// edit and the record.
 func TestEditWithoutOwnFailsTheTest(t *testing.T) {
 	t.Parallel()
-	r := runtimeTest(t, idleModel(), 1, 1)
-	ctx := context.Background()
-	task, err := r.CreateTask(ctx, "task", "criteria", nil, "")
-	if err != nil {
-		t.Fatal(err)
+	veto := errors.New("the callback's own error")
+	for name, edit := range map[string]func(r *Runtime, owned, shared string) error{
+		"alone": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error { s.Tasks[shared].Description = "in place"; return nil })
+		},
+		"beside a record taken through own": func(r *Runtime, owned, shared string) error {
+			return r.edit(context.Background(), func(s *State) error {
+				s.ownTask(owned).Description = "through own"
+				s.Tasks[shared].Description = "in place"
+				return nil
+			})
+		},
+		"put back under its own name": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error {
+				task := s.Tasks[shared]
+				task.Description = "in place"
+				put(s, "task", &s.Tasks, shared, task)
+				return nil
+			})
+		},
+		"in an edit its callback fails": func(r *Runtime, _, shared string) error {
+			return r.edit(context.Background(), func(s *State) error { s.Tasks[shared].Description = "in place"; return veto })
+		},
+		"in an edit the store refuses": func(r *Runtime, _, shared string) error {
+			return r.editOn(context.Background(), r.parent, func(raw *sessions.CoordinationState, s *State) error {
+				s.Tasks[shared].Description = "in place"
+				wrong := raw.Sequence + 99
+				raw.ExpectedSequence = &wrong
+				return nil
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := runtimeTest(t, idleModel(), 1, 1)
+			ctx := context.Background()
+			owned, err := r.CreateTask(ctx, "owned", "criteria", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shared, err := r.CreateTask(ctx, "shared", "criteria", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				got, _ := recover().(string)
+				if !strings.Contains(got, "the edit at edit_test.go:") || !strings.Contains(got, shared.ID) || strings.Contains(got, owned.ID) {
+					t.Fatalf("the edit panicked with %q, want its place and the record it changed", got)
+				}
+			}()
+			err = edit(r, owned.ID, shared.ID)
+			t.Fatalf("the edit changed a shared record unnoticed and returned %v", err)
+		})
 	}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("an edit changed a shared record unnoticed")
-		}
-	}()
-	_ = r.edit(ctx, func(s *State) error { s.Tasks[task.ID].Description = "changed in place"; return nil })
 }
 
 // hiddenDelta is a session wrapper of the kind tests and hosts put around the
@@ -141,7 +188,7 @@ func TestEditFallsBackToUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.parent = hiddenDelta{r.parent}
+	setParent(r, hiddenDelta{r.parent})
 	if err := r.edit(ctx, func(s *State) error {
 		if s.editing != nil {
 			t.Error("fallback handed out a shared state")
@@ -227,7 +274,7 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	if err := encodeState(raw, shared); err != nil {
 		t.Fatal(err)
 	}
-	work := shared.editable(raw.Records, false, nil)
+	work := shared.editable(raw.Records, nil)
 	if reflect.ValueOf(work.Tasks).Pointer() != reflect.ValueOf(shared.Tasks).Pointer() {
 		t.Fatal("an edit copied a map before writing it")
 	}
@@ -240,9 +287,9 @@ func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
 	if reflect.ValueOf(work.Messages).Pointer() != reflect.ValueOf(shared.Messages).Pointer() {
 		t.Fatal("an edit copied a map it never wrote")
 	}
-	changed, edited, err := work.changes(false)
-	if err != nil || len(edited) != 0 {
-		t.Fatalf("changes: %v %v", edited, err)
+	changed, err := work.changes()
+	if err != nil {
+		t.Fatalf("changes: %v", err)
 	}
 	tasks := changed["task"]
 	if len(changed) != 1 || len(tasks) != 3 || tasks["gone"] != nil || !strings.Contains(string(tasks["edited"]), `"done"`) || tasks["added"] == nil {
@@ -263,7 +310,7 @@ func TestEditWritesInPlaceAndTakesBackAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	edited, gone := family.Tasks["edited"], family.Tasks["gone"]
-	work := family.editable(raw.Records, false, map[string]bool{"task": true})
+	work := family.editable(raw.Records, map[string]bool{"task": true})
 	work.ownTask("edited").Status = "done"
 	drop(work, "task", &work.Tasks, "gone")
 	put(work, "task", &work.Tasks, "added", &Task{ID: "added"})
@@ -396,6 +443,111 @@ func TestLookFindsMailThroughTheIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	sameAsStored(t, r)
+}
+
+// heldWrite is the parent's session with the write of its first edit held
+// back until release is closed. The store still answers that edit from memory.
+type heldWrite struct {
+	sessions.CoordinationSession
+	holding atomic.Bool
+	waiting chan struct{} // closed when the edit starts to wait for its write
+	release chan struct{}
+	fail    error // what the held write then reports
+	// cancelled reports whether the context the edit waited under had ended.
+	cancelled atomic.Bool
+}
+
+func (h *heldWrite) CoordinationRevision(ctx context.Context) (uint64, error) {
+	return h.CoordinationSession.(sessions.CoordinationRevisionSession).CoordinationRevision(ctx)
+}
+
+func (h *heldWrite) UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*sessions.CoordinationState) error) error {
+	var state *sessions.CoordinationState
+	err := h.CoordinationSession.(sessions.CoordinationDeltaSession).UpdateCoordinationFrom(ctx, known, func(s *sessions.CoordinationState) error {
+		state = s
+		return fn(s)
+	})
+	if err != nil || !h.holding.CompareAndSwap(false, true) {
+		return err
+	}
+	written := state.Written
+	state.Written = func(ctx context.Context) error {
+		close(h.waiting)
+		<-h.release
+		h.cancelled.Store(ctx.Err() != nil)
+		if h.fail != nil || written == nil {
+			return h.fail
+		}
+		return written(ctx)
+	}
+	return nil
+}
+
+// An edit is in the family's memory, and its pokes are sent, as soon as the
+// store accepts it. The caller is held until the store has written it, and
+// cancelling the caller does not let it go early.
+func TestEditReturnsOnceItsChangeIsWritten(t *testing.T) {
+	t.Parallel()
+	for name, fail := range map[string]error{"written": nil, "not written": errors.New("disk gone")} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := runtimeTest(t, idleModel(), 1, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			task, err := r.CreateTask(ctx, "task", "criteria", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			watcher := &invocation{poke: make(chan struct{}, 1)}
+			r.watchTasks(watcher, []string{task.ID})
+			held := &heldWrite{CoordinationSession: r.parent, waiting: make(chan struct{}), release: make(chan struct{}), fail: fail}
+			setParent(r, held)
+			r.mu.Lock()
+			notify := r.notify
+			r.mu.Unlock()
+			done := make(chan error, 1)
+			go func() {
+				done <- r.edit(ctx, func(s *State) error {
+					s.ownTask(task.ID).Description = "changed"
+					return nil
+				})
+			}()
+			select {
+			case <-held.waiting:
+			case err := <-done:
+				t.Fatalf("edit returned without waiting for its write: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("edit never waited for its write")
+			}
+			var seen string
+			if err := r.look(context.Background(), func(s *State) { seen = s.Tasks[task.ID].Description }); err != nil || seen != "changed" {
+				t.Fatalf("a reader during the wait saw %q, %v", seen, err)
+			}
+			select {
+			case <-watcher.poke:
+			default:
+				t.Fatal("the edit's poke waited for its write")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				t.Fatalf("edit returned before its change was written: %v", err)
+			default:
+			}
+			close(held.release)
+			if err := <-done; !errors.Is(err, fail) {
+				t.Fatalf("edit = %v, want %v", err, fail)
+			}
+			if held.cancelled.Load() {
+				t.Fatal("the caller's cancellation reached the wait for the write")
+			}
+			select {
+			case <-notify:
+			default:
+				t.Fatal("waiters on a change did not hear of the edit")
+			}
+		})
+	}
 }
 
 // A task change pokes the parked members whose wake depends on that task, and

@@ -15,6 +15,10 @@ import (
 
 func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState, transcript *transcriptBinding) {
 	var persisted int
+	// calls is how many of this slice's model calls the execution record
+	// counts, and counted how many generated messages its usage covers. Both
+	// trail the slice by at most the call whose tool batch is running.
+	var calls, counted int
 	var sequence *int64
 	var workflows workflowDeliveries
 	if execution == "" {
@@ -114,28 +118,67 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		var read []string
 		actor := ""
 		var parentPause *RetryPause
+		recorded := false
+		edit := r.editOn
+		if execution != "" && checkpoint.Request {
+			// A member's request is answered before anything it does rests on
+			// its transcript: the journal of the batch the reply asks for, or
+			// the slice's last checkpoint, waits for this write as well.
+			edit = func(ctx context.Context, session sessions.CoordinationSession, fn func(*sessions.CoordinationState, *State) error) error {
+				_, err := r.editAhead(ctx, session, fn)
+				return err
+			}
+		}
 		err := transcript.checkpoint(checkpoint, func() (int64, error) {
 			var next int64
-			err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+			err := edit(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 				actor = raw.ActorID
 				if execution != "" {
-					e := s.ownExecution(execution)
+					e := s.Executions[execution]
 					if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
 						return errors.New("execution checkpoint was fenced")
 					}
 					if e.InputSaved {
 						raw.Transcript = &sessions.TranscriptIdentity{Execution: execution, Generation: generation}
 					}
-					e.Iterations = offset + checkpoint.Iterations
-					if checkpoint.Request {
-						e.Iterations++
+					// A slice's first request is where its member starts to run.
+					// Like editLive's, the change is for whoever watches, unless
+					// the record is written below for a reason of its own.
+					started := checkpoint.Request && (e.Status == "queued" || e.Status == "waiting")
+					if started {
+						e = s.ownExecution(execution)
+						e.Status = "running"
 					}
-					e.Intent = nil
-					e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-					// Yield and exhausted retries commit their pause with the accepted
-					// prefix. Other exits stay running until finish records the outcome.
-					if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
-						e.Status = "waiting"
+					// A request after a journaled batch appends to the transcript
+					// and leaves the record as that journal wrote it: its count
+					// and usage are current, and its intent is spent once the
+					// transcript has passed it. The record is written when the
+					// last batch only read and so was not journaled, when the
+					// slice ends, and for a typed result, whose corrections and
+					// completion are saved with the messages that carry them.
+					if checkpoint.Final || structured != nil || checkpoint.Iterations > calls {
+						e = s.ownExecution(execution)
+						e.Iterations = offset + checkpoint.Iterations
+						e.Intent, e.IntentAt = nil, 0
+						e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[counted:]))
+						recorded = true
+						// Yield and exhausted retries commit their pause with the accepted
+						// prefix. Other exits stay running until finish records the outcome.
+						if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
+							e.Status = "waiting"
+						}
+						// A request after a batch that only read changes the
+						// record's counts and nothing else. They are for whoever
+						// watches: the transcript's boundary carries them too, so
+						// the record need not be written for them.
+						if !checkpoint.Final && structured == nil && pause == nil {
+							volatile(raw, "execution", execution)
+						}
+					} else if started {
+						volatile(raw, "execution", execution)
+					}
+					if raw.Transcript != nil {
+						raw.Transcript.Counts = countsNote(e)
 					}
 				}
 				if execution == "" {
@@ -214,6 +257,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				// different writer, leaving the generated prefix unacknowledged.
 				sequence = &next
 				persisted = len(checkpoint.Generated)
+				if recorded {
+					calls, counted = checkpoint.Iterations, persisted
+				}
 			}
 			return next, err
 		})
@@ -259,7 +305,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		return nil
 	}
 	cb.JournalToolBatch = func(ctx context.Context, c llm.AgentCheckpoint) error {
-		return r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+		err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 			if execution == "" {
 				put(s, "parent_turn", &s.ParentTurns, raw.ActorID, &ParentTurn{Intent: c.Generated[persisted:]})
 				return nil
@@ -268,10 +314,16 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			if e == nil || e.Generation != generation || e.Status != "running" {
 				return errors.New("execution journal was fenced")
 			}
-			e.Intent = c.Generated[persisted:]
+			// The transcript ends where the batch's messages will be appended.
+			e.Intent, e.IntentAt = c.Generated[persisted:], raw.Sequence
 			e.Iterations = offset + c.Iterations
+			e.Usage = mergeUsage(e.Usage, usageOf(c.Generated[counted:]))
 			return nil
 		})
+		if err == nil && execution != "" {
+			calls, counted = c.Iterations, len(c.Generated)
+		}
+		return err
 	}
 }
 

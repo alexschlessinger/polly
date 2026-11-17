@@ -119,7 +119,7 @@ func TestRefreshPreparationStorageFailures(t *testing.T) {
 				} else {
 					fault.before = func(*State) error { return errors.New("injected storage rollback") }
 				}
-				r.parent = fault
+				setParent(r, fault)
 				mail, err := r.followupTask(ctx, a.Session, "refresh", "fault", true)
 				if stage == "launch" && committed {
 					if err != nil {
@@ -183,7 +183,7 @@ func TestOrdinaryFollowupLostSelectionReplyDisablesStartup(t *testing.T) {
 				awaitIdle(t, r, ctx)
 				admitParent(t, r)
 			}
-			r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("selection"), after: func() error { return errors.New("lost selection reply") }}
+			setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("selection"), after: func() error { return errors.New("lost selection reply") }})
 			if _, err := r.FollowupTask(ctx, i.member, "inspect again", "ordinary-failure"); err == nil {
 				t.Fatal("lost reply was not reported")
 			}
@@ -212,7 +212,7 @@ func TestRefreshUnconfirmedLaunchIsPaused(t *testing.T) {
 	writeRefreshFile(t, before.Contexts[a.Context].Scratch, "saved-helper", "keep me")
 	fault := &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("launch")}
 	fault.after = func() error { fault.reads.Store(1); return errors.New("lost commit reply") }
-	r.parent = fault
+	setParent(r, fault)
 	ctx := context.Background()
 	if _, err := r.followupTask(ctx, a.Session, "refresh", "ambiguous", true); err == nil {
 		t.Fatal("failed confirmation not reported")
@@ -300,7 +300,7 @@ func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
 				// hold, even though the scratch move already succeeded.
 				fault.before = func(*State) error { cancel(); return context.Canceled }
 			}
-			r.parent = fault
+			setParent(r, fault)
 			if _, err := r.followupTask(ctx, a.Session, "refresh", "retry", true); !errors.Is(err, context.Canceled) {
 				t.Fatalf("expected cancellation: %v", err)
 			}
@@ -417,7 +417,7 @@ func TestRefreshRechecksRevisionAndCapture(t *testing.T) {
 				r := scratchRuntime(t, doneModel(), true)
 				suspendAutoRelease(t, r)
 				a := settledRefreshWorker(t, r)
-				r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition(when), before: func(s *State) error {
+				setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition(when), before: func(s *State) error {
 					if change == "revision" {
 						s.Tasks[a.Task].Revision++
 					} else {
@@ -426,7 +426,7 @@ func TestRefreshRechecksRevisionAndCapture(t *testing.T) {
 						}
 					}
 					return nil
-				}}
+				}})
 				if _, err := r.followupTask(context.Background(), a.Session, "refresh", "stale", true); err == nil {
 					t.Fatal("changed authority accepted")
 				}
@@ -489,7 +489,7 @@ func TestConcurrentRefreshAndMaintenance(t *testing.T) {
 			}), true)
 			suspendAutoRelease(t, r)
 			a := settledRefreshWorker(t, r)
-			r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("selection"), after: func() error { close(entered); <-proceed; return nil }}
+			setParent(r, &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("selection"), after: func() error { close(entered); <-proceed; return nil }})
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			first, second := make(chan error, 1), make(chan error, 1)
