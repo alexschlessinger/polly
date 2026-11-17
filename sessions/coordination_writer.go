@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,6 +57,8 @@ type coordinationWriter struct {
 	written  uint64
 	err      error
 	closed   bool
+	// stopped is err != nil || closed, for healthy.
+	stopped atomic.Bool
 	// moved is closed and replaced whenever written or err changes, or the
 	// queue shrinks.
 	moved   chan struct{}
@@ -70,12 +73,7 @@ func newCoordinationWriter(store *SQLiteStore) *coordinationWriter {
 
 // healthy reports whether the writer can still take updates.
 func (w *coordinationWriter) healthy() bool {
-	if w == nil {
-		return false
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.err == nil && !w.closed
+	return w != nil && !w.stopped.Load()
 }
 
 // accept queues update, waiting while the queue is full.
@@ -152,6 +150,7 @@ func (w *coordinationWriter) close() {
 	}
 	w.mu.Lock()
 	w.closed = true
+	w.stopped.Store(true)
 	started := w.started
 	w.mu.Unlock()
 	if !started {
@@ -196,6 +195,7 @@ func (w *coordinationWriter) run() {
 		w.mu.Lock()
 		if err != nil {
 			w.err = fmt.Errorf("accepted coordination updates were not written: %w", err)
+			w.stopped.Store(true)
 			slog.Error("coordination_write_behind_failed", "updates", len(batch), "error", err)
 		} else {
 			w.written += uint64(len(batch))

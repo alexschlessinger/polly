@@ -41,20 +41,28 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		if err := delegationArgs(a, "target", "message"); err != nil {
 			return nil, err
 		}
-		s, err := r.read(ctx)
-		if err != nil {
-			return nil, err
-		}
-		id, err := r.resolveTarget(s, actor, a.String("target"))
-		if err != nil {
-			return nil, err
-		}
-		// Old Go/API request records remain answerable through the current
-		// model interface, oldest first. New messages are informational.
-		for _, mail := range inbox(s, actor, false) {
-			if mail.From == id && mail.Kind == "request" && mail.ReplyID == "" {
-				return r.Send(ctx, actor, id, "reply", mail.ID, a.String("message"))
+		var id, request string
+		var resolveErr error
+		if err := r.look(ctx, func(s *State) {
+			if id, resolveErr = r.resolveTarget(s, actor, a.String("target")); resolveErr != nil {
+				return
 			}
+			// Old Go/API request records remain answerable through the current
+			// model interface, oldest first. New messages are informational.
+			for _, mail := range inbox(s, actor, false) {
+				if mail.From == id && mail.Kind == "request" && mail.ReplyID == "" {
+					request = mail.ID
+					return
+				}
+			}
+		}); err != nil {
+			return nil, err
+		}
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		if request != "" {
+			return r.Send(ctx, actor, id, "reply", request, a.String("message"))
 		}
 		return r.Send(ctx, actor, id, "info", "", a.String("message"))
 	})

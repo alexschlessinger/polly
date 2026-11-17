@@ -107,7 +107,10 @@ type sqliteSession struct {
 	leaseExpiry atomic.Int64
 	// coord is what coordination updates answered from memory need to know
 	// about this session's row. The coordination cache's holder owns it.
-	coord struct {
+	// family is coord.parent for CoordinationRevision, which reads it
+	// without holding the cache.
+	family atomic.Pointer[string]
+	coord  struct {
 		// parent is the family's root; it never changes once known.
 		parent []byte
 		// sequence is the transcript's next sequence while known is set.

@@ -84,8 +84,8 @@ func wakeEligible(s *State, m *Member) bool {
 	}
 	if e := s.Executions[m.Execution]; e != nil && e.Status != "completed" {
 		if e.Status == "paused" && e.RetryPause == nil {
-			for _, mail := range s.Messages {
-				if mail.To == m.ID && mail.Start && !mail.Delivered && mail.ResumeExecution == e.ID {
+			for _, mail := range s.mailFor(m.ID) {
+				if mail.Start && !mail.Delivered && mail.ResumeExecution == e.ID {
 					return true
 				}
 			}

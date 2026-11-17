@@ -56,8 +56,8 @@ func (r *Runtime) resolveTarget(s *State, actor, target string) (string, error) 
 }
 
 func pendingFollowup(s *State, memberID string) bool {
-	for _, mail := range s.Messages {
-		if mail.To == memberID && mail.Start && !mail.Delivered {
+	for _, mail := range s.mailFor(memberID) {
+		if mail.Start && !mail.Delivered {
 			return true
 		}
 	}

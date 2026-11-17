@@ -128,10 +128,16 @@ type invocation struct {
 	done        chan struct{}
 	// poke holds at most one reminder that a record this member waits on
 	// changed; a parked member rechecks its wake conditions when it arrives.
-	poke   chan struct{}
-	cancel context.CancelFunc
-	result AgentResult
-	err    error
+	poke chan struct{}
+	// watch names the tasks a parked member's wake depends on: its own and
+	// that one's dependencies. r.mu guards it.
+	watch []string
+	// session is the member's leased conversation, kept by a slice that
+	// yielded for the next one. Only the invocation's goroutine touches it.
+	session coordinatedSession
+	cancel  context.CancelFunc
+	result  AgentResult
+	err     error
 }
 type Runtime struct {
 	releaseMu                                      sync.Mutex
@@ -159,6 +165,8 @@ type Runtime struct {
 	mu              sync.Mutex
 	active          map[string]*invocation
 	workflowCancels map[string]context.CancelCauseFunc
+	// watchers names, by task, the parked members that task can wake.
+	watchers map[string]map[*invocation]struct{}
 
 	settledTranscripts map[string]*liveTranscript
 	settledOrder       []string
@@ -175,8 +183,9 @@ type Runtime struct {
 	view             StateCache
 	// scratchNext is where the search for a free live scratch slot starts.
 	scratchNext atomic.Int64
-	// editing admits one edit at a time; see editOn.
-	editing     sync.Mutex
+	// editing admits one edit at a time, and no reader of the family's own
+	// state during it; see editOn and look.
+	editing     sync.RWMutex
 	yield       chan struct{}
 	wg          sync.WaitGroup
 	parentTools sync.Mutex
@@ -451,46 +460,99 @@ func (r *Runtime) pokeAll() {
 	}
 }
 
-// pokeTouched has the members an edit concerns recheck their wake
-// conditions. A parked member wakes on its mail, on its own member record,
-// and on tasks and publications, which any member may be waiting on; no other
-// kind of record wakes one.
-func (r *Runtime) pokeTouched(touched map[string]map[string]struct{}, after, before *State) {
-	members := map[string]bool{}
+// waitTasks names the tasks waitState reads for a member.
+func waitTasks(s *State, member string) []string {
+	m := s.Members[member]
+	if m == nil || m.Task == "" {
+		return nil
+	}
+	ids := []string{m.Task}
+	if t := s.Tasks[m.Task]; t != nil {
+		ids = append(ids, t.Dependencies...)
+	}
+	return ids
+}
+
+// watchTasks records the tasks whose change must poke the parked member i,
+// in place of the ones it watched before.
+func (r *Runtime) watchTasks(i *invocation, ids []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if slices.Equal(i.watch, ids) {
+		return
+	}
+	for _, id := range i.watch {
+		delete(r.watchers[id], i)
+		if len(r.watchers[id]) == 0 {
+			delete(r.watchers, id)
+		}
+	}
+	i.watch = ids
+	for _, id := range ids {
+		if r.watchers[id] == nil {
+			if r.watchers == nil {
+				r.watchers = map[string]map[*invocation]struct{}{}
+			}
+			r.watchers[id] = map[*invocation]struct{}{}
+		}
+		r.watchers[id][i] = struct{}{}
+	}
+}
+
+// pokesFor returns the pokes an edit owes: to the members its records
+// concern, who then recheck their wake conditions. A parked member wakes on
+// its mail, on its own member record, on its task and that task's
+// dependencies, and on publications, which any member may be waiting on; no
+// other kind of record wakes one. The edit works the pokes out while it still
+// holds the family's state and sends them once it has let go.
+func (r *Runtime) pokesFor(touched map[string]map[string]struct{}, after *State, prior map[string]map[string]any) func() {
+	var members, tasks []string
 	for kind, ids := range touched {
 		switch kind {
-		case "task", "publication", "parent":
-			r.pokeAll()
-			return
+		case "publication", "parent":
+			return r.pokeAll
+		case "task":
+			for id := range ids {
+				tasks = append(tasks, id)
+			}
 		case "member":
 			for id := range ids {
-				members[id] = true
+				members = append(members, id)
 			}
 		case "mail", "followup":
 			// A follow-up record shares its mail's ID and gates its delivery.
 			for id := range ids {
 				mail := after.Messages[id]
 				if mail == nil {
-					mail = before.Messages[id]
+					mail, _ = prior["mail"][id].(*Mail)
 				}
 				if mail == nil {
-					r.pokeAll()
-					return
+					return r.pokeAll
 				}
-				members[mail.To] = true
+				members = append(members, mail.To)
 			}
 		}
 	}
-	if len(members) == 0 {
-		return
+	if len(members) == 0 && len(tasks) == 0 {
+		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for id := range members {
-		if i := r.active[id]; i != nil {
-			select {
-			case i.poke <- struct{}{}:
-			default:
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, id := range members {
+			if i := r.active[id]; i != nil {
+				select {
+				case i.poke <- struct{}{}:
+				default:
+				}
+			}
+		}
+		for _, id := range tasks {
+			for i := range r.watchers[id] {
+				select {
+				case i.poke <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}
@@ -1332,6 +1394,7 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 	defer r.wg.Done()
 	defer func() {
 		i.cancel()
+		i.releaseSession()
 		r.mu.Lock()
 		r.settleTranscript(i)
 		delete(r.active, i.member)
@@ -1363,18 +1426,29 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 		r.yield = make(chan struct{})
 		r.mu.Unlock()
 		r.event("waiting", i.member, "waiting for an addressed event")
+		// A member that wakes soon runs its next slice on the session it
+		// holds; one that stays parked gives the lease up.
+		held := time.NewTimer(parkedSessionHold)
 		for {
 			// An edit pokes the members its records concern, so a parked
 			// member rechecks only then.
-			s, err := r.State(ctx)
-			if err != nil {
+			wake := false
+			if err := r.look(ctx, func(s *State) {
+				e := s.Executions[i.id]
+				publicationReady := e != nil && len(pendingPublications(s, i.member, e.Run)) > 0
+				wake = len(inbox(s, i.member, true)) > 0 || publicationReady || waitState(s, i.member) != i.waitState
+				// Said while no edit can run, so none slips between this
+				// check and the poke it would owe.
+				r.watchTasks(i, waitTasks(s, i.member))
+			}); err != nil {
+				r.watchTasks(i, nil)
 				i.err = err
 				r.finish(i)
 				return
 			}
-			e := s.Executions[i.id]
-			publicationReady := e != nil && len(pendingPublications(s, i.member, e.Run)) > 0
-			if len(inbox(s, i.member, true)) > 0 || publicationReady || waitState(s, i.member) != i.waitState || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
+			if wake || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
+				r.watchTasks(i, nil)
+				held.Stop()
 				break
 			}
 			delay := time.Until(i.waitUntil)
@@ -1385,11 +1459,15 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
+				held.Stop()
+				r.watchTasks(i, nil)
 				i.err = ctx.Err()
 				r.finish(i)
 				return
 			case <-i.poke:
 			case <-timer.C:
+			case <-held.C:
+				i.releaseSession()
 			}
 			timer.Stop()
 		}
@@ -1412,7 +1490,7 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 // so workflow operations cannot write into the directory between capture and
 // removal. Release the execution slot before finalization, as with other slices.
 func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) {
-	s, err := r.read(ctx)
+	s, others, err := r.sliceState(ctx, i)
 	if err != nil {
 		i.result, i.err = AgentResult{}, err
 	} else {
@@ -1420,13 +1498,75 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (again bool) 
 			unlock := r.lockContext(m.Context)
 			defer unlock()
 		}
-		i.result, i.err = r.executeMemberSlice(ctx, i, s)
+		i.result, i.err = r.executeMemberSlice(ctx, i, s, others)
 	}
 	<-r.slots
 	return !errors.Is(i.err, ErrYielded) && r.finish(i)
 }
 
-func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *State) (result AgentResult, runErr error) {
+// parkedSessionHold is how long a parked member keeps its session's lease,
+// which is shorter than the lease's heartbeat: a member that wakes within it
+// saves releasing and acquiring the session, and one that does not costs no
+// renewal.
+const parkedSessionHold = time.Second
+
+// releaseSession gives up the session a yielded slice kept.
+func (i *invocation) releaseSession() {
+	if i.session != nil {
+		_ = i.session.Close()
+		i.session = nil
+	}
+}
+
+// sliceState returns what a slice of i reads before it runs: the family's
+// state, and the roots of the contexts that do not share its own. A slice
+// whose input is saved reads only its own records, so it gets a state holding
+// those and the family's edits go on without a copy; a first slice, which
+// describes the whole swarm to its member, gets the family's state to keep.
+func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []string, error) {
+	var own *State
+	var others []string
+	if err := r.look(ctx, func(s *State) {
+		e, m := s.Executions[i.id], s.Members[i.member]
+		if e == nil || m == nil || !e.InputSaved || e.Completion != nil {
+			return
+		}
+		tasks, contexts := map[string]*Task{}, map[string]*ExecutionContext{}
+		if t := s.Tasks[m.Task]; t != nil {
+			tasks[t.ID] = t
+			for _, id := range t.Dependencies {
+				if dep := s.Tasks[id]; dep != nil {
+					tasks[id] = dep
+				}
+			}
+		}
+		if c := s.Contexts[m.Context]; c != nil {
+			contexts[c.ID] = c
+			others = otherRoots(s, c)
+		}
+		own = &State{
+			Executions: map[string]*Execution{e.ID: e}, Members: map[string]*Member{m.ID: m},
+			Tasks: tasks, Contexts: contexts,
+		}
+	}); err != nil {
+		return nil, nil, err
+	}
+	if own != nil {
+		return own, others, nil
+	}
+	s, err := r.read(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if m := s.Members[i.member]; m != nil {
+		others = otherRoots(s, s.Contexts[m.Context])
+	}
+	return s, others, nil
+}
+
+// executeMemberSlice runs one slice. s is sliceState's: it holds the whole
+// family only for a slice whose input is not yet saved.
+func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *State, others []string) (result AgentResult, runErr error) {
 	defaults := r.currentDefaults()
 	e := s.Executions[i.id]
 	if s.Members[i.member] == nil || e == nil {
@@ -1453,15 +1593,30 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 			return AgentResult{}, err
 		}
 	}
-	scope, err := r.contextScope(ctx, s, c)
+	scope, err := r.scopeOf(ctx, c, others)
 	if err != nil {
 		return AgentResult{}, err
 	}
-	session, err := r.acquireMemberSession(ctx, m)
-	if err != nil {
-		return AgentResult{}, err
+	// A slice that follows a yield closely finds the session the last one
+	// kept, unless its lease was lost meanwhile.
+	session := i.session
+	i.session = nil
+	if session != nil && session.Context().Err() != nil {
+		_ = session.Close()
+		session = nil
 	}
-	defer session.Close()
+	if session == nil {
+		if session, err = r.acquireMemberSession(ctx, m); err != nil {
+			return AgentResult{}, err
+		}
+	}
+	defer func() {
+		if errors.Is(runErr, ErrYielded) && session.Context().Err() == nil {
+			i.session = session
+			return
+		}
+		session.Close()
+	}()
 	// The parent owns the scheduler, but this invocation also owns a leased
 	// child conversation. Losing either lease must stop its current work.
 	ctx, cancelMember := context.WithCancelCause(ctx)
@@ -1671,9 +1826,7 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 				}
 				// The wake baseline is the state at park time, so the member's own
 				// earlier task changes in this slice cannot wake it for a no-input call.
-				if s, err := r.read(ctx); err == nil {
-					i.waitState = waitState(s, i.member)
-				}
+				_ = r.look(ctx, func(s *State) { i.waitState = waitState(s, i.member) })
 				parked.Store(true)
 			})
 		})
@@ -1747,12 +1900,15 @@ func (r *Runtime) executeMemberSlice(ctx context.Context, i *invocation, s *Stat
 		stop()
 		runErr = errors.Join(runErr, metadataErr)
 	}()
-	if current, readErr := r.read(context.WithoutCancel(ctx)); readErr == nil && current.Members[m.ID] != nil {
+	_ = r.look(context.WithoutCancel(ctx), func(current *State) {
+		if current.Members[m.ID] == nil {
+			return
+		}
 		m.Task = current.Members[m.ID].Task
 		if saved := current.Executions[i.id]; saved != nil && saved.Generation == i.generation {
 			committedPause = saved.Status == "paused" && saved.RetryPause != nil && current.Members[m.ID].Control != MemberControlStopped
 		}
-	}
+	})
 	result = AgentResult{Session: m.ID, Context: c.ID, Task: m.Task, Usage: e.Usage}
 	if response != nil {
 		result.Usage = mergeUsage(e.Usage, usageOf(response.AllMessages))
@@ -2037,12 +2193,8 @@ func (r *Runtime) wakeIdleMember(memberID string) {
 	if active {
 		return
 	}
-	s, err := r.read(r.ctx)
-	if err != nil {
-		return
-	}
-	m := s.Members[memberID]
-	if !wakeEligible(s, m) {
+	eligible := false
+	if err := r.look(r.ctx, func(s *State) { eligible = wakeEligible(s, s.Members[memberID]) }); err != nil || !eligible {
 		return
 	}
 	if err := r.startFollowupLocked(r.ctx, memberID); err != nil {

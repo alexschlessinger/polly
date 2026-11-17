@@ -19,28 +19,40 @@ import (
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
-// editBase marks a State handed to an edit: its maps are the callback's own,
-// its records still belong to the shared state they came from.
+// editBase marks a State handed to an edit. Its maps are the family's own:
+// the callback's changes are made in them, and taken back if the edit fails.
+// Its records are shared with every reader until the callback takes one
+// through own.
 type editBase struct {
-	shared *State
-	raw    map[string]map[string]json.RawMessage
+	raw map[string]map[string]json.RawMessage
 	// touched names the records the callback took through own, put or drop,
 	// by kind. They are the only ones an edit looks at when it finishes.
 	touched map[string]map[string]struct{}
-	// lazy says the maps are still the shared state's, and cloned names the
-	// kinds whose map has since become the callback's own.
-	lazy   bool
+	// prior holds what each touched record was when the edit began, nil for
+	// one it added, and undo puts each back.
+	prior map[string]map[string]any
+	undo  []func()
+	// format is the format record the edit began with.
+	format *FormatRecord
+	// cloned names the kinds whose map no reader holds, so a write needs no
+	// copy. It outlives the edit: see StateCache.lend.
 	cloned map[string]bool
+	// before is a copy of every map as the edit began, kept by an edit that
+	// confirms nothing changed outside own, put and drop.
+	before *State
 }
 
-// writable makes table, s's map for kind, safe to write: an edit that shares
-// its maps with the shared state takes a copy of one before its first write.
+// has reports whether the edit already took record id of kind.
+func (b *editBase) has(kind, id string) bool {
+	_, ok := b.touched[kind][id]
+	return ok
+}
+
+// writable makes table, s's map for kind, safe to write: a map some reader
+// may still hold is copied before the first write to it.
 func writable[T any](s *State, kind string, table *map[string]*T) {
-	if s.editing == nil || !s.editing.lazy || s.editing.cloned[kind] {
+	if s.editing == nil || s.editing.cloned[kind] {
 		return
-	}
-	if s.editing.cloned == nil {
-		s.editing.cloned = map[string]bool{}
 	}
 	s.editing.cloned[kind] = true
 	if *table == nil {
@@ -48,6 +60,41 @@ func writable[T any](s *State, kind string, table *map[string]*T) {
 		return
 	}
 	*table = maps.Clone(*table)
+}
+
+// remember notes what record id was before an edit first writes it.
+func remember[T any](s *State, kind string, table *map[string]*T, id string) {
+	b := s.editing
+	if b == nil || b.has(kind, id) {
+		return
+	}
+	old, had := (*table)[id]
+	if b.prior == nil {
+		b.prior = map[string]map[string]any{}
+	}
+	if b.prior[kind] == nil {
+		b.prior[kind] = map[string]any{}
+	}
+	if had {
+		b.prior[kind][id] = old
+	} else {
+		b.prior[kind][id] = nil
+	}
+	b.undo = append(b.undo, func() {
+		if had {
+			(*table)[id] = old
+		} else {
+			delete(*table, id)
+		}
+	})
+}
+
+// revert takes back everything an edit's callback did.
+func (s *State) revert() {
+	for i := len(s.editing.undo) - 1; i >= 0; i-- {
+		s.editing.undo[i]()
+	}
+	s.Format = s.editing.format
 }
 
 // touch notes that an edit's callback changed, added or dropped a record.
@@ -66,9 +113,10 @@ func (s *State) touch(kind, id string) {
 
 // put adds or replaces a record. table is s's map for kind. Every write to a
 // State's maps goes through put, drop or an own method: inside an edit the
-// maps may be the shared state's, which other goroutines are reading.
+// maps are the family's, and a write has to be noted and may need a copy.
 func put[T any](s *State, kind string, table *map[string]*T, id string, value *T) {
 	writable(s, kind, table)
+	remember(s, kind, table, id)
 	(*table)[id] = value
 	s.touch(kind, id)
 }
@@ -76,6 +124,7 @@ func put[T any](s *State, kind string, table *map[string]*T, id string, value *T
 // drop deletes a record, as put adds one.
 func drop[T any](s *State, kind string, table *map[string]*T, id string) {
 	writable(s, kind, table)
+	remember(s, kind, table, id)
 	delete(*table, id)
 	s.touch(kind, id)
 }
@@ -181,23 +230,26 @@ var recordKinds = []recordKind{
 }
 
 // editable returns a state for an edit's callback, which changes it through
-// put, drop and the own methods. With eager set every map is the callback's
-// own from the start, so a comparison with the shared state finds a write
-// that went around them; otherwise a map is copied when first written.
-func (s *State) editable(raw map[string]map[string]json.RawMessage, eager bool) *State {
-	if !eager {
-		work := *s
-		work.editing = &editBase{shared: s, raw: raw, lazy: true}
-		return &work
+// put, drop and the own methods. Those write s's own maps, copying one first
+// unless cloned says no reader holds it. With confirm set the edit also keeps
+// a copy of every map, so a comparison finds a write that went around them.
+func (s *State) editable(raw map[string]map[string]json.RawMessage, confirm bool, cloned map[string]bool) *State {
+	if cloned == nil {
+		cloned = map[string]bool{}
 	}
-	return &State{
-		Followups: maps.Clone(s.Followups), Integrations: maps.Clone(s.Integrations), Applies: maps.Clone(s.Applies),
-		ParentTurns: maps.Clone(s.ParentTurns), Parents: maps.Clone(s.Parents), Runs: maps.Clone(s.Runs),
-		Members: maps.Clone(s.Members), Tasks: maps.Clone(s.Tasks), Messages: maps.Clone(s.Messages),
-		Publications: maps.Clone(s.Publications), Executions: maps.Clone(s.Executions), Contexts: maps.Clone(s.Contexts),
-		Snapshots: maps.Clone(s.Snapshots), Previews: maps.Clone(s.Previews), Workflows: maps.Clone(s.Workflows),
-		Format: s.Format, editing: &editBase{shared: s, raw: raw},
+	work := *s
+	work.editing = &editBase{raw: raw, format: s.Format, cloned: cloned}
+	if confirm {
+		work.editing.before = &State{
+			Followups: maps.Clone(s.Followups), Integrations: maps.Clone(s.Integrations), Applies: maps.Clone(s.Applies),
+			ParentTurns: maps.Clone(s.ParentTurns), Parents: maps.Clone(s.Parents), Runs: maps.Clone(s.Runs),
+			Members: maps.Clone(s.Members), Tasks: maps.Clone(s.Tasks), Messages: maps.Clone(s.Messages),
+			Publications: maps.Clone(s.Publications), Executions: maps.Clone(s.Executions), Contexts: maps.Clone(s.Contexts),
+			Snapshots: maps.Clone(s.Snapshots), Previews: maps.Clone(s.Previews), Workflows: maps.Clone(s.Workflows),
+			Format: s.Format,
+		}
 	}
+	return &work
 }
 
 // own returns record id for a callback that is about to change it. Inside an
@@ -205,11 +257,8 @@ func (s *State) editable(raw map[string]map[string]json.RawMessage, eager bool) 
 // that is already private returns the record itself.
 func own[T any](s *State, kind string, table func(*State) *map[string]*T, id string) *T {
 	value := (*table(s))[id]
-	if value == nil || s.editing == nil || (*table(s.editing.shared))[id] != value {
+	if value == nil || s.editing == nil || s.editing.has(kind, id) {
 		// A record the callback already owns or added may change again.
-		if value != nil {
-			s.touch(kind, id)
-		}
 		return value
 	}
 	mine := new(T)
@@ -217,6 +266,7 @@ func own[T any](s *State, kind string, table func(*State) *map[string]*T, id str
 		panic(fmt.Sprintf("swarm: stored %s %s no longer decodes: %v", kind, id, err))
 	}
 	writable(s, kind, table(s))
+	remember(s, kind, table(s), id)
 	(*table(s))[id] = mine
 	s.touch(kind, id)
 	return mine
@@ -260,10 +310,7 @@ func (s *State) ownPublication(id string) *Publication {
 // step: the copy comes from the report itself.
 func (s *State) ownWorkflow(id string) *workflow.Report {
 	value := s.Workflows[id]
-	if value == nil || s.editing == nil || s.editing.shared.Workflows[id] != value {
-		if value != nil {
-			s.touch("workflow", id)
-		}
+	if value == nil || s.editing == nil || s.editing.has("workflow", id) {
 		return value
 	}
 	data, err := json.Marshal(value)
@@ -282,7 +329,7 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 // started from. It returns the records that differ and names the shared
 // records a callback changed in place.
 func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
-	shared, raw := s.editing.shared, s.editing.raw
+	shared, raw := s.editing.before, s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
 	for _, kind := range recordKinds {
 		if err := kind.changes(shared, s, raw, out, &edited, confirm); err != nil {
@@ -294,7 +341,7 @@ func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawM
 		if ok && previous == report && !confirm {
 			continue
 		}
-		differs, err := s.workflowChanges(out, id)
+		differs, err := s.workflowChanges(out, id, previous)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -302,9 +349,9 @@ func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawM
 			edited = append(edited, "workflow/"+id)
 		}
 	}
-	for id := range shared.Workflows {
+	for id, previous := range shared.Workflows {
 		if _, ok := s.Workflows[id]; !ok {
-			if _, err := s.workflowChanges(out, id); err != nil {
+			if _, err := s.workflowChanges(out, id, previous); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -318,10 +365,10 @@ func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawM
 
 // workflowChanges adds to out what an edit did to one report, which is stored
 // as a record of its own and one per step, and reports whether it differs
-// from the stored one.
-func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string) (differs bool, err error) {
-	shared, raw := s.editing.shared, s.editing.raw
-	previous, was := shared.Workflows[id]
+// from the stored one. previous is the report as the edit began, nil for one
+// it added.
+func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string, previous *workflow.Report) (differs bool, err error) {
+	raw, was := s.editing.raw, previous != nil
 	report, ok := s.Workflows[id]
 	if !ok {
 		if was {
@@ -360,8 +407,8 @@ func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id st
 
 // formatChanges adds the format record to out when an edit replaced it.
 func (s *State) formatChanges(out map[string]map[string]json.RawMessage) error {
-	shared, raw := s.editing.shared, s.editing.raw
-	if s.Format != shared.Format {
+	raw := s.editing.raw
+	if s.Format != s.editing.format {
 		if s.Format == nil {
 			setChange(out, formatKind, formatID, nil)
 		} else {
@@ -397,7 +444,8 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 	for name, ids := range s.editing.touched {
 		if name == "workflow" {
 			for id := range ids {
-				if _, err := s.workflowChanges(out, id); err != nil {
+				previous, _ := s.editing.prior[name][id].(*workflow.Report)
+				if _, err := s.workflowChanges(out, id, previous); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -465,12 +513,19 @@ func (r *Runtime) edit(ctx context.Context, fn func(*State) error) error {
 // sets what the transaction appends, pins or fences on raw. raw carries no
 // Records. The callback runs at most once.
 func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSession, fn func(raw *sessions.CoordinationState, s *State) error) error {
+	// The pokes an edit owes are sent after it lets go of the family's state.
+	var poke func()
+	defer func() {
+		if poke != nil {
+			poke()
+		}
+	}()
 	delta, ok := session.(sessions.CoordinationDeltaSession)
 	// A family that keeps changing under an edit falls back to the update
 	// below, which reads and writes inside one transaction.
 	if ok {
-		// One edit at a time reads the shared state and writes from it, so
-		// this runtime's own edits never make each other stale.
+		// One edit at a time changes the family's state, and no reader looks
+		// at it meanwhile.
 		r.editing.Lock()
 		defer r.editing.Unlock()
 	}
@@ -479,7 +534,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		// wrote the family; the store says so, and then a read catches up.
 		shared, raw, revision := r.view.snapshot()
 		if shared == nil || revision == 0 || attempt > 0 {
-			if _, err := r.State(ctx); err != nil {
+			if _, err := r.current(ctx); err != nil {
 				return err
 			}
 			if shared, raw, revision = r.view.snapshot(); shared == nil || revision == 0 {
@@ -492,7 +547,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		var changed map[string]map[string]json.RawMessage
 		var edited []string
 		err := delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
-			work = shared.editable(raw, confirm)
+			work = shared.editable(raw, confirm, r.view.unheld())
 			if err := fn(state, work); err != nil {
 				return err
 			}
@@ -507,6 +562,11 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 			committed, state.Changes = state, changed
 			return nil
 		})
+		if err != nil && work != nil {
+			// Nothing was written: put the records back as they were.
+			work.revert()
+			r.view.keep(shared, work)
+		}
 		if errors.Is(err, sessions.ErrCoordinationStale) {
 			continue
 		}
@@ -516,11 +576,12 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		if len(edited) > 0 {
 			slog.Warn("swarm_edit_without_own", "site", editSite(), "records", strings.Join(edited, ", "))
 			r.view.drop()
-			r.pokeAll()
+			poke = r.pokeAll
 		} else {
-			touched, before := work.editing.touched, work.editing.shared
+			touched, prior := work.editing.touched, work.editing.prior
+			work.reindexMail()
 			r.view.advance(revision, committed.Revision, work, changed)
-			r.pokeTouched(touched, work, before)
+			poke = r.pokesFor(touched, work, prior)
 		}
 		return nil
 	}
@@ -535,7 +596,7 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		return encodeState(raw, s)
 	})
 	if err == nil {
-		r.pokeAll()
+		poke = r.pokeAll
 	}
 	return err
 }
@@ -581,36 +642,84 @@ func (c *StateCache) confirmEdits(raw map[string]map[string]json.RawMessage) boo
 	return true
 }
 
-// snapshot returns the shared state with the records and revision it was
-// decoded from.
+// snapshot returns the family's state with the records and revision it was
+// decoded from, for an edit.
 func (c *StateCache) snapshot() (*State, map[string]map[string]json.RawMessage, uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state, c.raw, c.revision
 }
 
-// drop forgets the shared state, so the next read decodes the stored records.
+// drop forgets the family's state, so the next read decodes the stored
+// records.
 func (c *StateCache) drop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.raw, c.revision, c.state = nil, 0, nil
+	c.forget()
 }
 
-// advance moves the shared state from revision known to committed by the
+func (c *StateCache) forget() {
+	c.raw, c.revision, c.state, c.lent, c.cloned = nil, 0, nil, nil, nil
+}
+
+// unheld names the kinds whose map no reader holds, for an edit to add to.
+func (c *StateCache) unheld() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cloned == nil {
+		c.cloned = map[string]bool{}
+	}
+	return c.cloned
+}
+
+// lend returns s for a reader to keep. The family's own state changes under
+// its edits, so a reader gets a state of its own that shares the maps; from
+// then on an edit copies a map before it first writes it. Readers share one
+// such state until an edit changes something.
+func (c *StateCache) lend(s *State) *State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s != c.state {
+		// The cache has moved to a newer decode, so nothing writes s again.
+		return s
+	}
+	if c.lent == nil {
+		lent := *s
+		lent.mailTo = nil
+		c.lent, c.cloned = &lent, nil
+	}
+	return c.lent
+}
+
+// keep makes work, a failed edit's state with its changes taken back, the
+// family's state in place of shared: it holds the maps the edit copied.
+func (c *StateCache) keep(shared, work *State) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	work.editing = nil
+	if c.state == shared {
+		c.state = work
+	}
+}
+
+// advance moves the family's state from revision known to committed by the
 // changes an edit just wrote, so the next read needs no copy of the family.
-// work is the edit's state: its maps become the shared ones, with each
-// changed record decoded again from what was stored. If another reader moved
-// the cache meanwhile, it already holds something newer.
+// work is the edit's state, which becomes the family's, with each changed
+// record decoded again from what was stored.
 func (c *StateCache) advance(known, committed uint64, work *State, changed map[string]map[string]json.RawMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	fail := c.forget
 	if c.state == nil || c.revision != known || committed == 0 {
+		// The edit changed maps this cache no longer answers for.
+		fail()
 		return
 	}
+	work.editing = nil
 	if committed == known {
+		c.state = work
 		return
 	}
-	fail := func() { c.raw, c.revision, c.state = nil, 0, nil }
 	for kind, group := range changed {
 		for id, data := range group {
 			if data == nil {
@@ -623,7 +732,6 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 			c.raw[kind][id] = data
 		}
 	}
-	work.editing = nil
 	for _, kind := range recordKinds {
 		for id, data := range changed[kind.kind] {
 			if err := kind.adopt(work, id, data); err != nil {
@@ -657,5 +765,5 @@ func (c *StateCache) advance(known, committed uint64, work *State, changed map[s
 			return
 		}
 	}
-	c.revision, c.state = committed, work
+	c.revision, c.state, c.lent = committed, work, nil
 }
