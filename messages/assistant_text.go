@@ -32,11 +32,32 @@ func AnswerText(blocks []AssistantText) string {
 	return strings.Join(texts, "\n\n")
 }
 
+// isAnswerText reports whether content is AnswerText(blocks), comparing in
+// place instead of building another potentially oversized answer.
+func isAnswerText(content string, blocks []AssistantText) bool {
+	first, ok := true, false
+	for _, block := range blocks {
+		if block.Phase == PhaseCommentary || block.Text == "" {
+			continue
+		}
+		if !first {
+			if content, ok = strings.CutPrefix(content, "\n\n"); !ok {
+				return false
+			}
+		}
+		if content, ok = strings.CutPrefix(content, block.Text); !ok {
+			return false
+		}
+		first = false
+	}
+	return content == ""
+}
+
 // HasTextBlocks reports whether the structured text still describes Content.
 // Caller edits and history transformations may replace Content; stale blocks
 // must never override that replacement during replay or display.
 func (m ChatMessage) HasTextBlocks() bool {
-	if m.Role != MessageRoleAssistant || len(m.TextBlocks) == 0 || m.Content != AnswerText(m.TextBlocks) {
+	if m.Role != MessageRoleAssistant || len(m.TextBlocks) == 0 || !isAnswerText(m.Content, m.TextBlocks) {
 		return false
 	}
 	for _, part := range m.Parts {

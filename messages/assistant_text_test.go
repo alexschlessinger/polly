@@ -50,3 +50,18 @@ func TestAssistantBlocksSeparateCommentaryAndPreserveUnphasedBoundaries(t *testi
 		t.Fatal("stale blocks override an edit")
 	}
 }
+
+func TestHasTextBlocksComparesContentWithTheAnswerInPlace(t *testing.T) {
+	for _, blocks := range [][]AssistantText{
+		nil, {{Text: ""}}, {{Phase: PhaseCommentary, Text: "comment"}},
+		{{Text: "a"}, {Phase: PhaseCommentary, Text: "comment"}, {Text: ""}, {Text: "b\n"}},
+		{{Text: "a\n\n"}, {Text: "\n\nb"}},
+	} {
+		answer := AnswerText(blocks)
+		for _, content := range []string{"", "replacement", answer, answer + "\n\n", "\n\n" + answer, answer + "x"} {
+			if got, want := isAnswerText(content, blocks), content == answer; got != want {
+				t.Fatalf("isAnswerText(%q, %+v) = %v, want %v", content, blocks, got, want)
+			}
+		}
+	}
+}
