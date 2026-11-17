@@ -1196,7 +1196,7 @@ func TestMCPConfiguredEnvUsesExplicitTargetChannel(t *testing.T) {
 		},
 	}
 
-	if _, err := newMCPClientFromConfig(config, sb, nil); err == nil || !strings.Contains(err.Error(), "environment capture") {
+	if _, err := newMCPClientFromConfig(context.Background(), config, sb, nil); err == nil || !strings.Contains(err.Error(), "environment capture") {
 		t.Fatalf("newMCPClientFromConfig() error = %v, want capture sentinel", err)
 	}
 	if len(sb.explicit) != len(config.Env) {
@@ -1219,7 +1219,7 @@ func TestMCPConnectFailureLeavesLegacySandboxFilesOpen(t *testing.T) {
 		Command: "/bin/true",
 		Env:     map[string]string{"TARGET_ONLY": "value"},
 	}
-	if _, err := newMCPClientFromConfig(config, &mcpExtraFileSandbox{file: file}, nil); err == nil {
+	if _, err := newMCPClientFromConfig(context.Background(), config, &mcpExtraFileSandbox{file: file}, nil); err == nil {
 		t.Fatal("MCP connection unexpectedly succeeded")
 	}
 	// Legacy Sandbox implementations retain ownership of descriptors they

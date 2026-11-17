@@ -114,8 +114,9 @@ func TestSetToolLockedClosesOrphanedClient(t *testing.T) {
 		t.Fatal("client closed while another tool still used it")
 	}
 	// Replacing the last tool that used it closes it.
-	registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, nil)
+	retired := registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, nil)
 	registry.mu.Unlock()
+	closeMCPClients([]*MCPClient{retired})
 	if !first.Closed() {
 		t.Fatal("orphaned client was not closed")
 	}
@@ -147,8 +148,9 @@ func TestDropServerToolsLockedClosesPreviousClient(t *testing.T) {
 	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, old)
 	registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, old)
 	registry.serverTools["/cfg.json#srv"] = []string{"srv__a", "srv__b"}
-	registry.dropServerToolsLocked("/cfg.json#srv")
+	retired := registry.dropServerToolsLocked("/cfg.json#srv")
 	registry.mu.Unlock()
+	closeMCPClients(retired)
 	if !old.Closed() {
 		t.Fatal("previous server client was not closed")
 	}

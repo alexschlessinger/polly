@@ -162,7 +162,7 @@ func TestStageMCPServerWithNamespacePrefix(t *testing.T) {
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	defer registry.Close()
 
-	records, result, err := registry.prepareMCPServerWithNamespacePrefix(configPath, "clock-skill")
+	records, result, err := registry.prepareMCPServerWithNamespacePrefix(context.Background(), configPath, "clock-skill")
 	if err != nil {
 		t.Fatalf("prepareMCPServerWithNamespacePrefix() error = %v", err)
 	}

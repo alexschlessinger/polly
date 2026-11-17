@@ -136,7 +136,7 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 				return "", err
 			}
 
-			prepared, result, err := t.registry.prepareMCPServerWithNamespacePrefix(configPath, skill.Name)
+			prepared, result, err := t.registry.prepareMCPServerWithNamespacePrefix(context.Background(), configPath, skill.Name)
 			if err != nil {
 				closeStagedToolRecords(records)
 				return "", fmt.Errorf("load skill MCP config %s: %w", rel, err)
