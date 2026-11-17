@@ -8,7 +8,9 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-func (r *managedREPL) applySelectedModelHost(model, host string, window int, contextOverride *string) error {
+// applySetupSessionSettings applies the setup form's session-scoped fields in
+// one atomic commit through the /set validation and persistence path.
+func (r *managedREPL) applySetupSessionSettings(model, host, effort string, window int, contextOverride *string) error {
 	ctx := newManagedReplCommandContext(r)
 	if ctx.settings == nil {
 		return fmt.Errorf("model settings unavailable")
@@ -26,15 +28,10 @@ func (r *managedREPL) applySelectedModelHost(model, host string, window int, con
 		}
 	}
 	candidate.MaxHistoryTokens = candidate.contextLimit(window)
-	if err := applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext"); err != nil {
+	if err := parseReplSetting(ctx, &candidate, "effort", effort); err != nil {
 		return err
 	}
-	label := model
-	if host != "" {
-		label += " · " + host
-	}
-	r.model.appendNoticeLine("model: " + label + " (" + replSettingsScope(ctx) + ")")
-	return nil
+	return applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext", "effort")
 }
 
 func metadataDisplayText(s string, multiline bool) string {

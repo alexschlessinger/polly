@@ -36,6 +36,7 @@ type managedREPL struct {
 	turnDockW                          *style.LiteralParagraph
 	statusW                            *style.LiteralParagraph
 	modalW                             *modalParagraph
+	dockW                              *modalParagraph
 	rootFlex                           ui.Drawable
 	painter                            framePainter
 	wheelPaintTimer                    *time.Timer

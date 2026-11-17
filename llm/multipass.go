@@ -277,6 +277,15 @@ func (m *MultiPass) APIKeySource(provider string) string {
 	return ""
 }
 
+// HasConfiguredAPIKey reports whether provider has an environment-supplied key
+// beneath any process-local override.
+func (m *MultiPass) HasConfiguredAPIKey(provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	m.apiKeyMu.RLock()
+	defer m.apiKeyMu.RUnlock()
+	return m.apiKeys[provider] != ""
+}
+
 func (m *MultiPass) apiKey(provider string) string {
 	m.apiKeyMu.RLock()
 	defer m.apiKeyMu.RUnlock()

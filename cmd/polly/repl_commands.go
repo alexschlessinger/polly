@@ -87,7 +87,6 @@ type replCommandContext struct {
 	// them out of command parsing lets the fallback REPL retain text reports.
 	openContextPopover func()
 	openHelp           func([]string, string)
-	openModelPicker    func()
 	openKeyManager     func()
 	openSetup          func()
 	openSessionsPicker func()
@@ -211,7 +210,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/keys",
 		usage:   "/keys",
-		summary: "compatibility shortcut for /model focused on its process-only key override",
+		summary: "compatibility shortcut for /setup focused on its process-only key override",
 		hidden:  true,
 		run:     replKeysCommand,
 	})
@@ -219,7 +218,8 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/model",
 		usage:   "/model",
-		summary: "pick a session model and process-only key override",
+		summary: "compatibility shortcut for /setup",
+		hidden:  true,
 		run:     replModelCommand,
 	})
 	r.register(replCommand{
@@ -456,7 +456,6 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		startTurn:           r.submitCommandTurnLocked,
 		openContextPopover:  r.openContextPopover,
 		openHelp:            r.openHelp,
-		openModelPicker:     r.openModelPicker,
 		openKeyManager:      r.openKeyManager,
 		openLogin:           r.openLogin,
 		openSetup:           r.openSetupForm,
@@ -748,16 +747,18 @@ func uiCommand(ctx *replCommandContext, args []string, usage, unavailable string
 	return replCommandResult{}
 }
 
+const setupFormUnavailable = "setup form is available only in the managed TUI; edit " + userConfigDisplayPath + " or set POLLYTOOL_* variables"
+
 func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/model", "model form unavailable here; use /set model provider/model", func(ctx *replCommandContext) func() { return ctx.openModelPicker })
+	return uiCommand(ctx, args, "/model", setupFormUnavailable+"; use /set model provider/model for this session", func(ctx *replCommandContext) func() { return ctx.openSetup })
 }
 
 func replSetupCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/setup", "setup form is available only in the managed TUI; edit "+userConfigDisplayPath+" or set POLLYTOOL_* variables", func(ctx *replCommandContext) func() { return ctx.openSetup })
+	return uiCommand(ctx, args, "/setup", setupFormUnavailable, func(ctx *replCommandContext) func() { return ctx.openSetup })
 }
 
 func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/keys", "model form is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.openKeyManager })
+	return uiCommand(ctx, args, "/keys", setupFormUnavailable, func(ctx *replCommandContext) func() { return ctx.openKeyManager })
 }
 
 func replSessionsCommand(ctx *replCommandContext, args []string) replCommandResult {

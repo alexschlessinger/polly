@@ -455,10 +455,6 @@ func (m *replModal) awaited() bool {
 	return m != nil && m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
 }
 
-func (r *managedREPL) openModelPicker() { r.openModelForm(1) }
-
-func (r *managedREPL) openKeyManager() { r.openModelForm(2) }
-
 // expandPickerParent lists name's agents in the session picker from now on.
 func (r *managedREPL) expandPickerParent(name string) {
 	if r.pickerExpanded == nil {

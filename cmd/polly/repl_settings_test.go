@@ -9,7 +9,7 @@ import (
 )
 
 func TestPreferenceShortcutsAreCompatibilityOnly(t *testing.T) {
-	for _, name := range []string{"/effort", "/fast", "/keys"} {
+	for _, name := range []string{"/effort", "/fast", "/keys", "/model"} {
 		if _, ok := defaultReplCommands.get(name); !ok {
 			t.Fatalf("compatibility command %s no longer dispatches", name)
 		}
@@ -22,31 +22,38 @@ func TestPreferenceShortcutsAreCompatibilityOnly(t *testing.T) {
 			}
 		}
 	}
-	opened := false
-	dispatchDefaultCommandForTest(t, "/keys", &replCommandContext{openKeyManager: func() { opened = true }})
-	if !opened {
-		t.Fatal("/keys no longer opens the model form at the key override")
+	openedKeys := false
+	dispatchDefaultCommandForTest(t, "/keys", &replCommandContext{openKeyManager: func() { openedKeys = true }})
+	if !openedKeys {
+		t.Fatal("/keys no longer opens the setup form at the key override")
+	}
+	openedSetup := false
+	dispatchDefaultCommandForTest(t, "/model", &replCommandContext{openSetup: func() { openedSetup = true }})
+	if !openedSetup {
+		t.Fatal("/model no longer routes through /setup")
 	}
 }
 
-func TestModelPickerAndSetPersistTheSamePreferences(t *testing.T) {
+func TestSetupFormAndSetPersistTheSamePreferences(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	store := testOpenMemoryStore(t, nil)
-	initial := Settings{Model: "openai/gpt-5.4", Temperature: 0.7, MaxHistoryTokens: 32000}
-	picker := newManagedREPL(&Config{}, "picker-settings", 0, 0)
-	picker.state = &conversationState{session: testAcquireSession(t, store, "picker-settings"), settings: initial}
+	initial := Settings{Model: "openai/gpt-5.4", Temperature: 0.7, MaxHistoryTokens: 32000, ThinkingEffort: "high"}
+	setupREPL := newManagedREPL(&Config{}, "setup-settings", 0, 0)
+	setupREPL.state = &conversationState{session: testAcquireSession(t, store, "setup-settings"), settings: initial}
 	text := newManagedREPL(&Config{}, "text-settings", 0, 0)
 	text.state = &conversationState{session: testAcquireSession(t, store, "text-settings"), settings: initial}
+
 	budget := "64000"
-	if err := picker.applySelectedModelHost("openrouter/openai/gpt-5.4", "example/turbo", 128000, &budget); err != nil {
+	if err := setupREPL.applySetupSessionSettings("openrouter/openai/gpt-5.4", "example/turbo", "medium", 128000, &budget); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"/set model openrouter/openai/gpt-5.4", "/set modelhost example/turbo", "/set maxcontext 64000"} {
+	for _, command := range []string{"/set model openrouter/openai/gpt-5.4", "/set modelhost example/turbo", "/set maxcontext 64000", "/set effort medium"} {
 		text.runCommand(command)
 	}
-	if !reflect.DeepEqual(picker.state.settings, text.state.settings) {
-		t.Fatalf("picker settings %+v differ from text settings %+v", picker.state.settings, text.state.settings)
+	if !reflect.DeepEqual(setupREPL.state.settings, text.state.settings) {
+		t.Fatalf("setup settings %+v differ from text settings %+v", setupREPL.state.settings, text.state.settings)
 	}
-	pickerMeta, err := picker.state.session.GetMetadata(context.Background())
+	setupMeta, err := setupREPL.state.session.GetMetadata(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,35 +63,33 @@ func TestModelPickerAndSetPersistTheSamePreferences(t *testing.T) {
 	}
 	for _, spec := range settingSpecs {
 		if spec.parse != nil {
-			var fromPicker, fromText Settings
-			spec.fromMeta(&fromPicker, pickerMeta)
+			var fromSetup, fromText Settings
+			spec.fromMeta(&fromSetup, setupMeta)
 			spec.fromMeta(&fromText, textMeta)
-			if !reflect.DeepEqual(fromPicker, fromText) {
-				t.Fatalf("%s persisted differently: picker %+v, text %+v", spec.key, fromPicker, fromText)
+			if !reflect.DeepEqual(fromSetup, fromText) {
+				t.Fatalf("%s persisted differently: setup %+v, text %+v", spec.key, fromSetup, fromText)
 			}
 		}
 	}
-	for _, r := range []*managedREPL{picker, text} {
-		if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "saved to this session") {
-			t.Fatalf("missing save scope: %q", got)
-		}
+	if got := strings.Join(transcriptTexts(text.model), "\n"); !strings.Contains(got, "saved to this session") {
+		t.Fatalf("missing save scope: %q", got)
 	}
 }
 
 func TestPreferenceChangesRejectInvalidValuesAndFailedSaves(t *testing.T) {
-	for _, viaPicker := range []bool{false, true} {
-		t.Run(map[bool]string{false: "set", true: "picker"}[viaPicker], func(t *testing.T) {
+	for _, viaSetup := range []bool{false, true} {
+		t.Run(map[bool]string{false: "set", true: "setup"}[viaSetup], func(t *testing.T) {
 			store := testOpenMemoryStore(t, nil)
 			r := newManagedREPL(&Config{}, "settings-failure", 0, 0)
-			initial := Settings{Model: "openrouter/openai/gpt-5.4", ModelHost: "example/turbo", MaxHistoryTokens: 32000}
+			initial := Settings{Model: "openrouter/openai/gpt-5.4", ModelHost: "example/turbo", MaxHistoryTokens: 32000, ThinkingEffort: "high"}
 			r.state = &conversationState{session: testAcquireSession(t, store, "settings-failure"), settings: initial}
 			ctx := newManagedReplCommandContext(r)
 			applied := 0
 			ctx.settingsApplied = func(bool) { applied++ }
 			var err error
-			if viaPicker {
+			if viaSetup {
 				// The valid draft model must not land if the host is invalid.
-				err = r.applySelectedModelHost("openai/gpt-5.4", "example/turbo", 0, nil)
+				err = r.applySetupSessionSettings("openai/gpt-5.4", "example/turbo", "high", 0, nil)
 			} else {
 				_, err = applyAndPersistSetting(ctx, "modelhost", "invalid host")
 			}
@@ -94,8 +99,8 @@ func TestPreferenceChangesRejectInvalidValuesAndFailedSaves(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if viaPicker {
-				err = r.applySelectedModelHost("openai/gpt-5.4", "", 0, nil)
+			if viaSetup {
+				err = r.applySetupSessionSettings("openai/gpt-5.4", "", "high", 0, nil)
 			} else {
 				_, err = applyAndPersistSetting(ctx, "model", "openai/gpt-5.4")
 			}

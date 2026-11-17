@@ -494,6 +494,15 @@ func (a *Agent) ProviderAPIKeySource(provider string) string {
 	return ""
 }
 
+// HasConfiguredProviderAPIKey reports whether provider has an environment key
+// beneath any process-local override.
+func (a *Agent) HasConfiguredProviderAPIKey(provider string) bool {
+	if m := a.multiPass(); m != nil {
+		return m.HasConfiguredAPIKey(provider)
+	}
+	return false
+}
+
 // LoginRequired reports whether a request for model would be refused for
 // lack of a sign-in. A client without a provider router refuses nothing.
 func (a *Agent) LoginRequired(model string) bool {

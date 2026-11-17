@@ -13,6 +13,8 @@ import (
 // Sandbox environments that deny home writes can point POLLYTOOL_TEST_HOME at
 // a writable base outside the temp directories; it only picks the parent the
 // test home is created under.
+var testMainHome string
+
 func TestMain(m *testing.M) {
 	if os.Getenv("POLLY_TEST_ONESHOT_ARGS") != "" {
 		os.Exit(m.Run())
@@ -29,6 +31,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("create test home: " + err.Error())
 	}
+	testMainHome = home
 	os.Setenv("HOME", home)
 	os.Setenv("USERPROFILE", home)
 	code := m.Run()

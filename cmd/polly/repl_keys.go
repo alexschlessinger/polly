@@ -133,7 +133,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return false
 			}
 			if m.status.modelField.hit(mouse.X, mouse.Y, terminalHeight) {
-				r.openModelPicker()
+				r.openSetupForm()
 				return false
 			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
