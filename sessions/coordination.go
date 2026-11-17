@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -42,6 +41,15 @@ type CoordinationSession interface {
 type CoordinationState struct {
 	ActorID, ParentID string
 	Records           map[string]map[string]json.RawMessage
+	// Revision identifies the family's records within this store handle: two
+	// states with the same nonzero Revision hold the same Records. Zero means
+	// the store does not track it. After a successful UpdateCoordination the
+	// state passed to the callback carries the committed records' Revision,
+	// which is the one field a caller may read once the update returns.
+	Revision uint64
+	// Changes is how an UpdateCoordinationFrom callback reports its work,
+	// kind then id; a nil payload deletes the record. Records is nil there.
+	Changes map[string]map[string]json.RawMessage
 	// Append and ExpectedSequence atomically checkpoint generated output and
 	// admitted mail with the records containing its delivery receipts.
 	Append           []messages.ChatMessage
@@ -80,7 +88,8 @@ func applySchemaV5(ctx context.Context, conn *sql.Conn) error {
 }
 
 // loadCoordination reads the family state for a session whose lease the
-// caller has already confirmed.
+// caller has already confirmed. The caller holds the coordination cache; the
+// records it returns belong to the cache and must not be modified.
 func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*CoordinationState, []byte, error) {
 	var parent []byte
 	var sequence int64
@@ -89,7 +98,7 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 		return nil, nil, err
 	}
 	state := &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(parent), Sequence: sequence}
-	state.Records, err = readSwarmRecords(ctx, conn, parent)
+	state.Records, state.Revision, err = s.store.coordination.records(ctx, conn, parent)
 	return state, parent, err
 }
 
@@ -112,12 +121,45 @@ func readSwarmRecords(ctx context.Context, conn *sql.Conn, parent []byte) (map[s
 }
 
 func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationState, error) {
+	cache := s.store.coordination
+	if err := cache.hold(ctx); err != nil {
+		return nil, err
+	}
+	defer cache.release()
 	var state *CoordinationState
 	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) (err error) {
 		state, _, err = s.loadCoordination(ctx, conn)
 		return err
 	})
-	return state, err
+	if err != nil {
+		return nil, err
+	}
+	state.Records = copyRecords(state.Records)
+	return state, nil
+}
+
+// CoordinationRevisionSession is optional. It answers whether the family's
+// records changed since a state the caller still holds, without copying them.
+type CoordinationRevisionSession interface {
+	// CoordinationRevision returns the Revision ReadCoordination would.
+	CoordinationRevision(context.Context) (uint64, error)
+}
+
+func (s *sqliteSession) CoordinationRevision(ctx context.Context) (uint64, error) {
+	cache := s.store.coordination
+	if err := cache.hold(ctx); err != nil {
+		return 0, err
+	}
+	defer cache.release()
+	var revision uint64
+	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
+		state, _, err := s.loadCoordination(ctx, conn)
+		if err == nil {
+			revision = state.Revision
+		}
+		return err
+	})
+	return revision, err
 }
 
 // requireDirectChild fails unless child is a session spawned by parent.
@@ -133,24 +175,74 @@ func requireDirectChild(ctx context.Context, conn rowQuerier, child, parent []by
 }
 
 func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*CoordinationState) error) error {
+	return s.updateCoordination(ctx, nil, fn)
+}
+
+// ErrCoordinationStale reports that the family's records are no longer at the
+// revision an UpdateCoordinationFrom caller holds. Nothing ran or changed.
+var ErrCoordinationStale = errors.New("coordination records changed")
+
+// CoordinationDeltaSession is optional. It serves a caller that holds the
+// family's records in memory and so needs neither a copy of them nor a
+// comparison to find what it changed.
+type CoordinationDeltaSession interface {
+	// UpdateCoordinationFrom is UpdateCoordination for a caller holding the
+	// records at revision known. The callback receives no Records and reports
+	// the records it changed in Changes. When the family is no longer at
+	// known, it returns ErrCoordinationStale without invoking the callback.
+	UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*CoordinationState) error) error
+}
+
+func (s *sqliteSession) UpdateCoordinationFrom(ctx context.Context, known uint64, fn func(*CoordinationState) error) error {
+	return s.updateCoordination(ctx, &known, fn)
+}
+
+// updateCoordination runs one coordination transaction. With known set the
+// callback reports changes against that revision; otherwise it edits a copy
+// of the records and the difference is what gets written.
+func (s *sqliteSession) updateCoordination(ctx context.Context, known *uint64, fn func(*CoordinationState) error) error {
 	if fn == nil {
 		return errors.New("coordination update is required")
 	}
-	return s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
-		state, parent, err := s.loadCoordination(opCtx, conn)
+	cache := s.store.coordination
+	if err := cache.hold(ctx); err != nil {
+		return err
+	}
+	defer cache.release()
+	var parent []byte
+	var committed *CoordinationState
+	var before map[string]map[string]json.RawMessage
+	changed, wrote := false, false
+	err := s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
+		state, family, err := s.loadCoordination(opCtx, conn)
 		if err != nil {
 			return err
 		}
-		before := cloneRecords(state.Records)
+		parent, before = family, state.Records
+		if known != nil {
+			if state.Revision != *known {
+				return ErrCoordinationStale
+			}
+			state.Records = nil
+		} else {
+			state.Records = copyRecords(before)
+		}
 		if err := fn(state); err != nil {
 			return err
 		}
 		if state.ExpectedSequence != nil && *state.ExpectedSequence != state.Sequence {
 			return errors.New("checkpoint sequence changed")
 		}
-		if err := writeRecordChanges(opCtx, conn, parent, before, state.Records); err != nil {
+		wrote = true
+		if known != nil {
+			changed, err = writeRecordDelta(opCtx, conn, parent, state.Changes)
+		} else {
+			changed, err = writeRecordChanges(opCtx, conn, parent, before, state.Records)
+		}
+		if err != nil {
 			return err
 		}
+		committed = state
 		if err := registerMembers(opCtx, conn, parent, state); err != nil {
 			return err
 		}
@@ -171,18 +263,65 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		}
 		return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
 	})
+	switch {
+	case err == nil && changed && known != nil:
+		// The family's maps belong to the cache; only the changed records move.
+		for kind, group := range committed.Changes {
+			for id, value := range group {
+				if value == nil {
+					delete(before[kind], id)
+					continue
+				}
+				if before[kind] == nil {
+					before[kind] = map[string]json.RawMessage{}
+				}
+				before[kind][id] = value
+			}
+		}
+		committed.Revision = cache.replace(parent, before)
+	case err == nil && changed:
+		committed.Revision = cache.replace(parent, committed.Records)
+	case wrote:
+		// The commit may or may not have landed; the table decides.
+		cache.forget(parent)
+	}
+	return err
+}
+
+// writeRecordDelta writes the records a callback named: a nil payload deletes.
+func writeRecordDelta(ctx context.Context, conn *sql.Conn, parent []byte, changes map[string]map[string]json.RawMessage) (changed bool, err error) {
+	for kind, group := range changes {
+		for id, value := range group {
+			if value == nil {
+				if _, err := conn.ExecContext(ctx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
+					return false, err
+				}
+				changed = true
+				continue
+			}
+			if !json.Valid(value) || kind == "" || id == "" {
+				return false, errors.New("invalid coordination record")
+			}
+			if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 // writeRecordChanges writes only the records the callback changed: it
 // deletes the ones removed and upserts the ones added or altered. A checkpoint
 // touches one execution and a few messages, never the family's whole set.
-func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, before, after map[string]map[string]json.RawMessage) error {
+func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, before, after map[string]map[string]json.RawMessage) (changed bool, err error) {
 	for kind, group := range before {
 		for id := range group {
 			if after[kind][id] == nil {
 				if _, err := conn.ExecContext(ctx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
-					return err
+					return false, err
 				}
+				changed = true
 			}
 		}
 	}
@@ -194,14 +333,15 @@ func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, befo
 				continue
 			}
 			if !json.Valid(value) || kind == "" || id == "" {
-				return errors.New("invalid coordination record")
+				return false, errors.New("invalid coordination record")
 			}
 			if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
-				return err
+				return false, err
 			}
+			changed = true
 		}
 	}
-	return nil
+	return changed, nil
 }
 
 // registerMembers pins state.Members, direct children of the parent, to the
@@ -258,14 +398,6 @@ func (s *sqliteSession) pinArtifacts(ctx context.Context, conn *sql.Conn, parent
 		}
 	}
 	return nil
-}
-
-func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {
-	out := make(map[string]map[string]json.RawMessage, len(records))
-	for kind, group := range records {
-		out[kind] = maps.Clone(group)
-	}
-	return out
 }
 
 // OpenPublishedArtifact grants the caller a private reference only after the

@@ -22,6 +22,10 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 	if err != nil {
 		return nil, err
 	}
+	if err := s.coordination.hold(ctx); err != nil {
+		return nil, err
+	}
+	defer s.coordination.release()
 	state := &CoordinationState{ActorID: rootID, ParentID: rootID}
 	err = s.withRead(ctx, func(conn *sql.Conn) error {
 		var parentID []byte
@@ -39,8 +43,12 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 		if _, err := visibleSession(ctx, conn, id, updatedNS, ttlNS, time.Now().UnixNano()); err != nil {
 			return err
 		}
-		state.Records, err = readSwarmRecords(ctx, conn, id)
+		state.Records, state.Revision, err = s.coordination.records(ctx, conn, id)
 		return err
 	})
-	return state, err
+	if err != nil {
+		return nil, err
+	}
+	state.Records = copyRecords(state.Records)
+	return state, nil
 }
