@@ -36,9 +36,16 @@ type MergeResult struct {
 // Merge creates an immutable snapshot without allocating a checkout. Every
 // input supplies its own explicit base; runtime snapshots have no Git parents.
 func (m *Manager) Merge(ctx context.Context, base, ours, theirs Snapshot) (MergeResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	// Immutable commit inputs do not isolate merge-tree from the working
+	// tree's attributes. Exclude parent writers through that Git command only;
+	// parsing and retaining its result need no source or administration lock.
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return MergeResult{}, err
+	}
 	out, mergeErr := m.git(ctx, m.Root, nil, nil, "merge-tree", "--write-tree", "-z", "--messages", "--merge-base="+base.Commit, ours.Commit, theirs.Commit)
+	unlock()
 	conflicted := false
 	if mergeErr != nil {
 		var exit *exec.ExitError
@@ -115,7 +122,11 @@ func parseMergeOutput(out []byte, conflicted bool) (string, []Conflict, error) {
 // CaptureCurrent reuses the baseline when the parent is unchanged, without
 // allocating a snapshot ref or worktree slot for a no-op refresh.
 func (m *Manager) CaptureCurrent(ctx context.Context, baseline Snapshot) (Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
 	return m.capture(ctx, m.Root, baseline)
 }

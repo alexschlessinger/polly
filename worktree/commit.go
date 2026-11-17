@@ -16,14 +16,17 @@ import (
 // identity and ancestry. Unlike Capture, it never reads dirty file contents or
 // filters private paths out of the tree: a prohibited tree must be rejected.
 func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	source, unlock, err := m.reserveSourcePath(ctx, source)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
 	if !validObjectID(commit) {
 		return Snapshot{}, errors.New("commit must be a full Git commit object ID")
 	}
 	commit = strings.ToLower(commit)
-	source, err := m.captureSource(ctx, source)
-	if err != nil {
+	if err := m.captureSource(ctx, source); err != nil {
 		return Snapshot{}, err
 	}
 	kind, err := m.git(ctx, source, nil, nil, "cat-file", "-t", commit)
