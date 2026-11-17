@@ -27,11 +27,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		}
 	}
 	cb.AdmitInput = func(ctx context.Context) ([]messages.ChatMessage, error) {
-		raw, err := session.ReadCoordination(ctx)
-		if err != nil {
-			return nil, err
-		}
-		s, err := decodeState(raw)
+		s, raw, err := r.stateThrough(ctx, session)
 		if err != nil {
 			return nil, err
 		}
@@ -145,11 +141,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					turn := s.ParentTurns[raw.ActorID]
 					switch {
 					case pause != nil:
-						s.ParentTurns[raw.ActorID] = &ParentTurn{RetryPause: pause}
+						put(s, "parent_turn", &s.ParentTurns, raw.ActorID, &ParentTurn{RetryPause: pause})
 					case checkpoint.Request, turn != nil && turn.RetryPause == nil:
 						// Only a new committed request clears a saved retry pause.
 						// A refused or canceled turn before that boundary preserves it.
-						delete(s.ParentTurns, raw.ActorID)
+						drop(s, "parent_turn", &s.ParentTurns, raw.ActorID)
 					}
 					if turn := s.ParentTurns[raw.ActorID]; turn != nil {
 						parentPause = turn.RetryPause
@@ -249,11 +245,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		}
 		// A batch may start only while this execution still owns its member.
 		// JournalToolBatch records the intent itself once the calls are known.
-		raw, err := session.ReadCoordination(ctx)
-		if err != nil {
-			return err
-		}
-		s, err := decodeState(raw)
+		s, raw, err := r.stateThrough(ctx, session)
 		if err != nil {
 			return err
 		}
@@ -266,7 +258,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 	cb.JournalToolBatch = func(ctx context.Context, c llm.AgentCheckpoint) error {
 		return r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 			if execution == "" {
-				s.ParentTurns[raw.ActorID] = &ParentTurn{Intent: c.Generated[persisted:]}
+				put(s, "parent_turn", &s.ParentTurns, raw.ActorID, &ParentTurn{Intent: c.Generated[persisted:]})
 				return nil
 			}
 			e := s.ownExecution(execution)

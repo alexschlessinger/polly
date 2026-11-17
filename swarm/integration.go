@@ -130,7 +130,7 @@ func currentCandidate(s *State, task *Task) *IntegrationCandidate {
 }
 
 func (r *Runtime) pinSnapshot(ctx context.Context, snapshot worktree.Snapshot) error {
-	return r.edit(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
+	return r.edit(ctx, func(s *State) error { put(s, "snapshot", &s.Snapshots, snapshot.ID, &snapshot); return nil })
 }
 
 func (r *Runtime) finishCandidate(ctx context.Context, c *IntegrationCandidate) error {
@@ -186,7 +186,7 @@ func storeCandidate(s *State, c *IntegrationCandidate) error {
 			}
 		}
 	}
-	s.Integrations[c.ID] = c
+	put(s, "integration", &s.Integrations, c.ID, c)
 	return nil
 }
 

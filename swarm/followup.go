@@ -123,7 +123,7 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 		}
 		requirement := requirementOf(current, prior)
 		task = &Task{ID: ids.New(), Run: r.currentRun(current).ID, Follows: prior.ID, FollowupCallID: req.CallID, Owner: owner.ID, Requirement: requirement, Criteria: criteriaFor(requirement), Description: req.Question, StartingSnapshot: snapshot, SourceRoot: source, Status: "pending", Revision: 1}
-		current.Tasks[task.ID] = task
+		put(current, "task", &current.Tasks, task.ID, task)
 		return nil
 	})
 	return task, err

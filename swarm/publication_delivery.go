@@ -146,7 +146,7 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 	record := s.ownParent(reader)
 	if record == nil {
 		record = &ParentRecord{}
-		s.Parents[reader] = record
+		put(s, "parent", &s.Parents, reader, record)
 	}
 	record.Publications = mark
 	return nil

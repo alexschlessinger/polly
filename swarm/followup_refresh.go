@@ -150,12 +150,13 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 			return err
 		}
 		if captured != nil {
-			s.Snapshots[captured.ID] = captured
+			put(s, "snapshot", &s.Snapshots, captured.ID, captured)
 		} else if f.Base != "" && !validTaskSnapshot(s.Snapshots[f.Base], f.Base) {
 			return unavailableWorkspace()
 		}
 		f.Phase = "preparing"
-		s.Followups[mail.ID], s.Messages[mail.ID] = f, mail
+		put(s, "followup", &s.Followups, mail.ID, f)
+		put(s, "mail", &s.Messages, mail.ID, mail)
 		return nil
 	})
 	if err == nil {

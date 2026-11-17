@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -23,6 +24,60 @@ import (
 type editBase struct {
 	shared *State
 	raw    map[string]map[string]json.RawMessage
+	// touched names the records the callback took through own, put or drop,
+	// by kind. They are the only ones an edit looks at when it finishes.
+	touched map[string]map[string]struct{}
+	// lazy says the maps are still the shared state's, and cloned names the
+	// kinds whose map has since become the callback's own.
+	lazy   bool
+	cloned map[string]bool
+}
+
+// writable makes table, s's map for kind, safe to write: an edit that shares
+// its maps with the shared state takes a copy of one before its first write.
+func writable[T any](s *State, kind string, table *map[string]*T) {
+	if s.editing == nil || !s.editing.lazy || s.editing.cloned[kind] {
+		return
+	}
+	if s.editing.cloned == nil {
+		s.editing.cloned = map[string]bool{}
+	}
+	s.editing.cloned[kind] = true
+	if *table == nil {
+		*table = map[string]*T{}
+		return
+	}
+	*table = maps.Clone(*table)
+}
+
+// touch notes that an edit's callback changed, added or dropped a record.
+func (s *State) touch(kind, id string) {
+	if s.editing == nil {
+		return
+	}
+	if s.editing.touched[kind] == nil {
+		if s.editing.touched == nil {
+			s.editing.touched = map[string]map[string]struct{}{}
+		}
+		s.editing.touched[kind] = map[string]struct{}{}
+	}
+	s.editing.touched[kind][id] = struct{}{}
+}
+
+// put adds or replaces a record. table is s's map for kind. Every write to a
+// State's maps goes through put, drop or an own method: inside an edit the
+// maps may be the shared state's, which other goroutines are reading.
+func put[T any](s *State, kind string, table *map[string]*T, id string, value *T) {
+	writable(s, kind, table)
+	(*table)[id] = value
+	s.touch(kind, id)
+}
+
+// drop deletes a record, as put adds one.
+func drop[T any](s *State, kind string, table *map[string]*T, id string) {
+	writable(s, kind, table)
+	delete(*table, id)
+	s.touch(kind, id)
 }
 
 // recordKind is one kind of record an edit can change, apart from workflow
@@ -32,6 +87,8 @@ type recordKind struct {
 	// changes adds to out the records work holds that shared does not, and
 	// names in edited every shared record whose content no longer matches raw.
 	changes func(shared, work *State, raw, out map[string]map[string]json.RawMessage, edited *[]string, confirm bool) error
+	// touched is changes for the one record an edit says it touched.
+	touched func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error
 	// adopt replaces work's record with a decode of data, or drops it.
 	adopt func(work *State, id string, data json.RawMessage) error
 }
@@ -64,6 +121,23 @@ func kindOf[T any](kind string, table func(*State) map[string]*T) recordKind {
 				if _, ok := after[id]; !ok {
 					setChange(out, kind, id, nil)
 				}
+			}
+			return nil
+		},
+		touched: func(work *State, raw, out map[string]map[string]json.RawMessage, id string) error {
+			value, ok := table(work)[id]
+			if !ok {
+				if _, stored := raw[kind][id]; stored {
+					setChange(out, kind, id, nil)
+				}
+				return nil
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(data, raw[kind][id]) {
+				setChange(out, kind, id, data)
 			}
 			return nil
 		},
@@ -106,9 +180,16 @@ var recordKinds = []recordKind{
 	kindOf("preview", func(s *State) map[string]*worktree.Preview { return s.Previews }),
 }
 
-// editable returns a state whose maps the caller may add to and delete from.
-// A record already in them is changed only through its own* method.
-func (s *State) editable(raw map[string]map[string]json.RawMessage) *State {
+// editable returns a state for an edit's callback, which changes it through
+// put, drop and the own methods. With eager set every map is the callback's
+// own from the start, so a comparison with the shared state finds a write
+// that went around them; otherwise a map is copied when first written.
+func (s *State) editable(raw map[string]map[string]json.RawMessage, eager bool) *State {
+	if !eager {
+		work := *s
+		work.editing = &editBase{shared: s, raw: raw, lazy: true}
+		return &work
+	}
 	return &State{
 		Followups: maps.Clone(s.Followups), Integrations: maps.Clone(s.Integrations), Applies: maps.Clone(s.Applies),
 		ParentTurns: maps.Clone(s.ParentTurns), Parents: maps.Clone(s.Parents), Runs: maps.Clone(s.Runs),
@@ -122,52 +203,57 @@ func (s *State) editable(raw map[string]map[string]json.RawMessage) *State {
 // own returns record id for a callback that is about to change it. Inside an
 // edit that is a copy of the caller's own, put in the record's place; a state
 // that is already private returns the record itself.
-func own[T any](s *State, kind string, table func(*State) map[string]*T, id string) *T {
-	records := table(s)
-	value := records[id]
-	if value == nil || s.editing == nil || table(s.editing.shared)[id] != value {
+func own[T any](s *State, kind string, table func(*State) *map[string]*T, id string) *T {
+	value := (*table(s))[id]
+	if value == nil || s.editing == nil || (*table(s.editing.shared))[id] != value {
+		// A record the callback already owns or added may change again.
+		if value != nil {
+			s.touch(kind, id)
+		}
 		return value
 	}
 	mine := new(T)
 	if err := json.Unmarshal(s.editing.raw[kind][id], mine); err != nil {
 		panic(fmt.Sprintf("swarm: stored %s %s no longer decodes: %v", kind, id, err))
 	}
-	records[id] = mine
+	writable(s, kind, table(s))
+	(*table(s))[id] = mine
+	s.touch(kind, id)
 	return mine
 }
 
 func (s *State) ownExecution(id string) *Execution {
-	return own(s, "execution", func(s *State) map[string]*Execution { return s.Executions }, id)
+	return own(s, "execution", func(s *State) *map[string]*Execution { return &s.Executions }, id)
 }
 func (s *State) ownMember(id string) *Member {
-	return own(s, "member", func(s *State) map[string]*Member { return s.Members }, id)
+	return own(s, "member", func(s *State) *map[string]*Member { return &s.Members }, id)
 }
 func (s *State) ownTask(id string) *Task {
-	return own(s, "task", func(s *State) map[string]*Task { return s.Tasks }, id)
+	return own(s, "task", func(s *State) *map[string]*Task { return &s.Tasks }, id)
 }
 func (s *State) ownMail(id string) *Mail {
-	return own(s, "mail", func(s *State) map[string]*Mail { return s.Messages }, id)
+	return own(s, "mail", func(s *State) *map[string]*Mail { return &s.Messages }, id)
 }
 func (s *State) ownRun(id string) *Run {
-	return own(s, "run", func(s *State) map[string]*Run { return s.Runs }, id)
+	return own(s, "run", func(s *State) *map[string]*Run { return &s.Runs }, id)
 }
 func (s *State) ownContext(id string) *ExecutionContext {
-	return own(s, "context", func(s *State) map[string]*ExecutionContext { return s.Contexts }, id)
+	return own(s, "context", func(s *State) *map[string]*ExecutionContext { return &s.Contexts }, id)
 }
 func (s *State) ownParentTurn(id string) *ParentTurn {
-	return own(s, "parent_turn", func(s *State) map[string]*ParentTurn { return s.ParentTurns }, id)
+	return own(s, "parent_turn", func(s *State) *map[string]*ParentTurn { return &s.ParentTurns }, id)
 }
 func (s *State) ownIntegration(id string) *IntegrationCandidate {
-	return own(s, "integration", func(s *State) map[string]*IntegrationCandidate { return s.Integrations }, id)
+	return own(s, "integration", func(s *State) *map[string]*IntegrationCandidate { return &s.Integrations }, id)
 }
 func (s *State) ownFollowup(id string) *FollowupCall {
-	return own(s, "followup", func(s *State) map[string]*FollowupCall { return s.Followups }, id)
+	return own(s, "followup", func(s *State) *map[string]*FollowupCall { return &s.Followups }, id)
 }
 func (s *State) ownParent(id string) *ParentRecord {
-	return own(s, "parent", func(s *State) map[string]*ParentRecord { return s.Parents }, id)
+	return own(s, "parent", func(s *State) *map[string]*ParentRecord { return &s.Parents }, id)
 }
 func (s *State) ownPublication(id string) *Publication {
-	return own(s, "publication", func(s *State) map[string]*Publication { return s.Publications }, id)
+	return own(s, "publication", func(s *State) *map[string]*Publication { return &s.Publications }, id)
 }
 
 // ownWorkflow is own for a report, which is stored as one record and one per
@@ -175,6 +261,9 @@ func (s *State) ownPublication(id string) *Publication {
 func (s *State) ownWorkflow(id string) *workflow.Report {
 	value := s.Workflows[id]
 	if value == nil || s.editing == nil || s.editing.shared.Workflows[id] != value {
+		if value != nil {
+			s.touch("workflow", id)
+		}
 		return value
 	}
 	data, err := json.Marshal(value)
@@ -185,16 +274,14 @@ func (s *State) ownWorkflow(id string) *workflow.Report {
 	if err != nil {
 		panic(fmt.Sprintf("swarm: workflow %s no longer encodes: %v", id, err))
 	}
-	s.Workflows[id] = mine
+	put(s, "workflow", &s.Workflows, id, mine)
 	return mine
 }
 
-// changes returns what an edit did to the shared state it started from, as
-// records to write, and names the shared records a callback changed without
-// taking them through own. Those are written too, so no change is lost, but
-// the shared state can no longer be trusted. confirm asks for that check,
-// which decodes every untouched record.
-func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
+// changesByWalk compares every record of an edit with the shared state it
+// started from. It returns the records that differ and names the shared
+// records a callback changed in place.
+func (s *State) changesByWalk(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
 	shared, raw := s.editing.shared, s.editing.raw
 	out = map[string]map[string]json.RawMessage{}
 	for _, kind := range recordKinds {
@@ -207,58 +294,156 @@ func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage
 		if ok && previous == report && !confirm {
 			continue
 		}
-		headers, steps := detachWorkflowSteps(map[string]*workflow.Report{id: report})
-		data, err := json.Marshal(headers[id])
+		differs, err := s.workflowChanges(out, id)
 		if err != nil {
 			return nil, nil, err
-		}
-		differs := !bytes.Equal(data, raw["workflow"][id])
-		if differs {
-			setChange(out, "workflow", id, data)
-		}
-		for key, step := range steps {
-			data, err := json.Marshal(step)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !bytes.Equal(data, raw["workflow_step"][key]) {
-				setChange(out, "workflow_step", key, data)
-				differs = true
-			}
-		}
-		if ok {
-			for index := len(report.Steps); index < len(previous.Steps); index++ {
-				setChange(out, "workflow_step", fmt.Sprintf("%s/%d", id, index), nil)
-			}
 		}
 		if ok && previous == report && differs {
 			edited = append(edited, "workflow/"+id)
 		}
 	}
-	for id, previous := range shared.Workflows {
-		if _, ok := s.Workflows[id]; ok {
-			continue
+	for id := range shared.Workflows {
+		if _, ok := s.Workflows[id]; !ok {
+			if _, err := s.workflowChanges(out, id); err != nil {
+				return nil, nil, err
+			}
 		}
-		setChange(out, "workflow", id, nil)
-		for index := range previous.Steps {
+	}
+	if err := s.formatChanges(out); err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(edited)
+	return out, edited, nil
+}
+
+// workflowChanges adds to out what an edit did to one report, which is stored
+// as a record of its own and one per step, and reports whether it differs
+// from the stored one.
+func (s *State) workflowChanges(out map[string]map[string]json.RawMessage, id string) (differs bool, err error) {
+	shared, raw := s.editing.shared, s.editing.raw
+	previous, was := shared.Workflows[id]
+	report, ok := s.Workflows[id]
+	if !ok {
+		if was {
+			setChange(out, "workflow", id, nil)
+			for index := range previous.Steps {
+				setChange(out, "workflow_step", fmt.Sprintf("%s/%d", id, index), nil)
+			}
+		}
+		return was, nil
+	}
+	headers, steps := detachWorkflowSteps(map[string]*workflow.Report{id: report})
+	data, err := json.Marshal(headers[id])
+	if err != nil {
+		return false, err
+	}
+	if differs = !bytes.Equal(data, raw["workflow"][id]); differs {
+		setChange(out, "workflow", id, data)
+	}
+	for key, step := range steps {
+		data, err := json.Marshal(step)
+		if err != nil {
+			return false, err
+		}
+		if !bytes.Equal(data, raw["workflow_step"][key]) {
+			setChange(out, "workflow_step", key, data)
+			differs = true
+		}
+	}
+	if was {
+		for index := len(report.Steps); index < len(previous.Steps); index++ {
 			setChange(out, "workflow_step", fmt.Sprintf("%s/%d", id, index), nil)
 		}
 	}
+	return differs, nil
+}
+
+// formatChanges adds the format record to out when an edit replaced it.
+func (s *State) formatChanges(out map[string]map[string]json.RawMessage) error {
+	shared, raw := s.editing.shared, s.editing.raw
 	if s.Format != shared.Format {
 		if s.Format == nil {
 			setChange(out, formatKind, formatID, nil)
 		} else {
 			data, err := json.Marshal(s.Format)
 			if err != nil {
-				return nil, nil, err
+				return err
 			}
 			if !bytes.Equal(data, raw[formatKind][formatID]) {
 				setChange(out, formatKind, formatID, data)
 			}
 		}
 	}
+	return nil
+}
+
+var kindsByName = func() map[string]recordKind {
+	out := map[string]recordKind{}
+	for _, kind := range recordKinds {
+		out[kind.kind] = kind
+	}
+	return out
+}()
+
+// changes returns what an edit did to the shared state it started from, as
+// records to write: those its callback took through own, put or drop. confirm
+// also compares every other record, which costs a decode of the family, and
+// names in edited the ones a callback changed some other way. Those are
+// written too, so no change is lost, but the shared state can no longer be
+// trusted.
+func (s *State) changes(confirm bool) (out map[string]map[string]json.RawMessage, edited []string, err error) {
+	raw := s.editing.raw
+	out = map[string]map[string]json.RawMessage{}
+	for name, ids := range s.editing.touched {
+		if name == "workflow" {
+			for id := range ids {
+				if _, err := s.workflowChanges(out, id); err != nil {
+					return nil, nil, err
+				}
+			}
+			continue
+		}
+		kind, ok := kindsByName[name]
+		if !ok {
+			return nil, nil, fmt.Errorf("swarm: no record kind %q", name)
+		}
+		for id := range ids {
+			if err := kind.touched(s, raw, out, id); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if err := s.formatChanges(out); err != nil {
+		return nil, nil, err
+	}
+	if !confirm {
+		return out, nil, nil
+	}
+	walked, edited, err := s.changesByWalk(true)
+	if err != nil {
+		return nil, nil, err
+	}
+	named := map[string]bool{}
+	for _, name := range edited {
+		named[name] = true
+	}
+	for kind, group := range walked {
+		for id := range group {
+			if _, ok := out[kind][id]; ok {
+				continue
+			}
+			name := kind + "/" + id
+			if kind == "workflow_step" {
+				name = "workflow/" + id[:strings.LastIndex(id, "/")]
+			}
+			if !named[name] {
+				named[name] = true
+				edited = append(edited, name)
+			}
+		}
+	}
 	sort.Strings(edited)
-	return out, edited, nil
+	return walked, edited, nil
 }
 
 // edit is update for a callback that takes every record it changes through
@@ -283,30 +468,41 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 	delta, ok := session.(sessions.CoordinationDeltaSession)
 	// A family that keeps changing under an edit falls back to the update
 	// below, which reads and writes inside one transaction.
+	if ok {
+		// One edit at a time reads the shared state and writes from it, so
+		// this runtime's own edits never make each other stale.
+		r.editing.Lock()
+		defer r.editing.Unlock()
+	}
 	for attempt := 0; ok && attempt < 3; attempt++ {
-		if _, err := r.State(ctx); err != nil {
-			return err
-		}
+		// The shared state is current unless something outside this runtime
+		// wrote the family; the store says so, and then a read catches up.
 		shared, raw, revision := r.view.snapshot()
-		if shared == nil || revision == 0 {
-			break
+		if shared == nil || revision == 0 || attempt > 0 {
+			if _, err := r.State(ctx); err != nil {
+				return err
+			}
+			if shared, raw, revision = r.view.snapshot(); shared == nil || revision == 0 {
+				break
+			}
 		}
+		confirm := r.view.confirmEdits(raw)
 		var committed *sessions.CoordinationState
 		var work *State
 		var changed map[string]map[string]json.RawMessage
 		var edited []string
 		err := delta.UpdateCoordinationFrom(ctx, revision, func(state *sessions.CoordinationState) error {
-			work = shared.editable(raw)
+			work = shared.editable(raw, confirm)
 			if err := fn(state, work); err != nil {
 				return err
 			}
 			var err error
-			changed, edited, err = work.changes(confirmEdits(raw))
+			changed, edited, err = work.changes(confirm)
 			if err != nil {
 				return err
 			}
 			if len(edited) > 0 && failOnSharedChange {
-				panic("swarm: the edit at " + editSite() + " changed records without own: " + strings.Join(edited, ", "))
+				panic("swarm: the edit at " + editSite() + " changed records without own, put or drop: " + strings.Join(edited, ", "))
 			}
 			committed, state.Changes = state, changed
 			return nil
@@ -320,12 +516,15 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		if len(edited) > 0 {
 			slog.Warn("swarm_edit_without_own", "site", editSite(), "records", strings.Join(edited, ", "))
 			r.view.drop()
+			r.pokeAll()
 		} else {
+			touched, before := work.editing.touched, work.editing.shared
 			r.view.advance(revision, committed.Revision, work, changed)
+			r.pokeTouched(touched, work, before)
 		}
 		return nil
 	}
-	return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+	err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 		s, err := decodeState(raw)
 		if err != nil {
 			return err
@@ -335,6 +534,10 @@ func (r *Runtime) editOn(ctx context.Context, session sessions.CoordinationSessi
 		}
 		return encodeState(raw, s)
 	})
+	if err == nil {
+		r.pokeAll()
+	}
+	return err
 }
 
 // editSite names the caller of the edit in progress, for its diagnostics.
@@ -353,10 +556,12 @@ func editSite() string {
 	return "an unknown caller"
 }
 
-// confirmEdits reports whether an edit of this family checks every record it
-// left alone. Tests always do; a running process does while the family is
-// small enough for that to cost what update would.
-func confirmEdits(raw map[string]map[string]json.RawMessage) bool {
+// confirmEdits reports whether this edit checks every record it left alone.
+// Tests always do. A running process does about once a second while the
+// family is small enough for the check to cost what update would; between
+// checks a change made without own is not written, and the next check of the
+// shared state reverts it.
+func (c *StateCache) confirmEdits(raw map[string]map[string]json.RawMessage) bool {
 	if failOnSharedChange {
 		return true
 	}
@@ -364,7 +569,16 @@ func confirmEdits(raw map[string]map[string]json.RawMessage) bool {
 	for _, group := range raw {
 		records += len(group)
 	}
-	return records <= sharedCheckRecords
+	if records > sharedCheckRecords {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Since(c.confirmed) < sharedCheckEvery {
+		return false
+	}
+	c.confirmed = time.Now()
+	return true
 }
 
 // snapshot returns the shared state with the records and revision it was

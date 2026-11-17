@@ -2,9 +2,14 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -53,11 +58,11 @@ func TestEditWritesTheRecordsItTouches(t *testing.T) {
 			t.Error("own did not hand out one private copy")
 		}
 		task.Description = "changed"
-		delete(s.Tasks, deleted)
-		s.Tasks["added"] = &Task{ID: "added", Run: task.Run, Description: "added", Status: "pending", Revision: 1}
+		drop(s, "task", &s.Tasks, deleted)
+		put(s, "task", &s.Tasks, "added", &Task{ID: "added", Run: task.Run, Description: "added", Status: "pending", Revision: 1})
 		added := s.ownTask("added")
 		added.Criteria = "set after adding"
-		s.Workflows["flow"] = &workflow.Report{ID: "flow", Run: task.Run, Status: "completed", Steps: []workflow.Step{{Status: "completed"}, {Status: "completed"}}}
+		put(s, "workflow", &s.Workflows, "flow", &workflow.Report{ID: "flow", Run: task.Run, Status: "completed", Steps: []workflow.Step{{Status: "completed"}, {Status: "completed"}}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -84,7 +89,7 @@ func TestEditWritesTheRecordsItTouches(t *testing.T) {
 	if after = sameAsStored(t, r); len(after.Workflows["flow"].Steps) != 1 || after.Workflows["flow"].Steps[0].Status != "failed" {
 		t.Fatalf("report after edit: %+v", after.Workflows["flow"])
 	}
-	if err := r.edit(ctx, func(s *State) error { delete(s.Workflows, "flow"); return nil }); err != nil {
+	if err := r.edit(ctx, func(s *State) error { drop(s, "workflow", &s.Workflows, "flow"); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if after = sameAsStored(t, r); after.Workflows["flow"] != nil {
@@ -94,7 +99,7 @@ func TestEditWritesTheRecordsItTouches(t *testing.T) {
 	veto := errors.New("veto")
 	if err := r.edit(ctx, func(s *State) error {
 		s.ownTask(kept).Description = "refused"
-		delete(s.Tasks, edited)
+		drop(s, "task", &s.Tasks, edited)
 		return veto
 	}); !errors.Is(err, veto) {
 		t.Fatalf("refused edit: %v", err)
@@ -177,5 +182,67 @@ func BenchmarkOneRecordChange(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+// An edit's maps may be the shared state's, which other goroutines read, so
+// nothing but put, drop and the own methods may write a State's maps.
+func TestStateMapsAreWrittenThroughPutAndDrop(t *testing.T) {
+	t.Parallel()
+	kinds := "Followups|Integrations|Applies|ParentTurns|Parents|Runs|Members|Tasks|Messages|Publications|Executions|Contexts|Snapshots|Previews|Workflows"
+	direct := regexp.MustCompile(`\b\w+\.(` + kinds + `)\[[^\]]+\](, [^=\n]+)? = |\b(delete|clear)\(\w+\.(` + kinds + `)\b`)
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number, line := range strings.Split(string(data), "\n") {
+			if direct.MatchString(line) {
+				t.Errorf("%s:%d writes a State map directly: %s", file, number+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// An edit that is not being confirmed shares its maps with the shared state
+// and copies one when it first writes it, so the shared state never changes
+// under its readers.
+func TestEditCopiesAMapWhenItWritesIt(t *testing.T) {
+	t.Parallel()
+	shared := &State{
+		Tasks:    map[string]*Task{"kept": {ID: "kept", Status: "pending"}, "gone": {ID: "gone"}, "edited": {ID: "edited", Status: "pending"}},
+		Messages: map[string]*Mail{"mail": {ID: "mail", To: "member"}},
+	}
+	raw := &sessions.CoordinationState{Records: map[string]map[string]json.RawMessage{}}
+	if err := encodeState(raw, shared); err != nil {
+		t.Fatal(err)
+	}
+	work := shared.editable(raw.Records, false)
+	if reflect.ValueOf(work.Tasks).Pointer() != reflect.ValueOf(shared.Tasks).Pointer() {
+		t.Fatal("an edit copied a map before writing it")
+	}
+	work.ownTask("edited").Status = "done"
+	drop(work, "task", &work.Tasks, "gone")
+	put(work, "task", &work.Tasks, "added", &Task{ID: "added"})
+	if shared.Tasks["edited"].Status != "pending" || shared.Tasks["gone"] == nil || shared.Tasks["added"] != nil || len(shared.Tasks) != 3 {
+		t.Fatalf("the edit changed the shared tasks: %+v", shared.Tasks)
+	}
+	if reflect.ValueOf(work.Messages).Pointer() != reflect.ValueOf(shared.Messages).Pointer() {
+		t.Fatal("an edit copied a map it never wrote")
+	}
+	changed, edited, err := work.changes(false)
+	if err != nil || len(edited) != 0 {
+		t.Fatalf("changes: %v %v", edited, err)
+	}
+	tasks := changed["task"]
+	if len(changed) != 1 || len(tasks) != 3 || tasks["gone"] != nil || !strings.Contains(string(tasks["edited"]), `"done"`) || tasks["added"] == nil {
+		t.Fatalf("changes: %s", changed)
 	}
 }

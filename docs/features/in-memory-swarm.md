@@ -1,7 +1,8 @@
 # In-memory swarm state with a write-behind store
 
-Status: design sketch, 2026-11-09. Steps 1 to 3 of the sequence are
-implemented; nothing else is.
+Status: design sketch, 2026-11-09. Steps 1 to 4 of the sequence and the
+writer of step 5 are implemented, and the step 7 benchmark exists; nothing
+else is.
 
 Target: 5000 concurrent agents in one process, about 750 of them writing
 files, on one workstation. Everything else is negotiable. Sizing figures below
@@ -71,7 +72,8 @@ memory; the two read methods exist for them.
 - **Crash window.** A hard crash can lose the last few milliseconds of state.
   This is accepted. The one rule: `Sync()` on the writer, which returns once
   everything enqueued so far is committed, is called before any irreversible
-  host effect (applying a workspace, integrating a result).
+  host effect (applying a workspace, integrating a result). The runtime
+  calls it before it writes a result into the source tree.
 - **Atomic delivery.** A mail receipt and the transcript message it produced
   travel in the same `Batch`, so one transaction commits both.
 - **Backpressure.** The writer's queue is bounded. If disk falls behind, owner
@@ -141,29 +143,73 @@ execution is bounded by cores through the tool limiter, not by agent count.
    when a reader edits one, and a running process checks about once a second
    and returns to the stored records with a warning.
 3. **Done.** An update pays for the records it touches. `edit` hands its
-   callback the shared state with maps of its own; the callback takes each
-   record it changes through an `own` method, which gives it a private copy,
-   and adds or deletes records directly. The store writes the changed records
-   alone (`UpdateCoordinationFrom`) and the shared state moves forward by the
-   same set, so the next read copies nothing. Changing one record in a family
-   of 20,000 went from 28 ms to 1 ms (`BenchmarkOneRecordChange`); what
-   remains is cloning and walking the maps, which still grows with the
-   family. A callback that changes a record without `own` fails a test; a
-   running process checks every edit while the family has at most 4,096
-   records, still writes the change, warns, and drops the shared state.
-   Above that size only the tests stand behind an edit. Every runtime write
-   uses `edit` except the two recovery passes that run once when a runtime
-   takes over a family. `update` remains as the whole-family form, for tests
-   and as what `edit` falls back to against a store that cannot write a set
-   of changes.
-4. Pokes, driven by the set of records an update changed, replacing the
-   in-process change broadcast.
-5. The single write-behind writer and `Sync()`; shrink the store interface.
+   callback the shared state; the callback takes each record it changes
+   through an `own` method, which gives it a private copy, and adds and
+   deletes records with `put` and `drop`. Those calls copy a map the first
+   time the edit writes it and note the record, so the edit ends by encoding
+   the noted records alone. The store writes them (`UpdateCoordinationFrom`)
+   and the shared state moves forward by the same set. A runtime's edits take
+   turns, so they never find each other's changes unexpected. Nothing else
+   may write a `State` map: a test reads the package source for such writes,
+   and every edit in a test also compares the whole family and fails on a
+   change it was not told about. A running process makes that comparison
+   about once a second while the family has at most 4,096 records, writes
+   what it finds and warns; between comparisons an unannounced change to a
+   record is not written. `update` remains as the whole-family form, for
+   tests, for the two recovery passes that run when a runtime takes over a
+   family, and as what `edit` falls back to against a store that cannot write
+   a set of changes.
+4. **Done for members.** An edit pokes the members its records concern: a
+   mail's recipient, a member whose own record changed, and every active
+   member when a task or publication changed. A parked member rechecks its
+   wake conditions only then. The parent's waits still hear every change.
+5. **Writer done; the interface is unchanged.** The SQLite store answers an
+   `UpdateCoordinationFrom` from memory: it checks the session's lease by its
+   expiry, applies the changed records to the family it holds, queues the
+   records and any appended transcript messages, and returns. One goroutine
+   commits everything queued in one transaction, in order. Every other store
+   operation first waits for the queue to empty, so it sees the rows the
+   accepted updates produced. The queue is bounded, and callers wait when it
+   is full. `Sync` waits for the queue and then for the disk. An update that
+   pins artifacts or registers members is written before it returns. About
+   every tenth of a second one operation per family goes to the database, to
+   notice a commit made through another connection. If a queued batch cannot
+   be written, twice, the store stops accepting coordination updates.
 6. `Executor` and the two limiters; raise the 32-member default.
-7. Benchmark at 5000 agents with a scripted model (`llm/replay`), with budgets
-   that fail the run: commit under 100 µs in memory, wake under 1 ms, open to
-   first paint independent of transcript length. Then decide on overlays and
-   sharding.
+7. Benchmark at 5000 agents with a scripted model, with budgets that fail the
+   run: commit under 100 µs in memory, wake under 1 ms, open to first paint
+   independent of transcript length. Then decide on overlays and sharding.
+   `BenchmarkSwarmAgents` is the first part: read-only agents in a ring, each
+   round a model call, a mail, a park, a wake and a delivery for every agent,
+   against a model that answers at once. It has no budgets yet.
+
+## Measurements
+
+`BenchmarkSwarmAgents`, three rounds, on a 16-core workstation:
+
+| Store | Agents | Model calls/s | Spawn per agent |
+|---|---|---|---|
+| memory | 100 | 1803 | 1.8 ms |
+| memory | 1000 | 1344 | 1.5 ms |
+| memory | 5000 | 860 | 2.0 ms |
+| disk | 100 | 1182 | 2.3 ms |
+| disk | 1000 | 910 | 2.7 ms |
+| disk | 5000 | 573 | 3.7 ms |
+
+Before the writer, with one transaction per edit, the same runs gave 493
+calls a second at 5000 agents in memory and about 360 on disk, where most
+agents then failed: their final edits queued for longer than the five seconds
+each allows itself. With a flush to disk on every commit
+(`synchronous=FULL`), 100 agents on disk managed 44.
+
+Each model call costs about six edits and a runtime's edits are one at a
+time, so edits per second is the ceiling. What still grows with the family is
+that every edit copies each map it writes; removing that needs maps that
+share structure between versions, or smaller families.
+
+Every agent, read-only or not, claims a scratch directory, and those share
+the worktree cap (512 by default), so a larger swarm has to raise
+`MaxWorktrees`.
 
 ## Open questions
 

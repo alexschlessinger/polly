@@ -108,7 +108,7 @@ func (r *Runtime) checkpointRetryPause(s *State, e *Execution, pause *RetryPause
 	e.Result = result
 	if !workflowControlled(s, e) {
 		mail := r.completionNotice(s, m, e, task)
-		s.Messages[mail.ID] = mail
+		put(s, "mail", &s.Messages, mail.ID, mail)
 	}
 }
 

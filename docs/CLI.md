@@ -181,6 +181,14 @@ history. Unless you pass `--system`, the CLI adds coding guidance and loads the
 Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
 Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).
 
+The database trails what Polly has done by a moment. Swarm coordination and
+the agents' transcripts are written a few milliseconds behind, and a commit
+does not wait for the disk. If Polly crashes, the last moment of a running
+swarm can be lost. If the machine loses power or the system crashes, the most
+recent turns and swarm records can be lost. The database stays consistent
+either way, and Polly does wait for the disk before it applies a swarm result
+to your source tree.
+
 ## Provider outages and retries
 
 Each model call can recover from transient connection failures, rate limits,
