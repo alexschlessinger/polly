@@ -145,28 +145,48 @@ func childIDBySpawn(ctx context.Context, conn *sql.Conn, parent, spawnCallID str
 }
 
 func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
-	var history []messages.ChatMessage
+	payloads, err := readHistoryPayloads(ctx, conn, id, next)
+	if err != nil {
+		return nil, err
+	}
+	return decodeHistory(payloads)
+}
+
+// readHistoryPayloads reads a transcript's encoded messages, in order. A
+// caller that decodes them after letting go of the connection keeps the
+// connection only for the read.
+func readHistoryPayloads(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([][]byte, error) {
+	var payloads [][]byte
 	err := queryEach(ctx, conn, "SELECT sequence,payload_json FROM messages WHERE session_id=? ORDER BY sequence", []any{id}, func(rows *sql.Rows) error {
 		var sequence int64
 		var payload []byte
 		if err := rows.Scan(&sequence, &payload); err != nil {
 			return err
 		}
-		if sequence != int64(len(history)) {
-			return fmt.Errorf("session message sequence is corrupt: got %d, want %d", sequence, len(history))
+		if sequence != int64(len(payloads)) {
+			return fmt.Errorf("session message sequence is corrupt: got %d, want %d", sequence, len(payloads))
 		}
-		var msg messages.ChatMessage
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			return fmt.Errorf("decode session message %d: %w", sequence, err)
-		}
-		history = append(history, msg)
+		payloads = append(payloads, payload)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(history)) != next {
-		return nil, fmt.Errorf("session message sequence is corrupt: read %d messages, expected %d", len(history), next)
+	if int64(len(payloads)) != next {
+		return nil, fmt.Errorf("session message sequence is corrupt: read %d messages, expected %d", len(payloads), next)
+	}
+	return payloads, nil
+}
+
+func decodeHistory(payloads [][]byte) ([]messages.ChatMessage, error) {
+	var history []messages.ChatMessage
+	if len(payloads) > 0 {
+		history = make([]messages.ChatMessage, len(payloads))
+	}
+	for sequence, payload := range payloads {
+		if err := json.Unmarshal(payload, &history[sequence]); err != nil {
+			return nil, fmt.Errorf("decode session message %d: %w", sequence, err)
+		}
 	}
 	return history, nil
 }
