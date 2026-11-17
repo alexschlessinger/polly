@@ -1340,3 +1340,12 @@ A few rules of thumb:
 - Custom stores must preserve leases, stable identity, atomic coordination and
   transcript updates, and artifact ownership. Implement whichever optional
   capabilities your host actually uses.
+- A store that can tell when a family's records changed sets
+  `CoordinationState.Revision` and implements
+  `sessions.CoordinationRevisionSession`; the swarm runtime then answers a
+  read from memory while the revision stands. A store that leaves `Revision`
+  zero is compared record by record instead. A store that also implements
+  `sessions.CoordinationDeltaSession` is given only the records an update
+  changed, instead of a copy of the family to edit.
+- `Runtime.State` returns a state shared with the runtime's own readers.
+  Treat it as read-only, and copy it before editing.

@@ -119,14 +119,10 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		var parentPause *RetryPause
 		err := transcript.checkpoint(checkpoint, func() (int64, error) {
 			var next int64
-			err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-				s, err := decodeState(raw)
-				if err != nil {
-					return err
-				}
+			err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 				actor = raw.ActorID
 				if execution != "" {
-					e := s.Executions[execution]
+					e := s.ownExecution(execution)
 					if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
 						return errors.New("execution checkpoint was fenced")
 					}
@@ -196,6 +192,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					if mail == nil || mail.To != raw.ActorID || mail.Delivered {
 						return errors.New("mail admission changed")
 					}
+					mail = s.ownMail(id)
 					mail.Delivered = true
 					if execution == "" {
 						recordDelivery(s, mail)
@@ -212,7 +209,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				if execution == "" {
 					workflows.record(s, raw.ActorID, raw.Append)
 				}
-				return encodeState(raw, s)
+				return nil
 			})
 			if err == nil {
 				// Capture the actual cursor in the committing transaction. A
@@ -267,22 +264,18 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		return nil
 	}
 	cb.JournalToolBatch = func(ctx context.Context, c llm.AgentCheckpoint) error {
-		return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
+		return r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
 			if execution == "" {
 				s.ParentTurns[raw.ActorID] = &ParentTurn{Intent: c.Generated[persisted:]}
-				return encodeState(raw, s)
+				return nil
 			}
-			e := s.Executions[execution]
+			e := s.ownExecution(execution)
 			if e == nil || e.Generation != generation || e.Status != "running" {
 				return errors.New("execution journal was fenced")
 			}
 			e.Intent = c.Generated[persisted:]
 			e.Iterations = offset + c.Iterations
-			return encodeState(raw, s)
+			return nil
 		})
 	}
 }
@@ -334,10 +327,10 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 			return nil, nil
 		}
 		if settleErr == nil {
-			err = r.update(ctx, func(s *State) error {
-				for _, run := range s.Runs {
+			err = r.edit(ctx, func(s *State) error {
+				for id, run := range s.Runs {
 					if run.Status == "running" || run.Status == "paused" && runDeferred(s, run.ID) {
-						run.Status = "completed"
+						s.ownRun(id).Status = "completed"
 					}
 				}
 				return nil

@@ -51,7 +51,7 @@ func (r *Runtime) DeferWorkflow(ctx context.Context, id, note string) error {
 	}
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		w := s.Workflows[id]
 		if w == nil {
 			return errors.New("unknown workflow")
@@ -64,13 +64,13 @@ func (r *Runtime) DeferWorkflow(ctx context.Context, id, note string) error {
 				return fail("session_busy", "workflow agents are still settling; wait before deferring")
 			}
 		}
-		w.Acknowledged = true
-		for _, t := range s.Tasks {
+		s.ownWorkflow(id).Acknowledged = true
+		for key, t := range s.Tasks {
 			e := s.Executions[t.Execution]
 			if e == nil || e.Workflow != id || e.Run != w.Run || t.Run != e.Run || t.Owner != e.Member || t.Status == "done" || t.Status == "canceled" {
 				continue
 			}
-			t.Deferral = &TaskDeferral{Workflow: id, Execution: e.ID, Owner: t.Owner, Revision: t.Revision, Generation: e.Generation, AcceptedRevision: t.AcceptedRevision, Status: t.Status, Note: strings.TrimSpace(note)}
+			s.ownTask(key).Deferral = &TaskDeferral{Workflow: id, Execution: e.ID, Owner: t.Owner, Revision: t.Revision, Generation: e.Generation, AcceptedRevision: t.AcceptedRevision, Status: t.Status, Note: strings.TrimSpace(note)}
 		}
 		return nil
 	})
@@ -93,9 +93,9 @@ func reactivateTask(s *State, t *Task) error {
 		return errors.New("deferred task's original run is unavailable")
 	}
 	if run.Status == "completed" {
-		run.Status = "running"
+		s.ownRun(t.Run).Status = "running"
 	}
-	t.Deferral = nil
+	s.ownTask(t.ID).Deferral = nil
 	return nil
 }
 

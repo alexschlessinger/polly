@@ -352,6 +352,8 @@ func TestLiveScratchSurvivesRuntimeDirectoryInsideRootAndSkipsAnEnclosingRoot(t 
 	if dir, err := r.liveScratch(filepath.Dir(scratch.Root()), "id"); err != nil || dir != "" {
 		t.Fatalf("liveScratch inside an enclosing root = %q, %v", dir, err)
 	}
+	without := *c
+	c = &without
 	c.Scratch = ""
 	ec, err := r.contextPolicy(ctx, s, c)
 	if err != nil {

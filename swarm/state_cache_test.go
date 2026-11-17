@@ -123,7 +123,16 @@ func BenchmarkDecodeState(b *testing.B) {
 		}
 	}
 }
+
+// measureSharedReads turns off the per-read confirmation that tests add, so a
+// benchmark times what a running process does.
+func measureSharedReads(b *testing.B) {
+	failOnSharedChange = false
+	b.Cleanup(func() { failOnSharedChange = true })
+}
+
 func BenchmarkStateCacheUnchanged(b *testing.B) {
+	measureSharedReads(b)
 	raw := benchmarkRecords()
 	var cache StateCache
 	if _, err := cache.decode(raw); err != nil {
@@ -134,4 +143,82 @@ func BenchmarkStateCacheUnchanged(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// A read after one record changed decodes that record and nothing else.
+func BenchmarkStateCacheOneChanged(b *testing.B) {
+	measureSharedReads(b)
+	raw := benchmarkRecords()
+	var cache StateCache
+	if _, err := cache.decode(raw); err != nil {
+		b.Fatal(err)
+	}
+	var id string
+	for id = range raw.Records["task"] {
+		break
+	}
+	n := 0
+	for b.Loop() {
+		n++
+		next := &sessions.CoordinationState{Records: map[string]map[string]json.RawMessage{}}
+		for kind, group := range raw.Records {
+			next.Records[kind] = group
+		}
+		tasks := map[string]json.RawMessage{}
+		for key, value := range raw.Records["task"] {
+			tasks[key] = value
+		}
+		tasks[id] = json.RawMessage(fmt.Sprintf(`{"id":%q,"revision":%d}`, id, n))
+		next.Records["task"] = tasks
+		if _, err := cache.decode(next); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A changed family shares every record that did not change with the read
+// before it, and a reader that edits a shared record fails the test.
+func TestStateSharesUnchangedRecords(t *testing.T) {
+	r := runtimeTest(t, idleModel(), 1, 1)
+	ctx := context.Background()
+	kept, err := r.CreateTask(ctx, "kept", "criteria", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited, err := r.CreateTask(ctx, "edited", "criteria", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.update(ctx, func(s *State) error { s.Tasks[edited.ID].Description = "changed"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Tasks[kept.ID] != before.Tasks[kept.ID] {
+		t.Fatal("an unchanged record was decoded again")
+	}
+	if before.Tasks[edited.ID].Description != "edited" || after.Tasks[edited.ID].Description != "changed" {
+		t.Fatalf("update reached the earlier read or missed the later one: %q, %q", before.Tasks[edited.ID].Description, after.Tasks[edited.ID].Description)
+	}
+	scratch, err := r.readScratch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch.Tasks[kept.ID].Description = "rehearsal"
+	if again, err := r.read(ctx); err != nil || again != after {
+		t.Fatalf("a scratch read disturbed the shared state: %v", err)
+	}
+	after.Tasks[kept.ID].Description = "edited by a reader"
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a reader's edit to the shared state went unnoticed")
+		}
+	}()
+	_, _ = r.read(ctx)
 }

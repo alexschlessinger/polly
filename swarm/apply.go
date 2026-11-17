@@ -67,7 +67,8 @@ func acceptedTasks(s *State, refs []TaskReference) error {
 // detached context inside this lifetime prevents cancellation from releasing
 // the gate, session, or task lock before the outcome is recorded.
 func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, refs []TaskReference) error {
-	s, err := r.read(ctx)
+	// Reactivating below is a rehearsal of the update that follows.
+	s, err := r.readScratch(ctx)
 	if err != nil {
 		return err
 	}
@@ -99,7 +100,7 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 		return err
 	}
 	record := ApplyRecord{ID: plan.ID, Tasks: refs, Plan: plan, ObservedParent: observed, Status: "applying", Started: time.Now().UTC()}
-	if err = r.update(ctx, func(s *State) error {
+	if err = r.edit(ctx, func(s *State) error {
 		if err := acceptedTasks(s, refs); err != nil {
 			return err
 		}
@@ -198,19 +199,19 @@ func (r *Runtime) reconcileRecord(ctx context.Context, record ApplyRecord) error
 
 func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) error {
 	defer r.scheduleRelease()
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		if record.Status == "applied" {
 			if err := acceptedTasks(s, record.Tasks); err != nil {
 				record.Status, record.Error = "recovery_required", err.Error()
 			} else {
 				for _, ref := range record.Tasks {
-					s.Tasks[ref.Task].Status = "done"
-					s.Tasks[ref.Task].Deferral = nil
+					task := s.ownTask(ref.Task)
+					task.Status, task.Deferral = "done", nil
 				}
 			}
 		}
-		if c := s.Integrations[record.ID]; c != nil && record.Status == "applied" {
-			c.Status = "applied"
+		if s.Integrations[record.ID] != nil && record.Status == "applied" {
+			s.ownIntegration(record.ID).Status = "applied"
 		}
 		s.Applies[record.ID] = &record
 		return nil

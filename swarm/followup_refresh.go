@@ -100,7 +100,9 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 	}
 	var f *FollowupCall
 	if mail != nil {
-		f = s.Followups[mail.ID]
+		// The retry edits its call before storing it; the read's is shared.
+		call := *s.Followups[mail.ID]
+		f = &call
 		if f.Phase == "launched" {
 			return mail, nil
 		}
@@ -143,7 +145,7 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 		mail = &Mail{ID: ids.New(), From: r.ID, To: id, Kind: "info", Text: message, CallID: callID, Posted: time.Now().UTC()}
 	}
 	// Reserve even on retry, with the original selection. No task exists yet.
-	err = r.update(ctx, func(s *State) error {
+	err = r.edit(ctx, func(s *State) error {
 		if err := r.refreshEligible(s, s.Members[id], f, mail.ID, ""); err != nil {
 			return err
 		}
@@ -212,20 +214,20 @@ func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) er
 	// the retry adopts it, and a stale one is swept at the next start.
 	held, carry := r.parkScratch(mailID, c)
 	r.parentTools.Lock()
-	err = r.update(ctx, func(s *State) error {
+	err = r.edit(ctx, func(s *State) error {
 		if err := r.refreshEligible(s, s.Members[f.Member], f, mailID, ""); err != nil {
 			return err
 		}
-		stored := s.Contexts[c.ID]
+		stored := s.ownContext(c.ID)
 		if stored == nil || stored.Owner != f.Member || s.Members[f.Member].Context != c.ID || stored.Release == WorkspaceRetained {
 			return fail("workspace_changed", "worker's workspace changed during refresh; retry")
 		}
 		stored.Release = WorkspaceReleasing
 		if held != "" {
-			s.Followups[mailID].HeldScratch = held
+			s.ownFollowup(mailID).HeldScratch = held
 		}
 		if carry != "" {
-			s.Followups[mailID].ScratchCarry = carry
+			s.ownFollowup(mailID).ScratchCarry = carry
 		}
 		return nil
 	})

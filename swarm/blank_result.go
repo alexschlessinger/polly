@@ -74,12 +74,8 @@ func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, executio
 		if meaningfulMemberFinal(response) || responseToolSucceeded.Load() {
 			return nil, nil
 		}
-		err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
-			e := s.Executions[execution]
+		err := r.editOn(ctx, session, func(raw *sessions.CoordinationState, s *State) error {
+			e := s.ownExecution(execution)
 			if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running" {
 				return errors.New("member final response was fenced")
 			}
@@ -99,7 +95,7 @@ func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, executio
 			// Reserve before returning the nudge. A canceled or crashed slice
 			// cannot issue another repair after it is restored.
 			e.EmptyFinalRetried = true
-			return encodeState(raw, s)
+			return nil
 		})
 		if err != nil {
 			return nil, err

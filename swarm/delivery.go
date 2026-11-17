@@ -110,11 +110,12 @@ func admittedMailText(s *State, m *Mail) string {
 
 func recordDelivery(s *State, m *Mail) {
 	if t := s.Tasks[m.Task]; t != nil && deliveringTask(s, t) && t.Revision == m.Revision && t.Execution == m.Execution {
+		t = s.ownTask(t.ID)
 		t.Delivery = &TaskDelivery{Via: "mail", Ref: m.ID, Revision: t.Revision, Execution: t.Execution, Inline: len(agentResultText(t.Result)) <= deliveryInlineBytes, At: time.Now().UTC()}
 		t.Status = "done"
 	}
 	if w := s.Workflows[m.Workflow]; w != nil && w.Status == "completed" {
-		w.Acknowledged = true
+		s.ownWorkflow(m.Workflow).Acknowledged = true
 	}
 }
 
@@ -147,6 +148,7 @@ func recordWorkflowDeliveries(s *State, w *workflow.Report) {
 		if !deliveringTask(s, t) || t.Owner != result.Session || t.Execution != result.Execution || t.Revision != result.Revision {
 			continue
 		}
+		t = s.ownTask(t.ID)
 		t.Delivery = &TaskDelivery{Via: "workflow_step", Ref: step.ID, Execution: result.Execution, Revision: result.Revision, Inline: true, At: time.Now().UTC()}
 		t.Status = "done"
 	}
@@ -163,7 +165,7 @@ func needsDeliveryNotice(s *State, t *Task) bool {
 func (r *Runtime) repairDeliveryNotices(ctx context.Context, s *State) (*State, error) {
 	for _, t := range s.Tasks {
 		if needsDeliveryNotice(s, t) {
-			err := r.update(ctx, func(current *State) error {
+			err := r.edit(ctx, func(current *State) error {
 				r.ensureDeliveryNotices(current)
 				s = current
 				return nil

@@ -49,8 +49,8 @@ func (r *Runtime) acquireMemberSession(ctx context.Context, member *Member) (coo
 		if err != nil {
 			return nil, err
 		}
-		if err = r.update(ctx, func(s *State) error {
-			current := s.Members[member.ID]
+		if err = r.edit(ctx, func(s *State) error {
+			current := s.ownMember(member.ID)
 			if current == nil {
 				return sessions.ErrSessionNotFound
 			}
@@ -59,7 +59,6 @@ func (r *Runtime) acquireMemberSession(ctx context.Context, member *Member) (coo
 		}); err != nil {
 			return nil, errors.Join(err, session.Close())
 		}
-		member.Name = name
 		return session, nil
 	}
 	return nil, err

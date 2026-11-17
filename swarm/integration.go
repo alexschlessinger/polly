@@ -130,7 +130,7 @@ func currentCandidate(s *State, task *Task) *IntegrationCandidate {
 }
 
 func (r *Runtime) pinSnapshot(ctx context.Context, snapshot worktree.Snapshot) error {
-	return r.update(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
+	return r.edit(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
 }
 
 func (r *Runtime) finishCandidate(ctx context.Context, c *IntegrationCandidate) error {
@@ -180,6 +180,7 @@ func storeCandidate(s *State, c *IntegrationCandidate) error {
 		}
 		for _, ref := range old.references() {
 			if tasks[ref.Task] {
+				old = s.ownIntegration(old.ID)
 				old.Status, old.Successor = "superseded", c.ID
 				break
 			}
@@ -190,7 +191,7 @@ func storeCandidate(s *State, c *IntegrationCandidate) error {
 }
 
 func (r *Runtime) saveCandidate(ctx context.Context, c *IntegrationCandidate) error {
-	return r.update(ctx, func(s *State) error { return storeCandidate(s, c) })
+	return r.edit(ctx, func(s *State) error { return storeCandidate(s, c) })
 }
 
 func (r *Runtime) prepareCandidateLocked(ctx context.Context, inputs []IntegrationInput, run, drift string) (*IntegrationCandidate, error) {
@@ -252,8 +253,10 @@ func (r *Runtime) ReadIntegration(ctx context.Context, id string) (*IntegrationC
 	if c == nil {
 		return nil, fail("unknown_candidate", "unknown integration candidate; legacy previews require fresh preparation")
 	}
-	c.Receipt = s.Applies[id]
-	return c, nil
+	// The state is shared with other readers; the receipt goes on a copy.
+	out := *c
+	out.Receipt = s.Applies[id]
+	return &out, nil
 }
 
 // ReviseIntegration adopts an independently submitted repair of this exact
@@ -364,8 +367,8 @@ func (r *Runtime) refreshCandidateLocked(ctx context.Context, old *IntegrationCa
 func (r *Runtime) AcceptIntegration(ctx context.Context, id string) (*IntegrationCandidate, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	err := r.update(ctx, func(s *State) error {
-		c := s.Integrations[id]
+	err := r.edit(ctx, func(s *State) error {
+		c := s.ownIntegration(id)
 		if err := validCandidate(s, c); err != nil {
 			return err
 		}
@@ -376,7 +379,7 @@ func (r *Runtime) AcceptIntegration(ctx context.Context, id string) (*Integratio
 			if err := reactivateTask(s, s.Tasks[ref.Task]); err != nil {
 				return err
 			}
-			s.Tasks[ref.Task].AcceptedRevision = ref.Revision
+			s.ownTask(ref.Task).AcceptedRevision = ref.Revision
 		}
 		c.Accepted = true
 		return nil

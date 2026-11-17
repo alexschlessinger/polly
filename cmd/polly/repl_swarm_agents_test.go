@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -190,8 +191,18 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.state.swarm.State(ctx)
+	shared, err := r.state.swarm.State(ctx)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The cases below edit the display snapshot, so it is a copy: the
+	// runtime's own readers share the state it returned.
+	data, err := json.Marshal(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &swarm.State{}
+	if err := json.Unmarshal(data, s); err != nil {
 		t.Fatal(err)
 	}
 	member := s.Members[result.Session]

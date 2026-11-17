@@ -145,7 +145,7 @@ func (r *Runtime) integrateTasksLocked(ctx context.Context, s *State, req Integr
 		return nil, err
 	}
 	if len(unchanged) == len(req.Tasks) {
-		err = r.update(ctx, func(current *State) error {
+		err = r.edit(ctx, func(current *State) error {
 			for _, ref := range req.Tasks {
 				if err := integrateRefusal(current, ref); err != nil {
 					return err
@@ -185,7 +185,7 @@ func (r *Runtime) integrateTasksLocked(ctx context.Context, s *State, req Integr
 }
 
 func (r *Runtime) saveAcceptedCandidate(ctx context.Context, c *IntegrationCandidate) error {
-	return r.update(ctx, func(s *State) error {
+	return r.edit(ctx, func(s *State) error {
 		if err := validCandidate(s, c); err != nil {
 			return err
 		}
@@ -226,8 +226,8 @@ func (r *Runtime) integrateCandidateLocked(ctx context.Context, s *State, id str
 		return nil, integrationHalt(c)
 	}
 	completed := false
-	err := r.update(ctx, func(current *State) error {
-		c = current.Integrations[id]
+	err := r.edit(ctx, func(current *State) error {
+		c = current.ownIntegration(id)
 		if err := validCandidate(current, c); err != nil {
 			return err
 		}

@@ -131,7 +131,7 @@ func (r *Runtime) pinOutputs(ctx context.Context, actor string, refs []artifacts
 	if err := r.prepare(ctx); err != nil {
 		return err
 	}
-	return r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+	return r.editOn(ctx, r.parent, func(raw *sessions.CoordinationState, _ *State) error {
 		raw.PinOwner = actor
 		for _, ref := range refs {
 			raw.Pins = append(raw.Pins, ref.ID)

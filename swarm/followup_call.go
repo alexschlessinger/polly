@@ -132,6 +132,7 @@ func bindFollowups(s *State, m *Member, t *Task, e *Execution) []*Mail {
 		if f.Refresh || f.Member != m.ID || f.Phase != "pending" || mail == nil || !mail.Start || mail.Delivered {
 			continue
 		}
+		f, mail = s.ownFollowup(id), s.ownMail(id)
 		f.Task, f.Execution, f.Base, f.Source = t.ID, e.ID, e.Base, e.SourceRoot
 		f.Phase = "launched"
 		if t.ID != f.PreviousTask {
@@ -178,8 +179,8 @@ func (r *Runtime) failFollowup(ctx context.Context, id string, cause error) erro
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	held := ""
-	err := r.update(finishCtx, func(s *State) error {
-		mail, f := s.Messages[id], s.Followups[id]
+	err := r.edit(finishCtx, func(s *State) error {
+		mail, f := s.ownMail(id), s.ownFollowup(id)
 		if mail == nil || f != nil && f.Phase == "launched" && f.Operation != "steer" {
 			return nil
 		}

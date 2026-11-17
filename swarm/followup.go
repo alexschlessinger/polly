@@ -113,7 +113,7 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	var task *Task
-	err = r.update(ctx, func(current *State) error {
+	err = r.edit(ctx, func(current *State) error {
 		prior := current.Tasks[original.ID]
 		if prior == nil || prior.Status != "done" || prior.Revision != original.Revision || prior.Owner != owner.ID {
 			return fail("stale_task", "original task changed during follow-up creation")

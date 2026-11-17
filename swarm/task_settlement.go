@@ -55,6 +55,7 @@ func acceptTask(s *State, t *Task) error {
 	if err := reactivateTask(s, t); err != nil {
 		return err
 	}
+	t = s.ownTask(t.ID)
 	t.AcceptedRevision = t.Revision
 	if t.Requirement == RequirementReviewed || t.Snapshot == "" || unchangedTask(s, t) {
 		t.Status = "done"
@@ -91,10 +92,10 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	}
 	for _, task := range s.Tasks {
 		if acceptedUnchangedTask(s, task) {
-			err = r.update(ctx, func(current *State) error {
-				for _, task := range current.Tasks {
+			err = r.edit(ctx, func(current *State) error {
+				for id, task := range current.Tasks {
 					if acceptedUnchangedTask(current, task) {
-						task.Status = "done"
+						current.ownTask(id).Status = "done"
 					}
 				}
 				s = current
