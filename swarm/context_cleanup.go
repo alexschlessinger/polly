@@ -82,8 +82,8 @@ func (r *Runtime) markReleasing(ctx context.Context, contexts []*ExecutionContex
 }
 
 // finishRelease closes the workflow tool bindings of contexts whose
-// release is recorded, removes their files, and deletes their records in
-// one transaction. A context whose removal fails stays Releasing for a later
+// release is recorded, waits for that record to reach the disk, removes
+// their files, and deletes their records in one transaction. A context whose removal fails stays Releasing for a later
 // cleanup while the others still finish. Callers hold the context locks and
 // must have constructed the worktree manager when any context has a checkout.
 func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContext, trees map[string]string) (removed []string, err error) {
@@ -96,6 +96,12 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 	// Parent lease loss still cancels this bounded finishing phase.
 	finishCtx, cancel := context.WithTimeout(r.config.Parent.Context(), 2*time.Minute+10*time.Second*time.Duration(len(contexts)))
 	defer cancel()
+	// Removed files cannot be put back, and a restart finishes a release only
+	// from its record: without one it finds a live context whose files are
+	// gone. So the record has to be on disk before the first file goes.
+	if err := r.syncStore(finishCtx); err != nil {
+		return nil, err
+	}
 	var errs []error
 	var wake []string
 	for _, c := range contexts {
@@ -112,16 +118,24 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 	}
 	if len(removed) > 0 {
 		if e := r.edit(finishCtx, func(s *State) error {
+			// One pass over the members, however many contexts went.
+			holders := make(map[string][]string, len(removed))
 			for _, id := range removed {
-				for key, member := range s.Members {
-					if member.Context == id {
-						member = s.ownMember(key)
-						if c := s.Contexts[id]; c != nil {
-							member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
-						}
-						member.Context = ""
-						wake = append(wake, member.ID)
+				holders[id] = nil
+			}
+			for key, member := range s.Members {
+				if _, gone := holders[member.Context]; gone {
+					holders[member.Context] = append(holders[member.Context], key)
+				}
+			}
+			for _, id := range removed {
+				for _, key := range holders[id] {
+					member := s.ownMember(key)
+					if c := s.Contexts[id]; c != nil {
+						member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
 					}
+					member.Context = ""
+					wake = append(wake, member.ID)
 				}
 				drop(s, "context", &s.Contexts, id)
 			}

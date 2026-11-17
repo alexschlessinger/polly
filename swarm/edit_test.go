@@ -29,7 +29,11 @@ func sameAsStored(t *testing.T, r *Runtime) *State {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(shared, stored) {
+	// A kept state carries its own lazily built index; the records are what
+	// has to match.
+	plain := *shared
+	plain.lazy = nil
+	if !reflect.DeepEqual(&plain, stored) {
 		t.Fatalf("shared state left the stored records: %s", differingRecords(stored, shared))
 	}
 	return shared
@@ -415,12 +419,12 @@ func TestTaskChangePokesOnlyItsWatchers(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"task", "dependency"} {
-		r.pokesFor(map[string]map[string]struct{}{"task": {id: {}}}, s, nil)()
+		r.pokesFor(map[string]map[string]any{"task": {id: nil}}, s)()
 		if !poked(owner) || poked(other) {
 			t.Fatalf("a change to %s poked the wrong members", id)
 		}
 	}
-	if poke := r.pokesFor(map[string]map[string]struct{}{"task": {"unwatched": {}}}, s, nil); poke != nil {
+	if poke := r.pokesFor(map[string]map[string]any{"task": {"unwatched": nil}}, s); poke != nil {
 		poke()
 	}
 	if poked(owner) || poked(other) {
@@ -433,5 +437,69 @@ func TestTaskChangePokesOnlyItsWatchers(t *testing.T) {
 	r.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d tasks still watched after their members woke", left)
+	}
+}
+
+func TestOtherRootsFollowsTheContextsAnEditTouched(t *testing.T) {
+	t.Parallel()
+	s := &State{Contexts: map[string]*ExecutionContext{
+		"a": {ID: "a", Root: "/x"}, "b": {ID: "b", Root: "/y"}, "c": {ID: "c", Root: "/y"},
+	}}
+	s.mailTo, s.rootUse = indexMail(s), indexRoots(s)
+	if got := otherRoots(s, s.Contexts["a"]); len(got) != 1 || got[0] != "/y" {
+		t.Fatalf("otherRoots = %v, want [/y]", got)
+	}
+	// An edit drops b and moves c to a new root.
+	old := s.Contexts["c"]
+	s.editing = &editBase{prior: map[string]map[string]any{"context": {"b": s.Contexts["b"], "c": old}}}
+	delete(s.Contexts, "b")
+	s.Contexts["c"] = &ExecutionContext{ID: "c", Root: "/z"}
+	s.reindex()
+	s.editing = nil
+	if got := otherRoots(s, s.Contexts["a"]); len(got) != 1 || got[0] != "/z" {
+		t.Fatalf("otherRoots after the edit = %v, want [/z]", got)
+	}
+	if want := indexRoots(s); !reflect.DeepEqual(s.rootUse, want) {
+		t.Fatalf("rootUse = %v, want %v", s.rootUse, want)
+	}
+}
+
+func TestResultNoticeIsFoundThroughEveryKindOfState(t *testing.T) {
+	t.Parallel()
+	build := func() *State {
+		return &State{
+			Tasks: map[string]*Task{"t": {ID: "t", Revision: 2, Execution: "e"}},
+			Messages: map[string]*Mail{
+				"m1": {ID: "m1", Task: "t", Revision: 1, Execution: "e"},
+				"m3": {ID: "m3", Task: "t", Revision: 2, Execution: "e"},
+				"m2": {ID: "m2", Task: "t", Revision: 2, Execution: "e"},
+				"m0": {ID: "m0", Task: "other", Revision: 2, Execution: "e"},
+				"m4": {ID: "m4", To: "someone"},
+			},
+		}
+	}
+	scanned := build()
+	indexed := build()
+	indexed.mailTo, indexed.mailOn = indexMail(indexed), indexTaskMail(indexed)
+	kept := build()
+	kept.lazy = &lazyIndex{}
+	for name, s := range map[string]*State{"scanned": scanned, "indexed": indexed, "kept": kept} {
+		if notice := resultNotice(s, s.Tasks["t"]); notice == nil || notice.ID != "m2" {
+			t.Fatalf("%s: resultNotice = %v, want m2", name, notice)
+		}
+		if notices := resultNotices(s); len(notices) != 1 || notices["t"].ID != "m2" {
+			t.Fatalf("%s: resultNotices = %v, want t: m2", name, notices)
+		}
+	}
+	// An edit drops the notice; the index follows.
+	indexed.editing = &editBase{prior: map[string]map[string]any{"mail": {"m2": indexed.Messages["m2"]}}}
+	delete(indexed.Messages, "m2")
+	if notice := resultNotice(indexed, indexed.Tasks["t"]); notice == nil || notice.ID != "m3" {
+		t.Fatalf("during the edit: resultNotice = %v, want m3", notice)
+	}
+	indexed.reindex()
+	indexed.editing = nil
+	if want := indexTaskMail(indexed); !reflect.DeepEqual(indexed.mailOn, want) {
+		t.Fatalf("mailOn = %v, want %v", indexed.mailOn, want)
 	}
 }

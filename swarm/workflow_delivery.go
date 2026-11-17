@@ -110,9 +110,9 @@ func (p *workflowDeliveries) record(s *State, actor string, appended []messages.
 		if !ok || !staged || !calls[d.CallID] || !d.matches(s) || !proof.retained(m) {
 			continue
 		}
-		for id, mail := range s.Messages {
-			if mail.To == actor && mail.From == d.Workflow && mail.Workflow == d.Workflow && !mail.Delivered {
-				mail = s.ownMail(id)
+		for _, mail := range s.mailFor(actor) {
+			if mail.From == d.Workflow && mail.Workflow == d.Workflow && !mail.Delivered {
+				mail = s.ownMail(mail.ID)
 				mail.Delivered = true
 				recordDelivery(s, mail)
 			}

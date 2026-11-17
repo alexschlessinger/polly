@@ -9,14 +9,14 @@ import (
 	"strings"
 )
 
-// DurableStore is the optional promotion interface. Promotion preserves live
-// Session handles, stable IDs, cache identity, artifacts and owner tokens.
 // SyncStore is implemented by stores whose commits may trail the disk. Sync
 // returns once every commit made so far would survive a power loss.
 type SyncStore interface {
 	Sync(context.Context) error
 }
 
+// DurableStore is the optional promotion interface. Promotion preserves live
+// Session handles, stable IDs, cache identity, artifacts and owner tokens.
 type DurableStore interface {
 	Promote(context.Context, string) error
 	Location() (StoreMode, string)

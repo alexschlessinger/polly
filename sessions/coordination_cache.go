@@ -13,8 +13,8 @@ import (
 const maxCachedFamilies = 64
 
 // coordinationCache holds each family's records in memory so a read or an
-// update does not scan the table for them. The table stays the durable copy:
-// every update still writes its changes before it returns.
+// update does not scan the table for them. The table stays the durable copy;
+// coordinationWriter writes the changes an update made in memory.
 //
 // Callers hold the cache across their whole transaction and the bookkeeping
 // that follows its commit, so nobody sees a family between the two. A caller
@@ -135,6 +135,23 @@ func (c *coordinationCache) forget(parent []byte) {
 	c.mu.Lock()
 	delete(c.families, string(parent))
 	c.mu.Unlock()
+}
+
+// applyRecordChanges moves changes into records, the cache's own maps: a nil
+// payload deletes.
+func applyRecordChanges(records, changes map[string]map[string]json.RawMessage) {
+	for kind, group := range changes {
+		for id, value := range group {
+			if value == nil {
+				delete(records[kind], id)
+				continue
+			}
+			if records[kind] == nil {
+				records[kind] = map[string]json.RawMessage{}
+			}
+			records[kind][id] = value
+		}
+	}
 }
 
 // copyRecords returns records with maps and payload bytes of its own. The

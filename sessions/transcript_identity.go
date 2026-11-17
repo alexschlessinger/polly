@@ -17,6 +17,13 @@ type TranscriptIdentity struct {
 	Sequence   int64  `json:"sequence"`
 }
 
+func (i *TranscriptIdentity) validate() error {
+	if i.Execution == "" || i.Generation <= 0 {
+		return errors.New("invalid transcript execution identity")
+	}
+	return nil
+}
+
 func writeTranscriptIdentity(ctx context.Context, conn *sql.Conn, id []byte, identity *TranscriptIdentity, sequence int64) error {
 	_, metadata, err := loadMetadata(ctx, conn, id)
 	if err != nil {
@@ -24,8 +31,8 @@ func writeTranscriptIdentity(ctx context.Context, conn *sql.Conn, id []byte, ide
 	}
 	metadata.Transcript = nil
 	if identity != nil {
-		if identity.Execution == "" || identity.Generation <= 0 {
-			return errors.New("invalid transcript execution identity")
+		if err := identity.validate(); err != nil {
+			return err
 		}
 		copy := *identity
 		copy.Sequence = sequence
