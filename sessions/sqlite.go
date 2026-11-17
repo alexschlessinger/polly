@@ -82,6 +82,7 @@ type SQLiteStore struct {
 	open   map[*sqliteSession]struct{}
 
 	coordination *coordinationCache
+	writer       *coordinationWriter
 }
 
 type sqliteSession struct {
@@ -100,6 +101,22 @@ type sqliteSession struct {
 	closeErr  error
 
 	closed atomic.Bool
+
+	// leaseExpiry is when the lease this handle last took or renewed runs
+	// out, in Unix nanoseconds. Until then no other handle can have taken it.
+	leaseExpiry atomic.Int64
+	// coord is what coordination updates answered from memory need to know
+	// about this session's row. The coordination cache's holder owns it.
+	coord struct {
+		// parent is the family's root; it never changes once known.
+		parent []byte
+		// sequence is the transcript's next sequence while known is set.
+		sequence int64
+		known    bool
+		// writers counts operations in flight that may write the row some
+		// other way, which makes sequence unknown until one asks again.
+		writers int
+	}
 }
 
 type sessionSnapshot struct {
@@ -261,6 +278,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 
 		coordination: newCoordinationCache(),
 	}
+	store.writer = newCoordinationWriter(store)
 	if store.defaults == nil {
 		store.defaults = &Metadata{}
 	}
@@ -427,7 +445,11 @@ func sqliteDataSource(mode StoreMode, path string) string {
 	query := make(url.Values)
 	query.Set("_foreign_keys", "on")
 	query.Set("_busy_timeout", "10000")
-	query.Set("_synchronous", "FULL")
+	// NORMAL leaves a commit in the write-ahead log without waiting for the
+	// disk. A process crash loses nothing; a power loss or system crash can
+	// lose the latest commits but leaves the database consistent. Sync is for
+	// a caller that needs a commit on disk before it goes on.
+	query.Set("_synchronous", "NORMAL")
 	query.Set("_txlock", "immediate")
 	query.Add("_pragma", "trusted_schema(OFF)")
 	uri := url.URL{Scheme: "file"}
@@ -1117,6 +1139,34 @@ func (s *SQLiteStore) ensureOpen() error {
 	return nil
 }
 
+// Sync returns once every commit made so far is on disk. Commits otherwise
+// reach the disk when SQLite next checkpoints its write-ahead log, so a caller
+// about to do something it cannot undo, on the strength of what it just
+// stored, calls Sync first. A memory store has nothing to do.
+func (s *SQLiteStore) Sync(ctx context.Context) error {
+	if err := s.writer.settle(ctx); err != nil {
+		return err
+	}
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+	if s.mode != ModeDisk {
+		return nil
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// A checkpoint syncs the log before it copies it into the database file,
+	// and the file after. Another process reading the database can keep the
+	// copy from finishing; the log is synced all the same.
+	var busy, logged, checkpointed int64
+	if err := conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint(FULL)").Scan(&busy, &logged, &checkpointed); err != nil {
+		return fmt.Errorf("sync session database: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) error {
 	return s.withTransaction(ctx, "BEGIN IMMEDIATE", fn)
 }
@@ -1125,7 +1175,17 @@ func (s *SQLiteStore) withRead(ctx context.Context, fn func(*sql.Conn) error) er
 	return s.withTransaction(ctx, "BEGIN", fn)
 }
 
+// withTransaction runs fn in a transaction that sees every coordination
+// update accepted so far: it waits for the ones still queued to be written.
 func (s *SQLiteStore) withTransaction(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
+	if err := s.writer.settle(ctx); err != nil {
+		return err
+	}
+	return s.withTransactionNow(ctx, begin, fn)
+}
+
+// withTransactionNow is withTransaction without the wait, for the writer.
+func (s *SQLiteStore) withTransactionNow(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
 	conn, err := s.db.Conn(ctx)
@@ -1220,6 +1280,8 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 		return fmt.Errorf("%w: %s", ErrSessionInUse, name)
 	}
 	for {
+		// Taken before the lease is, so it never outlasts the stored one.
+		_, expiry := leaseWindow()
 		id, busy, err := s.tryAcquire(waitCtx, name, options, owner)
 		if err == nil && !busy {
 			sessionCtx, sessionCancel := context.WithCancelCause(s.ctx)
@@ -1233,6 +1295,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				closeDone:     make(chan struct{}),
 			}
 			session.artifacts = &sqliteArtifactStore{session: session}
+			session.leaseExpiry.Store(expiry)
 			if !s.track(session) {
 				sessionCancel(ErrStoreClosed)
 				_ = s.releaseLease(context.Background(), id, owner)
@@ -1667,6 +1730,7 @@ func (s *SQLiteStore) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	s.writer.close()
 	s.cancel(ErrStoreClosed)
 	s.wg.Wait()
 
@@ -1787,7 +1851,17 @@ func (s *sqliteSession) renewLease(ctx context.Context) (bool, error) {
 	now, expiresNS := leaseWindow()
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
-	return extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
+	owned, err := extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
+	if err == nil && owned {
+		s.leaseExpiry.Store(expiresNS)
+	}
+	return owned, err
+}
+
+// leaseFresh reports whether this handle certainly still holds its lease:
+// another handle can take it only once it has run out.
+func (s *sqliteSession) leaseFresh() bool {
+	return time.Now().UnixNano() < s.leaseExpiry.Load()-int64(leaseStaleAfter/4)
 }
 
 // operationContext derives a context canceled by either the caller or the
@@ -1833,6 +1907,27 @@ func (s *sqliteSession) loseLease() error {
 // after confirming this session still holds its lease. The context passed to
 // fn ends with the caller's or the session's; errors are mapped to the cause.
 func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.Context, *sql.Conn) error) error {
+	if write {
+		// A write may move the row a coordination update answers from
+		// memory. Counting it under the cache's hold means every update
+		// accepted before it is queued ahead of the wait in withTransaction.
+		cache := s.store.coordination
+		cache.held <- struct{}{}
+		s.coord.writers++
+		<-cache.held
+		defer func() {
+			cache.held <- struct{}{}
+			s.coord.writers--
+			s.coord.known = false
+			<-cache.held
+		}()
+	}
+	return s.leasedUntracked(ctx, write, fn)
+}
+
+// leasedUntracked is leased for the coordination paths, which hold the cache
+// and keep the session's remembered row themselves.
+func (s *sqliteSession) leasedUntracked(ctx context.Context, write bool, fn func(context.Context, *sql.Conn) error) error {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return err
@@ -1859,6 +1954,9 @@ func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, erro
 		return sessionSnapshot{}, err
 	}
 	defer cleanup()
+	if err := s.store.writer.settle(opCtx); err != nil {
+		return sessionSnapshot{}, s.mapError(ctx, err)
+	}
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
 	snap, err := scanSnapshotWhere(opCtx, s.store.db, `s.id = ? AND EXISTS (

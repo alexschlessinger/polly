@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 )
 
 // maxCachedFamilies bounds the families whose records stay in memory. A
@@ -34,6 +35,15 @@ type coordinationCache struct {
 type cachedFamily struct {
 	records  map[string]map[string]json.RawMessage
 	revision uint64
+	// checked is when the database last confirmed these records.
+	checked time.Time
+}
+
+// current returns the family when the database confirmed it recently enough
+// for an update or a read to be answered without asking again.
+func (c *coordinationCache) current(parent []byte) (cachedFamily, bool) {
+	family, ok := c.families[string(parent)]
+	return family, ok && time.Since(family.checked) < familyCheckEvery
 }
 
 func newCoordinationCache() *coordinationCache {
@@ -70,6 +80,8 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		c.conn, c.version = driver, version
 	}
 	if family, ok := c.families[string(parent)]; ok {
+		family.checked = time.Now()
+		c.families[string(parent)] = family
 		return family.records, family.revision, nil
 	}
 	records, err := readSwarmRecords(ctx, conn, parent)
@@ -80,7 +92,7 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		clear(c.families)
 	}
 	c.revisions++
-	c.families[string(parent)] = cachedFamily{records, c.revisions}
+	c.families[string(parent)] = cachedFamily{records, c.revisions, time.Now()}
 	return records, c.revisions, nil
 }
 
@@ -88,8 +100,8 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 // The caller holds the cache and gives up records.
 func (c *coordinationCache) replace(parent []byte, records map[string]map[string]json.RawMessage) uint64 {
 	c.revisions++
-	if _, ok := c.families[string(parent)]; ok {
-		c.families[string(parent)] = cachedFamily{records, c.revisions}
+	if family, ok := c.families[string(parent)]; ok {
+		c.families[string(parent)] = cachedFamily{records, c.revisions, family.checked}
 	}
 	return c.revisions
 }
