@@ -2049,11 +2049,13 @@ func (r *ToolRegistry) commitMCPLoad(ctx context.Context, state *mcpLoadState, r
 	cleanup := r.retireClientsLocked(retired)
 	r.mu.Unlock()
 	owner.sandboxConfigMu.Unlock()
+	// Nothing is retired on the error path today, but whatever
+	// retireClientsLocked took must always be released: Close waits for it.
+	cleanup()
 	if err != nil {
 		closeStagedToolRecords(records)
 		return err
 	}
-	cleanup()
 	return nil
 }
 
