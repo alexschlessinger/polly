@@ -176,7 +176,9 @@ empty ones are discarded on exit.
 A session keeps its own settings, and changing its system prompt resets its
 history. Unless you pass `--system`, the CLI adds coding guidance and loads the
 `AGENTS.md` files on the path from the Git root to the working directory, up to
-32 KiB per file and 64 KiB in total.
+32 KiB per file and 64 KiB in total. Commits Polly creates carry a
+`Co-authored-by: polly/<model> <polly@pollytool>` trailer naming the model that
+wrote them; the trailer follows the session's current model.
 
 Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
 Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).

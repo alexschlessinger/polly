@@ -402,7 +402,14 @@ func TestOpenRouterAgentFollowupAndNoticeOnce(t *testing.T) {
 			if len(notes) != 1 || req.ThinkingEffort != EffortOff() {
 				t.Fatalf("notices/preference: %v %+v", notes, req.ThinkingEffort)
 			}
-			if len(requests) != 3 || requests[1].Messages[1].Reasoning != "keep me" {
+			if len(requests) != 3 {
+				t.Fatal("lost the tool iteration")
+			}
+			kept := false
+			for _, msg := range requests[1].Messages {
+				kept = kept || msg.Reasoning == "keep me"
+			}
+			if !kept {
 				t.Fatal("lost reasoning through tool iteration")
 			}
 			failures := 0

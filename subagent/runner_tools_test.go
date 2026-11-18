@@ -106,14 +106,14 @@ func TestRunnerWithToolsGuidancePlacement(t *testing.T) {
 	if _, err := run(context.Background(), Request{Label: "Test agent", Task: "go"}); err != nil {
 		t.Fatal(err)
 	}
-	if system := systemContent(t, model.last); system != "REPOSITORY GUIDANCE\n\nTOOL GUIDANCE" {
+	if system := systemContent(t, model.last); system != "REPOSITORY GUIDANCE\n\nTOOL GUIDANCE\n\n<model_context>\nCurrent model: model\n</model_context>" {
 		t.Fatalf("system prompt = %q", system)
 	}
 	// Disabled tools keep the repository guidance and drop the tool guidance.
 	if _, err := run(context.Background(), Request{Label: "Test agent", Task: "go", Tools: []string{}}); err != nil {
 		t.Fatal(err)
 	}
-	if system := systemContent(t, model.last); system != "REPOSITORY GUIDANCE" {
+	if system := systemContent(t, model.last); system != "REPOSITORY GUIDANCE\n\n<model_context>\nCurrent model: model\n</model_context>" {
 		t.Fatalf("system prompt with tools disabled = %q", system)
 	}
 	if len(model.last.Tools) != 0 {

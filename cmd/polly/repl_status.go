@@ -167,10 +167,7 @@ func (s *sessionStatus) resizeContext(budget *contextBudgetDetails) {
 // everything after the last slash ("openai/gpt-5.4" → "gpt-5.4"). A model
 // with no slash passes through unchanged.
 func shortModelName(model string) string {
-	if i := strings.LastIndex(model, "/"); i >= 0 {
-		return model[i+1:]
-	}
-	return model
+	return llm.BareModelName(model)
 }
 
 // statusRow renders stable session context. Per-turn activity and completion

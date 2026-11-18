@@ -43,8 +43,8 @@ func TestCompactionRebasesCalibrationAfterBudgetReduction(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if estimate, ok := first.Message.RequestEstimate(); !ok || estimate != 75_004 {
-					t.Fatalf("recorded estimate = %d, %v; want 75004", estimate, ok)
+				if estimate, ok := first.Message.RequestEstimate(); !ok || estimate != 75_022 {
+					t.Fatalf("recorded estimate = %d, %v; want 75022", estimate, ok)
 				}
 				history := append(slices.Clone(req.Messages), first.AllMessages...)
 				// Calibration and markers must also work after durable persistence.
@@ -73,12 +73,19 @@ func TestCompactionRebasesCalibrationAfterBudgetReduction(t *testing.T) {
 				if err != nil {
 					t.Fatalf("budget reduction: %v (provider calls = %d)", err, len(model.requests))
 				}
-				want := 43 // the summary plus the fresh "continue" request
+				want := 61 // the model context, the summary and the fresh "continue" request
 				if manual {
-					want = 37 // only the covering summary
+					want = 55 // the model context and only the covering summary
 				}
-				if stats := compacted.Projection; stats.Counted || stats.CountedTokens != want || stats.RequestEstimatedTokens != want {
-					t.Fatalf("compacted projection retains removed-prefix bias: %+v; want %d", stats, want)
+				counted, countedOK := want, false
+				if destination == "same model" {
+					// The model context is in both the measured and the
+					// compacted request, so its share of the measured bias
+					// survives compaction.
+					counted, countedOK = want+6, true
+				}
+				if stats := compacted.Projection; stats.Counted != countedOK || stats.CountedTokens != counted || stats.RequestEstimatedTokens != want {
+					t.Fatalf("compacted projection retains removed-prefix bias: %+v; want %d (counted %d, %v)", stats, want, counted, countedOK)
 				}
 				markers := 0
 				for _, msg := range compacted.AllMessages {

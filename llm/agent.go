@@ -1192,7 +1192,7 @@ func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (
 	prepare := func(list []tools.Tool) (*CompletionRequest, []RequestAdaptation, error) {
 		req := r.loopReq
 		req.Tools = list
-		req.Messages = withSandboxContext(append(contextView(r.msgs, r.projectionTools(list)), admitted...), sandbox)
+		req.Messages = withSandboxContext(WithModelContext(append(contextView(r.msgs, r.projectionTools(list)), admitted...), req.Model), sandbox)
 		return Prepare(ctx, a.client, &req, !r.summaryOnly && (a.config.RequireResponseToolSuccess || a.config.ResponseTool != ""))
 	}
 	prepared, notes, err := prepare(r.loopTools())

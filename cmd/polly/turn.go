@@ -110,6 +110,9 @@ func (t *turnExecution) applyContracts(requestMessages []messages.ChatMessage) (
 // delivery belongs to the turn, so opening the inspector cannot consume it.
 func composeSessionContracts(ctx context.Context, state *conversationState, settings *Settings, requestMessages []messages.ChatMessage) ([]messages.ChatMessage, []string, error) {
 	contract := sendTimeContracts(state.displayContract)
+	if authorship := authorshipGuidance(settings); authorship != "" {
+		contract = authorship + "\n\n" + contract
+	}
 	titleGuidance, err := sessionTitleGuidance(ctx, state)
 	if err != nil {
 		return nil, nil, err

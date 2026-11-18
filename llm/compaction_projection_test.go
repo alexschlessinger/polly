@@ -26,8 +26,8 @@ func TestCompactionCalibratesOnlyPreparedProjectedInput(t *testing.T) {
 								t.Error("the measured request contains an unselected image")
 							}
 						}
-						if kind != "text-only image" && kind != "flattened tools" && n != 3_021 {
-							t.Errorf("initial projected estimate = %d, want 3021", n)
+						if kind != "text-only image" && kind != "flattened tools" && n != 3_035 {
+							t.Errorf("initial projected estimate = %d, want 3035", n)
 						}
 						return reply("answer", 2*n), nil
 					}
@@ -92,8 +92,8 @@ func TestCompactionCalibratesOnlyPreparedProjectedInput(t *testing.T) {
 				if manual {
 					wantCalls = 2
 					assertCompactNoMarker(t, response)
-					if kind != "text-only image" && limit.EstimatedTokens != 2_035 {
-						t.Fatalf("compacted size = %d, want 2035 including measured system overhead", limit.EstimatedTokens)
+					if kind != "text-only image" && limit.EstimatedTokens != 2_063 {
+						t.Fatalf("compacted size = %d, want 2063 including measured system overhead", limit.EstimatedTokens)
 					}
 				}
 				if len(model.requests) != wantCalls || !reflect.DeepEqual(history, original) {

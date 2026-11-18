@@ -308,7 +308,7 @@ func TestTurnSurfacesCompactionAndRetainsDurableTranscript(t *testing.T) {
 	}
 	// The budget must cover the runtime guidance and registered tool schemas
 	// while still forcing the fat old exchange to be compacted.
-	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}
+	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 3_000}
 	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)

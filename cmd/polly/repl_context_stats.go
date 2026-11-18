@@ -88,7 +88,8 @@ func collectContextSnapshot(ctx context.Context, config *Config, state *conversa
 		}
 	}
 	req := llm.CompletionRequest{Messages: view, Skills: state.skillCatalog}
-	view, err = llm.WithSandboxContext(req.ResolvedMessages(), state.toolRegistry)
+	view = llm.WithModelContext(req.ResolvedMessages(), state.settings.Model)
+	view, err = llm.WithSandboxContext(view, state.toolRegistry)
 	if err != nil {
 		return contextSnapshot{}, err
 	}

@@ -20,6 +20,15 @@ func ModelName(model string) string {
 	return model
 }
 
+// BareModelName returns the model id after the last slash, the form the
+// runtime context and status surfaces show. Ids without a slash pass through.
+func BareModelName(model string) string {
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		return model[i+1:]
+	}
+	return model
+}
+
 // DiscoverModelContextWindow is a compatibility wrapper over provider metadata.
 func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int, error) {
 	provider, name, ok := strings.Cut(model, "/")

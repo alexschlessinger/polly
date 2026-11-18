@@ -295,7 +295,9 @@ func TestAgentSummarizesWithTheCompactionModel(t *testing.T) {
 		t.Fatalf("requests = %d", len(model.requests))
 	}
 	sent := model.requests[1]
-	if sent.Model != "main/model" || len(sent.Messages) != 2 || !strings.Contains(sent.Messages[0].Content, "SUMMARY: the user wanted the old thing") || sent.Messages[1].Content != "current request" {
+	if sent.Model != "main/model" || len(sent.Messages) != 3 ||
+		sent.Messages[0].Role != messages.MessageRoleSystem || !strings.Contains(sent.Messages[0].Content, "<model_context>") ||
+		!strings.Contains(sent.Messages[1].Content, "SUMMARY: the user wanted the old thing") || sent.Messages[2].Content != "current request" {
 		t.Fatalf("request after the summary = %+v", sent.Messages)
 	}
 	if len(response.AllMessages) != 3 || !response.AllMessages[0].IsUsageRecord() {
@@ -681,7 +683,13 @@ func TestSummaryTextSurvivesAModelThatCannotViewImages(t *testing.T) {
 	if _, err := agent.Run(context.Background(), &CompletionRequest{Model: "custom/m", Messages: history}, nil); err != nil {
 		t.Fatal(err)
 	}
-	summary := model.requests[0][0]
+	var summary messages.ChatMessage
+	for _, msg := range model.requests[0] {
+		if strings.Contains(msg.GetContent(), "SUMMARY-TEXT") {
+			summary = msg
+			break
+		}
+	}
 	if len(summary.Parts) == 0 || !strings.Contains(summary.Parts[0].Text, "SUMMARY-TEXT") {
 		t.Fatalf("summary text is not among the parts providers send: %+v", summary)
 	}
