@@ -1551,8 +1551,17 @@ func (r *Runtime) sliceState(ctx context.Context, i *invocation) (*State, []stri
 	if own != nil {
 		return own, others, nil
 	}
+	// The roots come from the state returned, not the look before it: a
+	// context a sibling created between the two must be denied as well.
 	s, err := r.read(ctx)
-	return s, others, err
+	if err != nil {
+		return nil, nil, err
+	}
+	others = nil
+	if m := s.Members[i.member]; m != nil {
+		others = otherRoots(s, s.Contexts[m.Context])
+	}
+	return s, others, nil
 }
 
 // executeMemberSlice runs one slice. s is sliceState's: it holds the whole
