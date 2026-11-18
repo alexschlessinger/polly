@@ -135,7 +135,19 @@ func (c *coordinationCache) records(ctx context.Context, conn *sql.Conn, parent 
 		return nil, 0, err
 	}
 	if len(c.families) >= maxCachedFamilies {
-		c.clear()
+		// The families this store drives stay: forgetting one changes its
+		// revision, which its runtime then takes for a change by someone
+		// else. Only when they alone fill the cache does it start over.
+		c.mu.Lock()
+		for root := range c.families {
+			if !driven(root) {
+				delete(c.families, root)
+			}
+		}
+		c.mu.Unlock()
+		if len(c.families) >= maxCachedFamilies {
+			c.clear()
+		}
 	}
 	c.revisions++
 	c.set(parent, cachedFamily{records, c.revisions})
