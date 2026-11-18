@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -553,5 +554,55 @@ func TestVolatileChangeStaysInMemory(t *testing.T) {
 	}
 	if a, b := storedRecord(t, here, "task", "a"), storedRecord(t, here, "task", "b"); a != `{"n":4}` || b != `{"n":3}` {
 		t.Fatalf("the table after a change that is not volatile: a=%q b=%q", a, b)
+	}
+}
+
+// A checkpoint that finds the lease taken drops the updates accepted under
+// it. Their handle hears of it at once, and so does a caller that asks
+// whether its update was written: the database will never hold it.
+func TestCheckpointThatDropsUpdatesReportsTheLeaseLost(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
+	parent, err := store.Acquire(ctx, "parent", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	coord := parent.(CoordinationSession)
+	if err := coord.UpdateCoordination(ctx, setRecord("task", "a", `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := coord.(CoordinationRevisionSession).CoordinationRevision(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Someone else takes the lease; this handle has yet to renew and notice.
+	if err := store.withTransactionNow(ctx, "BEGIN IMMEDIATE", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `UPDATE session_leases SET owner_token = ? WHERE session_id = ?`, []byte("another owner 16"), parent.(*sqliteSession).id)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var state *CoordinationState
+	if err := coord.(CoordinationDeltaSession).UpdateCoordinationFrom(ctx, revision, func(s *CoordinationState) error {
+		state = s
+		return changeRecord("task", "a", `{"n":2}`, "one")(s)
+	}); err != nil {
+		t.Fatalf("an update answered from memory: %v", err)
+	}
+	if err := store.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stored := storedRecord(t, store, "task", "a"); stored != `{"n":1}` {
+		t.Fatalf("the record after the checkpoint = %q", stored)
+	}
+	if err := state.Written(ctx); !errors.Is(err, ErrSessionLeaseLost) {
+		t.Fatalf("Written for a dropped update = %v", err)
+	}
+	if cause := context.Cause(parent.Context()); !errors.Is(cause, ErrSessionLeaseLost) {
+		t.Fatalf("the handle after its updates were dropped = %v", cause)
+	}
+	if _, err := coord.ReadCoordination(ctx); !errors.Is(err, ErrSessionLeaseLost) {
+		t.Fatalf("a read after the updates were dropped = %v", err)
 	}
 }

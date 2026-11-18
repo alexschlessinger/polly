@@ -216,7 +216,11 @@ type coordinationWriter struct {
 	window, applying *pendingWindow
 	since            time.Time
 	logErr, applyErr error
-	closed           bool
+	// lost are the lease tokens under which a checkpoint found updates it
+	// could not write: the lease had been taken. A token names one tenure,
+	// so the set grows only by leases lost.
+	lost   map[string]struct{}
+	closed bool
 	// stopped is logErr != nil || applyErr != nil || closed, for healthy.
 	stopped atomic.Bool
 	// loggedMoved and appliedMoved are closed and replaced when the place
@@ -366,10 +370,18 @@ func (w *coordinationWriter) failure() error {
 }
 
 // wait returns once the update accepted at place, and every one before it,
-// would survive a crash of the process.
-func (w *coordinationWriter) wait(ctx context.Context, place uint64) error {
+// would survive a crash of the process. tokens are the leases the update was
+// accepted under: once a checkpoint has dropped updates of one of them, the
+// update may be among those, and wait reports the lease lost instead.
+func (w *coordinationWriter) wait(ctx context.Context, place uint64, tokens ...[]byte) error {
 	w.mu.Lock()
 	for {
+		for _, token := range tokens {
+			if _, lost := w.lost[string(token)]; lost {
+				w.mu.Unlock()
+				return ErrSessionLeaseLost
+			}
+		}
 		if w.logged >= place || w.applied >= place {
 			w.mu.Unlock()
 			return nil
@@ -588,6 +600,25 @@ func (w *coordinationWriter) finish() {
 	_ = log.close(clean)
 }
 
+// lose notes that the lease token on the session id was taken while updates
+// accepted under it were pending. They are dropped: whoever holds the lease
+// now has gone on from what the database held. The handle that accepted them
+// is told at once instead of at its next renewal, so nothing more is built
+// on updates the database will never hold, and a caller still waiting on one
+// hears that it is gone.
+func (w *coordinationWriter) lose(id, token []byte) {
+	w.mu.Lock()
+	if w.lost == nil {
+		w.lost = map[string]struct{}{}
+	}
+	w.lost[string(token)] = struct{}{}
+	announce(&w.loggedMoved)
+	w.mu.Unlock()
+	if handle := w.store.handle(string(id)); handle != nil && bytes.Equal(handle.ownerToken, token) {
+		_ = handle.loseLease()
+	}
+}
+
 // announce wakes the waiters on moved, one of loggedMoved and appliedMoved.
 // The caller holds mu.
 func announce(moved *chan struct{}) {
@@ -750,8 +781,12 @@ func (w *coordinationWriter) apply(window *pendingWindow, log *updateLog) error 
 			if len(steps) == 0 {
 				writing, sessions = w.claim(window, sessions, checkpointRows-rows)
 				for _, session := range writing {
-					if err := writePendingSession(ctx, conn, session, true); err != nil {
+					lost, err := writePendingSession(ctx, conn, session, true)
+					if err != nil {
 						return err
+					}
+					if lost {
+						w.lose(session.id, session.token)
 					}
 				}
 			}
@@ -807,6 +842,7 @@ func (w *coordinationWriter) writePendingRecords(ctx context.Context, conn *sql.
 	if !held {
 		// Memory may hold records the database never will.
 		w.store.coordination.distrusted.Store(true)
+		w.lose(family.root, family.token)
 		slog.Warn("coordination_updates_dropped", "family", hex.EncodeToString(family.root), "records", len(records))
 		return nil
 	}
@@ -826,23 +862,24 @@ func (w *coordinationWriter) writePendingRecords(ctx context.Context, conn *sql.
 // writePendingSession writes what is pending for one session: its new
 // messages and its transcript identity. With fenced set it first checks that
 // the session is still leased as it was when they were accepted; a caller
-// that passes false has checked the lease in the same transaction.
-func writePendingSession(ctx context.Context, conn *sql.Conn, session *pendingSession, fenced bool) error {
+// that passes false has checked the lease in the same transaction. lost
+// reports that the fence dropped them: the lease is no longer the session's.
+func writePendingSession(ctx context.Context, conn *sql.Conn, session *pendingSession, fenced bool) (lost bool, err error) {
 	next, held, err := leasedSequence(ctx, conn, session.id, session.token)
 	if err != nil {
-		return err
+		return false, err
 	}
 	end := session.start + int64(len(session.tail))
 	// A transcript at end holds the messages already: a checkpoint that was
 	// cut short wrote them.
 	if fenced && !held || len(session.tail) > 0 && next != session.start && next != end {
 		slog.Warn("coordination_updates_dropped", "session", hex.EncodeToString(session.id), "messages", len(session.tail))
-		return nil
+		return fenced && !held, nil
 	}
 	appended := len(session.tail) > 0 && next == session.start
 	if appended {
 		if _, err := insertMessages(ctx, conn, session.id, session.start, session.tail); err != nil {
-			return err
+			return false, err
 		}
 	}
 	// The session's row is changed once for the turn and the identity.
@@ -855,10 +892,10 @@ func writePendingSession(ctx context.Context, conn *sql.Conn, session *pendingSe
 		err = writeTranscriptIdentity(ctx, conn, session.id, session.transcript, session.transcript.Sequence)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if session.outcome != "" {
-		return writeSpawnOutcome(ctx, conn, session.id, session.outcome, session.outcomeNS)
+		return false, writeSpawnOutcome(ctx, conn, session.id, session.outcome, session.outcomeNS)
 	}
-	return nil
+	return false, nil
 }

@@ -2266,7 +2266,7 @@ func (s *sqliteSession) leasedWrite(ctx context.Context, write, settle bool, fn 
 			return err
 		}
 		for i := range pending {
-			if err := writePendingSession(opCtx, conn, &pending[i].session, false); err != nil {
+			if _, err := writePendingSession(opCtx, conn, &pending[i].session, false); err != nil {
 				return err
 			}
 		}

@@ -234,7 +234,7 @@ func endLease(ctx context.Context, conn *sql.Conn, held lease, pending []pending
 		return false, err
 	}
 	for i := range pending {
-		if err := writePendingSession(ctx, conn, &pending[i].session, false); err != nil {
+		if _, err := writePendingSession(ctx, conn, &pending[i].session, false); err != nil {
 			return false, err
 		}
 	}

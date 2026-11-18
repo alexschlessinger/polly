@@ -549,7 +549,9 @@ func (s *sqliteSession) updateRemembered(ctx context.Context, known uint64, fami
 			return s.mapError(ctx, err)
 		}
 		if !kept {
-			state.Written = func(ctx context.Context) error { return writer.wait(ctx, place) }
+			state.Written = func(ctx context.Context) error {
+				return writer.wait(ctx, place, update.parentToken, update.sessionToken)
+			}
 		}
 	}
 	s.coord.sequence = next
