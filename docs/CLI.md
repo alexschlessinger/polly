@@ -480,7 +480,11 @@ the status bar or running `/setup` opens the setup form, which applies the
 model, host, context limit, and effort to the current session, the endpoint and
 key override to the process, and a changed theme to the UI. It saves the model,
 host, endpoint, effort, theme, and sandbox defaults to `~/.pollytool/config`;
-the context limit stays session-only and the key stays process-only. Its sandbox
+the context limit stays session-only and the key stays process-only. Once that
+file exists, Apply saves only the fields you changed: a value the form shows
+because this launch was started with it (`--baseurl`, `--model`, `--sandbox`)
+applies here and leaves the file as it was. Cycle the sandbox field away and
+back to save a policy the launch is already running. Its sandbox
 default affects later launches, not the sandbox already running.
 
 ### Agent panel

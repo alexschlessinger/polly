@@ -83,6 +83,17 @@ type modelForm struct {
 	sandbox        bool
 	initialSandbox bool
 	sandboxPreset  string
+	// sandboxTouched is whether the user cycled the field. It may show a
+	// policy only because this launch runs one, so its value alone does not
+	// say the user chose it; cycling away and back does.
+	sandboxTouched bool
+
+	// configured is whether a configuration file existed when the form
+	// opened. Apply then saves only the fields the user changed and leaves
+	// the rest of the file as it is: a field the form merely inherited from
+	// this launch (a one-off --baseurl or --sandbox) is not a default anyone
+	// chose. Without a file, Apply is the first setup and saves all it shows.
+	configured bool
 }
 
 const (
@@ -140,6 +151,7 @@ func (r *managedREPL) openSetupFormAt(focus int) {
 		selected:        -1,
 		infos:           map[string]llm.ModelInfo{},
 		requested:       map[string]bool{},
+		configured:      userConfigExists(),
 	}
 	if model != "" {
 		f.initialRoute = &modelFormRoute{provider: provider, text: name, model: model, host: host}
@@ -631,7 +643,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 			r.cycleFormTheme(f, delta)
 		} else if f.focus == formFieldSandbox {
 			// Either arrow flips it: the field has two values.
-			f.sandbox = !f.sandbox
+			f.sandbox, f.sandboxTouched = !f.sandbox, true
 			f.err = ""
 		}
 	case "<Enter>":
@@ -777,6 +789,9 @@ func (f *modelForm) route() (string, string, error) {
 	return f.provider + "/" + name, host, nil
 }
 
+// setupDefaults is what Apply saves. Once a configuration file exists, a
+// field the user left alone keeps what the file says, whatever this launch
+// was started with; see modelForm.configured.
 func (f *modelForm) setupDefaults(model, host string) setupDefaults {
 	defaults := setupDefaults{
 		model:    model,
@@ -786,6 +801,29 @@ func (f *modelForm) setupDefaults(model, host string) setupDefaults {
 	}
 	if f.sandbox {
 		defaults.sandboxPreset = f.sandboxPreset
+	}
+	if f.configured {
+		saved := func(keys ...string) string {
+			for _, key := range keys {
+				if value, ok := userConfigValue(key); ok && strings.TrimSpace(value) != "" {
+					return strings.TrimSpace(value)
+				}
+			}
+			return ""
+		}
+		if f.provider == f.initialProvider && strings.TrimSpace(f.model.text()) == f.initialModel {
+			defaults.model, defaults.host = saved(envVarModel), saved(envVarModelHost)
+		}
+		if defaults.endpoint == f.initialEndpoint {
+			defaults.endpoint = saved(envVarBaseURL)
+		}
+		if f.thinking == f.initialThinking {
+			// write drops the former spelling, so its value is carried over.
+			defaults.thinking = saved(envVarEffort, envVarThinking)
+		}
+		if !f.sandboxTouched && f.sandbox == f.initialSandbox {
+			defaults.sandboxPreset = saved(envVarSandbox)
+		}
 	}
 	// An untouched theme writes nothing: the theme in effect is already
 	// what the launch resolved.
@@ -837,12 +875,14 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 			r.state.agent.ClearProviderAPIKey(f.provider)
 		}
 	}
+	// The session takes what the form shows; the file may keep another value.
+	endpoint := strings.TrimSpace(f.endpoint.text())
 	if r.config != nil {
-		r.config.BaseURL = defaults.endpoint
+		r.config.BaseURL = endpoint
 		r.config.Launch.Model, r.config.Launch.ModelHost, r.config.Launch.ThinkingEffort = model, host, f.thinking
 	}
 	if r.state != nil {
-		r.state.metadataBaseURL = defaults.endpoint
+		r.state.metadataBaseURL = endpoint
 	}
 	for _, notice := range notices {
 		r.model.appendNoticeLine(notice)

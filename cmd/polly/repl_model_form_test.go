@@ -862,9 +862,22 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if !f.sandbox {
 		t.Fatal("the reopened form ignored the launch it is running in")
 	}
-	// Turning the sandbox back on writes its policy; choosing the default
-	// theme still records it.
-	f.sandbox = true
+	// The field shows this launch's policy, not one anybody saved, so an
+	// Apply that leaves it alone leaves the file without one.
+	formKey(r, "<Enter>")
+	if raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName)); err != nil || strings.Contains(string(raw), envVarSandbox) {
+		t.Fatalf("an untouched field saved this launch's policy: %v\n%s", err, raw)
+	}
+	// Cycling it away and back is choosing it, and writes its policy;
+	// choosing the default theme still records it.
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	r.focusModelForm(f, formFieldSandbox)
+	formKey(r, "<Right>")
+	formKey(r, "<Right>")
+	if !f.sandbox {
+		t.Fatal("two presses did not bring the field back")
+	}
 	f.theme = themeNameDefault
 	formKey(r, "<Enter>")
 	raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
@@ -882,6 +895,46 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	f = r.model.modal.modelForm
 	if !f.sandbox || f.sandboxPreset != defaultSandboxPreset {
 		t.Fatalf("the reopened form did not start from the saved policy: on %v preset %q", f.sandbox, f.sandboxPreset)
+	}
+}
+
+// Once polly is configured, Apply saves what the user changed. What the form
+// only inherited from this launch, a one-off --baseurl or --model, applies to
+// the session and stays out of the file.
+func TestSetupFormLeavesInheritedFieldsOutOfTheFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{envVarModel, envVarBaseURL, envVarEffort, envVarThinking, envVarModelHost, envVarSandbox, envVarNoSandbox} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+	path := filepath.Join(home, userConfigDirName, userConfigFileName)
+	if err := writeUserConfig(path, map[string]string{envVarModel: "openai/saved", envVarEffort: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	// This launch was started with an endpoint and a model of its own.
+	r.config.BaseURL = "http://localhost:8080/v1"
+	r.config.NoSandbox = true
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.thinking = "off"
+	formKey(r, "<Enter>")
+	if r.model.modal != nil {
+		t.Fatalf("Apply left the form open: %q", f.err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := userConfigHeader + "POLLYTOOL_EFFORT=off\nPOLLYTOOL_MODEL=openai/saved\n"
+	if string(raw) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
+	}
+	// The session keeps what the form showed.
+	if r.config.BaseURL != "http://localhost:8080/v1" || r.state.settings.Model != "openai/current" || r.state.settings.ThinkingEffort != "off" {
+		t.Fatalf("session after Apply: endpoint %q settings %+v", r.config.BaseURL, r.state.settings)
 	}
 }
 
