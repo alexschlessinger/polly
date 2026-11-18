@@ -1,0 +1,21 @@
+# Plays fixtures/ask-user.json: a turn that calls ask_user, the question
+# dialog, a choice, and the answered row in the transcript.
+#   POLLY_SHOT_FIXTURE=.agents/skills/polly-tui/fixtures/ask-user.json \
+#     .agents/skills/polly-tui/driver.sh hshot .agents/skills/polly-tui/fixtures/ask-user.txt
+#
+# The turn stays running behind the dialog, and a running turn repaints its
+# elapsed timer, so :settle never agrees with itself here: wait for the
+# dialog's own text instead.
+migrate the database
+:wait "Esc dismiss" 5
+:shot $POLLY_SHOT_DIR/01-question.png
+:key down
+:wait "keep local development only" 5
+:shot $POLLY_SHOT_DIR/02-selected.png
+:key enter
+:wait "Migrating to PostgreSQL 16." 10
+:sleep 400
+:shot $POLLY_SHOT_DIR/03-answered.png
+:click "ask_user" 5
+:sleep 400
+:shot $POLLY_SHOT_DIR/04-question-body.png

@@ -38,7 +38,7 @@ func inlineToolRowChunk(row toolDisclosureRow, width int, root string, recordID 
 			write("\n" + command)
 		}
 		if !row.hasInlineEditDiff() {
-			label, body, controls, links := row.inlineOutputSection()
+			label, body, controls, links := row.inlineOutputSection(width)
 			write("\n" + toolBodyIndent + label)
 			if body != "" {
 				write("\n" + body)

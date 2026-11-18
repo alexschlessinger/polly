@@ -29,3 +29,6 @@ and workspace constructors, storage contracts, and backend verification.
 
 [Task output handoff](features/unified-task-results.md) describes artifact-backed
 file capture, retention, and restoration for worker results.
+
+[Asking the user from a turn](features/ask-user.md) describes the TUI-only
+`ask_user` dialog and how a turn blocks on its answer.

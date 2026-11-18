@@ -29,6 +29,17 @@ type inlineToolOutput struct {
 	body, language, text string
 	artifact             *artifacts.Ref
 	loaded               bool
+	// question is ask_user's Markdown prompt and answer the line the user's
+	// choice adds under it; both are empty for every other tool. rendered
+	// caches the prompt at the width it was last laid out for, since rows
+	// reflow on resize.
+	question string
+	answer   string
+	rendered struct {
+		ok    bool
+		width int
+		rows  []string
+	}
 	// Only one bounded page is retained. Offsets refer to the recorded bytes,
 	// before display cleanup or JSON formatting; previous holds page starts.
 	offset, end int64
@@ -41,6 +52,10 @@ type inlineToolOutput struct {
 
 func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.ChatMessage) *inlineToolOutput {
 	o := &inlineToolOutput{body: result.GetContent(), loaded: true}
+	if call.Name == askUserToolName {
+		o.question = askUserQuestionOf(call.Arguments)
+		o.answer = askUserAnswerLine(result.GetContent())
+	}
 	if call.Name == "read_file" || call.Name == "read" {
 		if file := fileSummaryOf(call); file != nil {
 			if lexer := lexers.Match(file.path); lexer != nil {
@@ -260,7 +275,12 @@ type inlineOutputLink struct {
 // page is read, so nothing above the reader changes under them. Each line
 // sits behind toolBodyIndent. A page with no text says so on the label row
 // and has no body.
-func (row toolDisclosureRow) inlineOutputSection() (label, body, controls string, links []inlineOutputLink) {
+//
+// ask_user is the one row whose body is a document rather than output: the
+// question the user answered, rendered as Markdown at width, then their
+// answer. width is the row's content width; zero falls back to the recorded
+// text.
+func (row toolDisclosureRow) inlineOutputSection(width int) (label, body, controls string, links []inlineOutputLink) {
 	o := row.output
 	var parts []string
 	switch {
@@ -268,6 +288,15 @@ func (row toolDisclosureRow) inlineOutputSection() (label, body, controls string
 		parts = []string{"running…"}
 	case o == nil:
 		parts = []string{"output unavailable in saved history"}
+	case o.question != "" && width > 0:
+		parts = []string{"question"}
+		body = o.questionBody(max(8, width-style.TextWidth(toolBodyIndent)))
+		if o.answer != "" {
+			if body != "" {
+				body += "\n"
+			}
+			body += style.Styled(o.answer, "muted", "")
+		}
 	default:
 		parts = []string{"output"}
 		if o.loaded && (o.offset > 0 || o.more) {
@@ -300,6 +329,19 @@ func (row toolDisclosureRow) inlineOutputSection() (label, body, controls string
 		body = toolBodyIndent + strings.ReplaceAll(strings.TrimPrefix(body, "\n"), "\n", "\n"+toolBodyIndent)
 	}
 	return label, body, controls, links
+}
+
+// questionBody renders ask_user's prompt once per width. Rows reflow on
+// resize, so the cache keeps the width it was laid out for.
+func (o *inlineToolOutput) questionBody(width int) string {
+	if o.question == "" || width <= 0 {
+		return ""
+	}
+	if !o.rendered.ok || o.rendered.width != width {
+		o.rendered.width, o.rendered.rows = width, markdown.RenderMutedRows(o.question, width, nil)
+		o.rendered.ok = true
+	}
+	return strings.Join(o.rendered.rows, "\n")
 }
 
 // groupDigits writes n with thousands separators.

@@ -1,0 +1,32 @@
+{
+  "sessions": [
+    {
+      "name": "ask-user",
+      "launch": true,
+      "metadata": {"title": "Migrate the database"}
+    }
+  ],
+  "turns": [
+    {
+      "match": "migrate the database",
+      "steps": [
+        {"content": "Before I start, one decision is yours.\n\n"},
+        {"tool": {"name": "ask_user", "arguments": {
+          "header": "Database migration",
+          "question": "Target **PostgreSQL 16**, which prod already runs.\n\n- no schema port\n- one week of work",
+          "options": [
+            {"label": "PostgreSQL", "description": "the existing prod instance, no schema port"},
+            {"label": "SQLite", "description": "keep local development only"},
+            {"label": "Ask me later", "description": "stop here and revisit tomorrow"}
+          ]
+        }}, "mark": "asked"}
+      ],
+      "usage": {"input": 1200, "output": 40}
+    },
+    {
+      "steps": [{"content": "Migrating to PostgreSQL 16."}],
+      "usage": {"input": 1300, "output": 8},
+      "mark": "finished"
+    }
+  ]
+}

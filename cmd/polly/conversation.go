@@ -409,6 +409,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	}
 	registerSessionTitleTool(state)
 	registerThemeTool(state)
+	registerAskUserTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
 	}

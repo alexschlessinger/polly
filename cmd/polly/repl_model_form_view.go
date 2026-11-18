@@ -29,13 +29,21 @@ const (
 // formValueX is the cell where field values start.
 const formValueX = formPad + formCaretW + formLabelW
 
-// dockedFormRows is how many rows the open setup form takes in the
-// composer's place in a w×h terminal, 0 when none is open. Caller holds m.mu.
+// dockedFormRows is how many rows the open setup form or question takes in the
+// composer's place in a w×h terminal, 0 when neither is open. Caller holds
+// m.mu.
 func (m *replModel) dockedFormRows(w, h, statusRows int) int {
-	if m.modal == nil || m.modal.modelForm == nil {
+	if m.modal == nil {
 		return 0
 	}
-	return strings.Count(m.modal.modelForm.text(dockedFormMaxRows(h, statusRows), w), "\n") + 1
+	maxRows := dockedFormMaxRows(h, statusRows)
+	switch {
+	case m.modal.modelForm != nil:
+		return strings.Count(m.modal.modelForm.text(maxRows, w), "\n") + 1
+	case m.modal.ask != nil:
+		return strings.Count(m.modal.ask.text(maxRows, w), "\n") + 1
+	}
+	return 0
 }
 
 // dockedFormMaxRows leaves the status bar, the rule, and a few transcript

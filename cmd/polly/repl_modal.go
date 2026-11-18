@@ -37,6 +37,7 @@ type replModal struct {
 	title           string
 	modelForm       *modelForm
 	sandboxTry      *sandboxTryDialog
+	ask             *askDialog
 	login           *loginDialog
 	items           []replModalItem
 	selected        int
@@ -96,6 +97,9 @@ func (m *replModal) wipe() {
 	}
 	if m.sandboxTry != nil {
 		m.sandboxTry.stop()
+	}
+	if m.ask != nil {
+		m.ask.stop()
 	}
 	if m.login != nil {
 		m.login.stop()
@@ -234,6 +238,9 @@ func (m *replModal) settleListScroll(total, visible int) {
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
+	if m.ask != nil {
+		return m.ask.text(maxRows, modalWidth)
+	}
 	if m.helpLines != nil {
 		m.refreshHelpItems(modalWidth)
 	}
@@ -450,9 +457,17 @@ func (r *managedREPL) openModal(modal *replModal) {
 	r.model.modal = modal
 }
 
-// awaited reports whether a turn waits on the modal's answer.
+// awaited reports whether a turn waits on the modal's answer. Such a modal is
+// parked in pendingModal when another dialog opens over it, and restored when
+// that one closes; replacing it would leave the turn waiting on nothing.
 func (m *replModal) awaited() bool {
-	return m != nil && m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
+	if m == nil {
+		return false
+	}
+	if m.ask != nil && !m.ask.answered {
+		return true
+	}
+	return m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
 }
 
 // expandPickerParent lists name's agents in the session picker from now on.
@@ -532,6 +547,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.modelForm != nil {
 		return r.handleModelFormEvent(m.modelForm, e)
+	}
+	if m.ask != nil {
+		return r.handleAskEvent(m.ask, e)
 	}
 	if m.sandboxTry != nil {
 		return r.handleSandboxTryEvent(m.sandboxTry, e)

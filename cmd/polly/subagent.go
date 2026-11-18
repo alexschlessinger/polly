@@ -21,6 +21,23 @@ func parentTurnUIFrom(ctx context.Context) TurnUI {
 	return turnUI
 }
 
+type askingMemberKey struct{}
+
+// withAskingMember names the swarm member whose tools are about to run, so a
+// question it asks is labeled with its name rather than passed off as the
+// tab's own turn. The parent's own turn carries no member.
+func withAskingMember(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, askingMemberKey{}, id)
+}
+
+func askingMemberFrom(ctx context.Context) string {
+	id, _ := ctx.Value(askingMemberKey{}).(string)
+	return id
+}
+
 type toolCallKey struct{}
 
 // withToolCall hands a tool the call it is answering, so a spawned child can

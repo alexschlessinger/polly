@@ -67,7 +67,7 @@ func newToolPresentation(in toolPresentationInput) toolPresentation {
 	if p.duration == 0 {
 		p.duration = in.result.ToolDuration()
 	}
-	p.lines = resultLineMeta(content)
+	p.lines = toolResultMeta(in.call.Name, content)
 	p.hasText = strings.TrimSpace(content) != ""
 	switch {
 	case !in.complete:

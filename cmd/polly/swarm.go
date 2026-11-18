@@ -152,7 +152,9 @@ func memberUICallbacks(ctx context.Context, config *Config, state *conversationS
 	return &llm.AgentCallbacks{OnAttemptAborted: child.ModelAttemptAborted, OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
 		return approveToolCalls(ctx, ui, m.ID, calls), ctx.Err()
 	}, BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
-		return withToolCall(withParentTurnUI(ctx, ui), call)
+		// The member's own name rides the call so ask_user labels its question
+		// with who is asking; approvals carry the same attribution separately.
+		return withToolCall(withAskingMember(withParentTurnUI(ctx, ui), m.ID), call)
 	}}
 }
 

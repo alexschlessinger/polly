@@ -61,6 +61,8 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeBashCommand(args)
 	case sandboxProposeTool:
 		return summarizeSandboxProposeArgs(args)
+	case askUserToolName:
+		return summarizeAskUserArgs(args)
 	case "read":
 		return summarizeReadArgs(args)
 	case "read_file":
@@ -93,6 +95,25 @@ func summarizeSandboxProposeArgs(args tools.Args) string {
 		summary += " for " + command
 	}
 	return style.Truncate(summary, genericToolSummaryWidth)
+}
+
+// summarizeAskUserArgs names a question by its first meaningful line, without
+// the Markdown that would be noise on a one-line row.
+func summarizeAskUserArgs(args tools.Args) string {
+	return style.Truncate(askQuestionSummary(args.String("question")), genericToolSummaryWidth)
+}
+
+func askQuestionSummary(question string) string {
+	for _, line := range strings.Split(question, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
+		if line == "" {
+			continue
+		}
+		// Inline emphasis and code markers are noise on a one-line row;
+		// underscores stay, since identifiers use them.
+		return strings.NewReplacer("**", "", "__", "", "~~", "", "`", "", "*", "").Replace(line)
+	}
+	return ""
 }
 
 // summarizeSpawnArgs names a spawned agent by its label, or by the first
@@ -282,7 +303,8 @@ func toolLineBody(label, meta, duration string) string {
 
 // resultLineMeta summarizes how much output a successful tool handed the
 // model, as a human count of lines. Empty output earns no annotation rather
-// than a noisy "0 lines".
+// than a noisy "0 lines". A tool whose result is a value rather than a body
+// says what it was instead, through toolResultMeta.
 func resultLineMeta(result string) string {
 	result = strings.TrimRight(result, "\n")
 	if strings.TrimSpace(result) == "" {
@@ -292,6 +314,86 @@ func resultLineMeta(result string) string {
 		return fmt.Sprintf("%d lines", n)
 	}
 	return "1 line"
+}
+
+// toolResultMeta is the success annotation for a named tool: ask_user reports
+// the choice the user made, every other tool its result size.
+func toolResultMeta(toolName, result string) string {
+	if toolName == askUserToolName {
+		if meta := askUserResultMeta(result); meta != "" {
+			return meta
+		}
+	}
+	return resultLineMeta(result)
+}
+
+// askUserAnswer is the parts of ask_user's JSON result the transcript shows.
+type askUserAnswer struct {
+	Outcome string `json:"outcome"`
+	Choice  string `json:"choice"`
+	Index   int    `json:"index"`
+	Text    string `json:"text"`
+	Why     string `json:"why"`
+}
+
+// parseAskUserAnswer reads a result only when it names an outcome, so a
+// malformed or foreign result falls back to the ordinary output treatment.
+func parseAskUserAnswer(result string) (askUserAnswer, bool) {
+	var answer askUserAnswer
+	if json.Unmarshal([]byte(strings.TrimSpace(result)), &answer) != nil || answer.Outcome == "" {
+		return askUserAnswer{}, false
+	}
+	return answer, true
+}
+
+// askUserQuestionOf is ask_user's Markdown prompt from a call's arguments.
+func askUserQuestionOf(arguments string) string {
+	var args struct {
+		Question string `json:"question"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) != nil {
+		return ""
+	}
+	return strings.TrimSpace(args.Question)
+}
+
+// askUserResultMeta is the chosen label, or "dismissed", from the tool's JSON
+// result. A free-text answer carries its text.
+func askUserResultMeta(result string) string {
+	answer, ok := parseAskUserAnswer(result)
+	if !ok {
+		return ""
+	}
+	switch answer.Outcome {
+	case askOutcomeAnswered:
+		meta := answer.Choice
+		if answer.Text != "" {
+			meta += ": " + answer.Text
+		}
+		return style.Truncate(meta, 60)
+	case askOutcomeDismissed:
+		return "dismissed"
+	}
+	return ""
+}
+
+// askUserAnswerLine is the line under the question in an open row: what the
+// user chose, or that they dismissed the question.
+func askUserAnswerLine(result string) string {
+	answer, ok := parseAskUserAnswer(result)
+	if !ok {
+		return ""
+	}
+	switch answer.Outcome {
+	case askOutcomeAnswered:
+		if answer.Text != "" {
+			return "→ " + answer.Choice + ": " + answer.Text
+		}
+		return "→ " + answer.Choice
+	case askOutcomeDismissed:
+		return "→ dismissed"
+	}
+	return ""
 }
 
 // toolFailureMeta extracts a compact descriptor from a failed tool call: the

@@ -396,12 +396,18 @@ func (r *managedREPL) render() {
 	inspectorFocus := r.inspectorFocused() || r.workspace().inspector.searching
 	divider := r.model.dividerRow(l, inspectorFocus)
 	modalOpen := r.model.modal != nil
-	docked := modalOpen && r.model.modal.modelForm != nil
+	docked := modalOpen && (r.model.modal.modelForm != nil || r.model.modal.ask != nil)
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
 	if docked {
 		modalWidth = w
-		modalText = r.model.modal.modelForm.text(dockedFormMaxRows(h, l.statusRows), w)
+		// A question docks in the composer's place like the setup form, so it
+		// rises from the status bar instead of floating over the transcript.
+		if r.model.modal.modelForm != nil {
+			modalText = r.model.modal.modelForm.text(dockedFormMaxRows(h, l.statusRows), w)
+		} else {
+			modalText = r.model.modal.ask.text(dockedFormMaxRows(h, l.statusRows), w)
+		}
 		modalHeight = min(l.inputRows, strings.Count(modalText, "\n")+1)
 	} else if modalOpen {
 		r.refreshContextPopover(now)
