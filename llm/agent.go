@@ -2059,8 +2059,9 @@ func (a *Agent) listArtifactPage(offset, limit int) ([]artifacts.Ref, int) {
 		return nil, total
 	}
 	start := offset - 1
-	refs := make([]artifacts.Ref, 0, min(limit, total-start))
-	for _, id := range a.artifactOrder[start : start+cap(refs)] {
+	end := start + min(limit, total-start)
+	refs := make([]artifacts.Ref, 0, end-start)
+	for _, id := range a.artifactOrder[start:end] {
 		refs = append(refs, a.artifactRefs[id])
 	}
 	return refs, total
