@@ -40,6 +40,7 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			t.Cleanup(func() { _ = r.work.close() })
 			screen.SetSize(90, 45)
 			m := r.model
+			m.depth = depthAbridged // the window below the default depth
 			m.ed.setText("keep draft")
 			var calls []messages.ChatMessageToolCall
 			var results []messages.ChatMessage
@@ -312,7 +313,7 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	// folds the line and the next press opens it again.
 	nextKey := toolOutputLink{key: link.key, action: "next"}.keyboardKey()
 	chooseInlineTestAction(t, r, nextKey)
-	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
+	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged, depthFull} {
 		if !m.toggleAllDisclosures(80) || m.depth != depth || record.expanded != (depth != depthCollapsed) || !row.outputExpanded {
 			t.Fatalf("Ctrl-O to depth %v changed the open output or left the line wrong", depth)
 		}

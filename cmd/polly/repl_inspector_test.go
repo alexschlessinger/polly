@@ -383,6 +383,8 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 	r := newTabTestREPL(t, store, "root")
 	r.model.appendThinking("thought for the inspected view")
 	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "call", Name: "bash"})
+	// Start the view below the default depth so a press has somewhere to go.
+	r.workspace().viewState(tabViewTarget(r.visibleTab())).depth = depthAbridged
 	r.inspect(tabViewTarget(r.visibleTab()))
 	v := waitInspector(t, r, 140)
 	if v.model.reasoningRecords.count() == 0 || v.model.toolDisclosures.count() == 0 {
@@ -442,6 +444,8 @@ func TestFocusedInspectorCtrlODepthHoldsForLaterBlocks(t *testing.T) {
 	withDisplayTTY(t)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	r.model.appendThinking("earlier thought")
+	// Start the view below the default depth so a press has somewhere to go.
+	r.workspace().viewState(tabViewTarget(r.visibleTab())).depth = depthAbridged
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.workspace().inspector.focused = true
@@ -488,7 +492,7 @@ func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {
 	r.retireInspector(w)
 	behind := disclosureStates(r.model)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if got := disclosureStates(r.model); got != behind || r.model.depth != depthAbridged {
+	if got := disclosureStates(r.model); got != behind || r.model.depth != depthFull {
 		t.Fatalf("Ctrl-O on a projecting inspector toggled the conversation behind it: %q, was %q", got, behind)
 	}
 }

@@ -19,11 +19,13 @@ import (
 // hand in a collapsed view lists as abridged.
 type disclosureDepth uint8
 
+// The zero value is the default depth: a view nobody has set a depth on
+// lists every thought row and every call.
 const (
-	depthAbridged disclosureDepth = iota
-	depthFull
+	depthFull disclosureDepth = iota
 	depthCalls
 	depthCollapsed
+	depthAbridged
 )
 
 // label names a depth in the status bar.

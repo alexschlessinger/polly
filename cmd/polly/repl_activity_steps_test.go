@@ -77,6 +77,7 @@ func TestEachStepBoundsItsThought(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // this test walks the window below the default depth
 	m.beginTurn("think")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ModelAttemptStarted(0, 0)
@@ -116,6 +117,7 @@ func TestThoughtWindowSkipsBlankRows(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // this test walks the window below the default depth
 	m.beginTurn("think")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("Alpha.\n\nBeta.\n\nGamma.\n\nDelta.")
@@ -152,6 +154,7 @@ func TestRowWindowKeepsACutStepsThought(t *testing.T) {
 			withDisplayTTY(t)
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
+			m.depth = depthAbridged // this test walks the window below the default depth
 			m.beginTurn("inspect")
 			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			for step, count := range []int{tc.first, tc.second} {
@@ -367,6 +370,7 @@ func TestClickingAThoughtShowsAndAbridgesIt(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // the thought is a control below the default depth
 	m.beginTurn("think")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	for i := range 6 {

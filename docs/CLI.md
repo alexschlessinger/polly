@@ -580,10 +580,10 @@ collapsed; a line you open or fold by hand stays as you put it until Ctrl-O
 enters or leaves the collapsed depth.
 
 **Ctrl-O** sets what the view's lines list and cycles through four depths.
-**Abridged**, the default, shows each step's thought as its newest three rows
-of text, a `…` in the margin marking a cut one, and only the newest three
-calls of the line, the steps above them left out whole. **Full** shows every
-retained thought row and every call. **Calls only** shows the calls and no
+**Full**, the default, shows every retained thought row and every call.
+**Abridged** shows each step's thought as its newest three rows of text, a `…`
+in the margin marking a cut one, and only the newest three calls of the line,
+the steps above them left out whole. **Calls only** shows the calls and no
 thinking at all. **Collapsed** folds every line; the next press opens every
 line again, abridged. A call's output and recorded diff open only by a click
 on the call, at any depth, and stay as you put them when the depth changes. A

@@ -48,15 +48,15 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 
 	// Both lines are open; the depth changes change what they list, and
 	// collapsed folds them both. No depth opens an output.
-	initialCount := len(rows)
+	initialCount := len(rows) // the default full depth's rows
 	for _, step := range []struct {
 		name  string
 		depth disclosureDepth
 	}{
-		{"full", depthFull},
 		{"calls", depthCalls},
 		{"collapsed", depthCollapsed},
 		{"abridged", depthAbridged},
+		{"full", depthFull},
 	} {
 		open := step.depth != depthCollapsed
 		beforeCount, beforeAnchor := len(rows), m.scrollAnchor
@@ -87,13 +87,9 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 			t.Fatalf("%s: an output showed without a click", step.name)
 		}
 		switch step.name {
-		case "full":
-			if len(rows) <= initialCount {
-				t.Fatalf("the full depth did not grow the transcript: %d -> %d rows", initialCount, len(rows))
-			}
 		case "calls":
 			if len(rows) >= initialCount {
-				t.Fatalf("the calls depth did not shrink the transcript below abridged: %d, abridged %d", len(rows), initialCount)
+				t.Fatalf("the calls depth did not shrink the transcript below full: %d, full %d", len(rows), initialCount)
 			}
 		case "collapsed":
 			// A folded line is its header and latest call: no taller than
@@ -102,8 +98,12 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 				t.Fatalf("the collapsed depth grew the transcript: %d, calls %d", len(rows), beforeCount)
 			}
 		case "abridged":
+			if len(rows) <= beforeCount || len(rows) >= initialCount {
+				t.Fatalf("abridging did not sit between calls and full: %d, calls %d, full %d", len(rows), beforeCount, initialCount)
+			}
+		case "full":
 			if len(rows) != initialCount {
-				t.Fatalf("abridging did not restore the original row count: got %d, want %d", len(rows), initialCount)
+				t.Fatalf("full did not restore the original row count: got %d, want %d", len(rows), initialCount)
 			}
 		}
 		if want := beforeAnchor + len(rows) - beforeCount; m.scrollAnchor != want {

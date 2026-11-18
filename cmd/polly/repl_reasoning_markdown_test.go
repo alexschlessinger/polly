@@ -105,6 +105,7 @@ func TestReasoningMarkdownSettlementFlushesHeldMarkup(t *testing.T) {
 func TestReasoningMarkdownWindowsRenderedRows(t *testing.T) {
 	const source = "# Heading\n\nParagraph.\n\n- first\n- second\n\n```text\n    code\n    final\n```"
 	m := newReplModel()
+	m.depth = depthAbridged // the preview below the default depth
 	m.beginTurn("explain")
 	m.appendThinking(source)
 	m.completeThinkingTurn(false)

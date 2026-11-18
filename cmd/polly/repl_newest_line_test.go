@@ -159,12 +159,12 @@ func TestCollapsedFoldsEveryLineAndLeavingItOpensThem(t *testing.T) {
 			t.Fatalf("%s: depth=%v older=%v newest=%v outputs=%v/%v", stage, m.depth, older.expanded, newest.expanded, older.rows[0].outputExpanded, newest.rows[0].outputExpanded)
 		}
 	}
-	check("default", depthAbridged)
+	check("default", depthFull)
 	press := func() { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"}) }
 	for _, step := range []struct {
 		name  string
 		depth disclosureDepth
-	}{{"full", depthFull}, {"calls", depthCalls}, {"collapsed", depthCollapsed}, {"abridged", depthAbridged}} {
+	}{{"calls", depthCalls}, {"collapsed", depthCollapsed}, {"abridged", depthAbridged}, {"full", depthFull}} {
 		press()
 		check(step.name, step.depth)
 	}

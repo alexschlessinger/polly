@@ -41,7 +41,6 @@ func TestToolAndThoughtDetailsCannotOpenPanel(t *testing.T) {
 				m = prepareChildDisplay(&sessions.SessionView{Metadata: &sessions.Metadata{Name: "replayed-agent"}, History: history}, r.config, 140)
 				r.model, r.visibleTab().model = m, m
 			}
-			m.toggleAllDisclosures(140)
 			for _, width := range []int{140, 80, 180} {
 				screen.SetSize(width, 40)
 				r.render()

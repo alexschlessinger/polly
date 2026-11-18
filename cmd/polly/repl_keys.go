@@ -419,10 +419,9 @@ func keyBindingGroups() []keyGroup {
 	}
 }
 
-// toggleSelectedViewDisclosures is Ctrl-O: it switches the focused pane's
-// depth between abridged and expanded, without changing the conversation
-// beside an inspector. Caller holds r.model.mu. Reports quit, which it never
-// does.
+// toggleSelectedViewDisclosures is Ctrl-O: it moves the focused pane's depth
+// to the next of the cycle, without changing the conversation beside an
+// inspector. Caller holds r.model.mu. Reports quit, which it never does.
 func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	if !r.inspectorFocused() {
 		if r.model.toggleAllDisclosures(k.width) {

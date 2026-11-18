@@ -13,10 +13,10 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// Ctrl-O moves the view through full, calls alone, collapsed and abridged:
-// whole thoughts come and go, no output or diff opens, the line stays open
-// until collapsed folds it and abridged opens it again, and a held viewport
-// stays where it was.
+// Ctrl-O moves the view from its full default through calls alone, collapsed
+// and abridged: whole thoughts come and go, no output or diff opens, the line
+// stays open until collapsed folds it and abridged opens it again, and a held
+// viewport stays where it was.
 func TestCtrlOCyclesDepthsAndCollapsedFoldsTheLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -44,7 +44,7 @@ func TestCtrlOCyclesDepthsAndCollapsedFoldsTheLine(t *testing.T) {
 	rows := transcriptRowsText((conversationView{}).Rows(m, 80))
 	m.followBottom, m.scrollAnchor = false, len(rows)-5
 	anchor := rows[m.scrollAnchor]
-	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
+	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged, depthFull} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		if open := depth != depthCollapsed; m.depth != depth || record.expanded != open {
 			t.Fatalf("depth %d: want the line open=%v: depth=%d record=%+v", depth, open, m.depth, record)
@@ -122,7 +122,7 @@ func TestNewLinesFollowTheDepth(t *testing.T) {
 	}
 }
 
-// An agent's view opens every line, abridged; Ctrl-O there sets its depth.
+// An agent's view opens every line, full; Ctrl-O there sets its depth.
 func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 	withDisplayTTY(t)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
@@ -168,9 +168,9 @@ func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 			t.Fatalf("depth %d: an output opened without a click: %q", depth, text)
 		}
 	}
-	check(depthAbridged)
+	check(depthFull)
 	r.workspace().inspector.focused = true
-	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
+	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged, depthFull} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		v = waitInspector(t, r, 140)
 		check(depth)
@@ -218,7 +218,7 @@ func TestAgentViewCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T)
 	settle()
 	before := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
 	r.workspace().inspector.focused = true
-	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
+	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged, depthFull} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		settle()
 		after := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
@@ -245,7 +245,7 @@ func TestCtrlONamesTheDepthInTheStatusBar(t *testing.T) {
 	if word, _ := left(); !strings.HasSuffix(word, "s") || strings.Contains(word, "full") {
 		t.Fatalf("a running turn wants its clock before any press: %q", word)
 	}
-	for _, want := range []string{"full", "calls only", "collapsed", "abridged"} {
+	for _, want := range []string{"calls only", "collapsed", "abridged", "full"} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		word, raw := left()
 		if word != want || !strings.Contains(raw, style.Styled(want, "accent", "")) {

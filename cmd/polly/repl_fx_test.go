@@ -489,6 +489,7 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 func TestSettledThoughtStaysOpenAndIdleCtrlOSetsDepth(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // the cycle below the default depth
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("bounded reasoning tail ", 16))
@@ -534,6 +535,7 @@ func TestCtrlOSetsDepthAcrossTurns(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // the cycle below the default depth
 	m.beginTurn("first")
 	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	firstUI.ShowThinking("older completed reasoning")
@@ -608,6 +610,7 @@ func TestCtrlOLeavesHandOpenedAndFoldedRunsAlone(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // the cycle below the default depth
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -656,6 +659,7 @@ func TestDepthHoldsForLaterBlocksAndTurns(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // the cycle below the default depth
 	m.beginTurn("first")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("first run reasoning")

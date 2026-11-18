@@ -120,6 +120,7 @@ func TestDepthAppliesToAgentsAndImages(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthAbridged // this test walks the cycle from below the default depth
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the work")
