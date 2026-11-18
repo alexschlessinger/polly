@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -162,14 +163,38 @@ func mcpResultOutput(result *mcp.CallToolResult) (ToolOutput, error) {
 	// Structured content reaches the model as text and is kept nowhere else.
 	// Data is for records Polly's own tools produce: a server's payload there
 	// would be a second, unbounded copy that a host could read as one of them.
-	if result.StructuredContent != nil {
-		encoded, marshalErr := json.Marshal(result.StructuredContent)
-		if marshalErr != nil {
-			return ToolOutput{}, fmt.Errorf("failed to marshal structured tool result: %v", marshalErr)
-		}
-		textParts = append(textParts, string(encoded))
+	if err := appendStructuredText(&textParts, 0, result.StructuredContent); err != nil {
+		return ToolOutput{}, fmt.Errorf("failed to marshal structured tool result: %v", err)
 	}
 	return ToolOutput{Text: strings.Join(textParts, "\n"), Media: media}, nil
+}
+
+// appendStructuredText adds a result's structured content to its text as
+// JSON, unless one of the result's own text parts, those from index own on,
+// already is that JSON. Servers repeat structured content in a text block for
+// clients that read only text, and the model should read it once. Values are
+// compared, not bytes: the server's text may differ in spacing, key order and
+// number spelling.
+func appendStructuredText(textParts *[]string, own int, structured any) error {
+	if structured == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(structured)
+	if err != nil {
+		return err
+	}
+	var want any
+	if err := json.Unmarshal(encoded, &want); err != nil {
+		return err
+	}
+	for _, text := range (*textParts)[own:] {
+		var got any
+		if json.Unmarshal([]byte(text), &got) == nil && reflect.DeepEqual(got, want) {
+			return nil
+		}
+	}
+	*textParts = append(*textParts, string(encoded))
+	return nil
 }
 
 func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMedia) error {
@@ -199,17 +224,14 @@ func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMed
 			})
 		}
 	case *mcp.ToolResultContent:
+		own := len(*textParts)
 		for _, nested := range part.Content {
 			if err := appendMCPContent(nested, textParts, media); err != nil {
 				return err
 			}
 		}
-		if part.StructuredContent != nil {
-			encoded, err := json.Marshal(part.StructuredContent)
-			if err != nil {
-				return fmt.Errorf("failed to marshal nested structured MCP content: %v", err)
-			}
-			*textParts = append(*textParts, string(encoded))
+		if err := appendStructuredText(textParts, own, part.StructuredContent); err != nil {
+			return fmt.Errorf("failed to marshal nested structured MCP content: %v", err)
 		}
 	default:
 		encoded, err := json.Marshal(content)

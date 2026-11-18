@@ -802,9 +802,10 @@ applies the current base policy, and named layers stay excluded. If a
 replacement fails to start, the old server keeps running. Remote servers execute
 elsewhere and can't be sandboxed locally.
 
-A result's text and structured content become `ToolOutput.Text`, and its images,
-audio and binary resources become `Media`. `Data` stays nil: it carries only
-what Polly's own tools record.
+A result's text becomes `ToolOutput.Text`, followed by its structured content as
+JSON unless one of its text blocks already carries that JSON. Images, audio and
+binary resources become `Media`. `Data` stays nil: it carries only what Polly's
+own tools record.
 
 `tools.NewUnsafeMCPClient(spec)` is an explicit, standalone opt-out, and its
 caller owns and closes the client. When tools should share a policy, load them

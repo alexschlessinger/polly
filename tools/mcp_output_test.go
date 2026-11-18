@@ -83,6 +83,48 @@ func TestMCPResultOutputRecursesNestedToolResultWithoutBinaryJSON(t *testing.T) 
 	}
 }
 
+func TestMCPResultOutputReadsRepeatedStructuredContentOnce(t *testing.T) {
+	structured := map[string]any{"count": 3, "items": []any{"a", "b"}, "ok": true}
+	const compact = `{"count":3,"items":["a","b"],"ok":true}`
+	// What a server sends for clients that read only text: the same value in
+	// its own spacing, key order and number spelling.
+	const repeated = "{\n  \"ok\": true,\n  \"items\": [\"a\", \"b\"],\n  \"count\": 3.0\n}"
+	const other = `{"count":4,"items":["a","b"],"ok":true}`
+	text := func(parts ...string) []mcp.Content {
+		content := make([]mcp.Content, len(parts))
+		for i, part := range parts {
+			content[i] = &mcp.TextContent{Text: part}
+		}
+		return content
+	}
+	tests := []struct {
+		name   string
+		result *mcp.CallToolResult
+		want   string
+	}{
+		{"repeated as the only text", &mcp.CallToolResult{Content: text(repeated), StructuredContent: structured}, repeated},
+		{"repeated beside other text", &mcp.CallToolResult{Content: text("3 items", repeated), StructuredContent: structured}, "3 items\n" + repeated},
+		{"repeated array", &mcp.CallToolResult{Content: text("[1, 2]"), StructuredContent: []any{1, 2}}, "[1, 2]"},
+		{"repeated inside a nested result", &mcp.CallToolResult{Content: []mcp.Content{&mcp.ToolResultContent{
+			ToolUseID: "nested", Content: text(repeated), StructuredContent: structured,
+		}}}, repeated},
+		{"summary only", &mcp.CallToolResult{Content: text("3 items"), StructuredContent: structured}, "3 items\n" + compact},
+		{"different value", &mcp.CallToolResult{Content: text(other), StructuredContent: structured}, other + "\n" + compact},
+		{"no text", &mcp.CallToolResult{StructuredContent: structured}, compact},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := mcpResultOutput(tc.result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if output.Text != tc.want {
+				t.Fatalf("text = %q, want %q", output.Text, tc.want)
+			}
+		})
+	}
+}
+
 func TestNamespacedToolPreservesRichOutputInterface(t *testing.T) {
 	wrapped := &NamespacedTool{Tool: richOutputStub{}, namespacedName: "server__rich"}
 	output, err := wrapped.ExecuteOutput(context.Background(), nil)

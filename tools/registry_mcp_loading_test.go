@@ -133,6 +133,43 @@ func TestMCPFilteredReloadOwnsOnlyRetainedClients(t *testing.T) {
 	}
 }
 
+// A typed SDK tool sends its output twice, as structured content and as the
+// same JSON in a text block. Over a real connection the model reads it once.
+func TestMCPTypedToolOutputReachesTextOnce(t *testing.T) {
+	type typedOutput struct {
+		OK    bool `json:"ok"`
+		Count int  `json:"count"`
+	}
+	server := mcp.NewServer(&mcp.Implementation{Name: "typed-test", Version: "1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "typed"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, typedOutput, error) {
+		return nil, typedOutput{OK: true, Count: 3}, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(func() {
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
+	path := writeRegistryMCPConfig(t, MCPConfig{Transport: "streamable", URL: httpServer.URL})
+	registry := NewToolRegistry(nil)
+	defer registry.Close()
+	if _, err := registry.LoadMCPServer(path); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("srv__typed")
+	if !ok {
+		t.Fatalf("typed tool not loaded: %v", registry.All())
+	}
+	output, err := tool.(OutputTool).ExecuteOutput(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One JSON value and nothing after it: a second copy would not decode.
+	var got typedOutput
+	if err := json.Unmarshal([]byte(output.Text), &got); err != nil || got != (typedOutput{OK: true, Count: 3}) || output.Data != nil {
+		t.Fatalf("typed output = %#v, decode error = %v", output, err)
+	}
+}
+
 func TestMCPLoadingClosesServerWithNoTools(t *testing.T) {
 	url, closed := registryMCPServer(t)
 	path := writeRegistryMCPConfig(t, MCPConfig{Transport: "streamable", URL: url})
