@@ -7,7 +7,6 @@ Start with the [project overview and quick start](../README.md).
 | Guide | Find |
 |---|---|
 | [CLI and TUI](CLI.md) | Setup, commands, sessions, files, models, tools, and themes |
-| [Upgrade checklist](UPGRADING.md) | CLI behavior and library-host migration from v0.91-alpha |
 | [Sandboxing](SANDBOX.md) | Activation, home access, presets, profiles, build storage, and cleanup |
 | [Extra project directories](SANDBOX.md#extra-project-directories) | Extra project context with `--add-dir`, read-only under a sandbox |
 | [Swarms and workflows](WORKFLOWS.md) | Delegation, result delivery, review, integration, and recovery |
