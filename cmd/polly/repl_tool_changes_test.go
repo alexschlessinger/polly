@@ -58,6 +58,45 @@ func TestFileChangesFromResultDecodesEditAndBashShapes(t *testing.T) {
 	}
 }
 
+// A tool's stored data is its own. Only the built-in producers' payloads are
+// change and exit records, however another tool shapes what it stores.
+func TestToolDataFromOtherToolsIsNotReadAsChangesOrExitCodes(t *testing.T) {
+	changes := editChanges("main.go")
+	shapes := map[string]any{
+		"edit":    changes,
+		"command": tools.CommandResult{ExitCode: 7, Changes: &changes},
+	}
+	for _, name := range []string{"files__edit_file", "someserver__lookup", "read_file", ""} {
+		call := messages.ChatMessageToolCall{ID: "x", Name: name}
+		for shape, data := range shapes {
+			msg := toolDataResult(t, call, "", data)
+			if got := fileChangesFromResult(msg); got != nil {
+				t.Fatalf("%q: %s-shaped data read as changes: %+v", name, shape, got)
+			}
+			if code := exitCodeFromResult(msg); code != 0 {
+				t.Fatalf("%q: %s-shaped data read as exit code %d", name, shape, code)
+			}
+			msg.SetToolSucceeded(false)
+			if p := newToolPresentation(toolPresentationInput{call: call, result: msg, complete: true}); p.changes != nil || p.counts != "" || p.failure != "" {
+				t.Fatalf("%q: %s-shaped data presented: %+v", name, shape, p)
+			}
+		}
+	}
+	// Each built-in reads only the shape it stores.
+	bash := messages.ChatMessageToolCall{ID: "b", Name: "bash"}
+	if got := fileChangesFromResult(toolDataResult(t, bash, "", changes)); got != nil {
+		t.Fatalf("bash read a whole-payload record: %+v", got)
+	}
+	edit := messages.ChatMessageToolCall{ID: "e", Name: "edit_file"}
+	command := toolDataResult(t, edit, "", shapes["command"])
+	if got := fileChangesFromResult(command); got != nil {
+		t.Fatalf("edit_file read a command record: %+v", got)
+	}
+	if code := exitCodeFromResult(command); code != 0 {
+		t.Fatalf("edit_file read an exit code: %d", code)
+	}
+}
+
 func TestChangeCountText(t *testing.T) {
 	cases := []struct {
 		changes fileChanges

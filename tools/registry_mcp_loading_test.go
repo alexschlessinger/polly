@@ -101,7 +101,7 @@ func TestMCPLoadingPreservesSourcesNamesAndRichOutput(t *testing.T) {
 					t.Fatalf("source = %q", tool.GetSource())
 				}
 				output, err := tool.(OutputTool).ExecuteOutput(context.Background(), nil)
-				if err != nil || !strings.Contains(output.Text, "reply") || !reflect.DeepEqual(output.Data, map[string]any{"ok": true}) || len(output.Media) != 1 || string(output.Media[0].Data) != "image" {
+				if err != nil || !strings.Contains(output.Text, "reply") || !strings.Contains(output.Text, `{"ok":true}`) || output.Data != nil || len(output.Media) != 1 || string(output.Media[0].Data) != "image" {
 					t.Fatalf("output = %#v, error = %v", output, err)
 				}
 			}
@@ -306,7 +306,7 @@ func TestNativeMCPBindingPreservesNamespaceOwnershipAndOutput(t *testing.T) {
 			t.Fatal("namespace lost during binding")
 		}
 		output, err := tool.(OutputTool).ExecuteOutput(context.Background(), nil)
-		if err != nil || len(output.Media) != 1 || output.Data == nil {
+		if err != nil || len(output.Media) != 1 || !strings.Contains(output.Text, `{"ok":true}`) || output.Data != nil {
 			t.Fatalf("rich output=%+v err=%v", output, err)
 		}
 		if err := binding.Close(); err != nil {

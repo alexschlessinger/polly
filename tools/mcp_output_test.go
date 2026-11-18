@@ -33,6 +33,9 @@ func TestMCPResultOutputSeparatesTextStructuredAndBinaryMedia(t *testing.T) {
 	if !strings.Contains(output.Text, "plain text") || !strings.Contains(output.Text, `"count":3`) || !strings.Contains(output.Text, `"ok":true`) {
 		t.Fatalf("text/structured output = %q", output.Text)
 	}
+	if output.Data != nil {
+		t.Fatalf("structured content kept as tool data: %#v", output.Data)
+	}
 	for _, payload := range [][]byte{image, audio, embedded} {
 		if encoded := base64.StdEncoding.EncodeToString(payload); strings.Contains(output.Text, encoded) {
 			t.Fatalf("binary base64 %q leaked into textual MCP output %q", encoded, output.Text)

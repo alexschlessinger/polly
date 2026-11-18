@@ -159,6 +159,9 @@ func mcpResultOutput(result *mcp.CallToolResult) (ToolOutput, error) {
 			return ToolOutput{}, err
 		}
 	}
+	// Structured content reaches the model as text and is kept nowhere else.
+	// Data is for records Polly's own tools produce: a server's payload there
+	// would be a second, unbounded copy that a host could read as one of them.
 	if result.StructuredContent != nil {
 		encoded, marshalErr := json.Marshal(result.StructuredContent)
 		if marshalErr != nil {
@@ -166,7 +169,7 @@ func mcpResultOutput(result *mcp.CallToolResult) (ToolOutput, error) {
 		}
 		textParts = append(textParts, string(encoded))
 	}
-	return ToolOutput{Text: strings.Join(textParts, "\n"), Data: result.StructuredContent, Media: media}, nil
+	return ToolOutput{Text: strings.Join(textParts, "\n"), Media: media}, nil
 }
 
 func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMedia) error {

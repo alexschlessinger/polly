@@ -26,8 +26,10 @@ func itoa(n int) string {
 	return string(rune('0' + n))
 }
 
-func toolResult(content string, meta map[string]any) messages.ChatMessage {
-	return messages.ChatMessage{Role: messages.MessageRoleTool, Content: content, Metadata: meta}
+// toolResult is a stored result of call: like the agent's, it names the tool
+// that produced it, which is what decides whose tool_data is read.
+func toolResult(call messages.ChatMessageToolCall, content string, meta map[string]any) messages.ChatMessage {
+	return messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: content, Metadata: meta}
 }
 
 // live is a callback's input: the result text plus the error the registry
@@ -101,12 +103,12 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name: "legacy result without an outcome stays neutral",
-			in:   toolPresentationInput{call: bash, result: toolResult("a\nb", nil), complete: true},
+			in:   toolPresentationInput{call: bash, result: toolResult(bash, "a\nb", nil), complete: true},
 			want: toolPresentation{outcome: toolOutcomeUnknown, lines: "2 lines", hasText: true},
 		},
 		{
 			name:    "tracked changes on success",
-			in:      toolPresentationInput{call: edit, result: toolResult("ok", tracked), duration: time.Second, complete: true},
+			in:      toolPresentationInput{call: edit, result: toolResult(edit, "ok", tracked), duration: time.Second, complete: true},
 			want:    toolPresentation{outcome: toolOutcomeOK, lines: "1 line", duration: time.Second, counts: "+3 −1", hasText: true},
 			meta:    "1 line",
 			detail:  "1 line",
@@ -114,24 +116,24 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name:   "tracked changes on failure remain visible",
-			in:     toolPresentationInput{call: edit, result: toolResult("", tracked), err: errors.New("nope"), complete: true},
+			in:     toolPresentationInput{call: edit, result: toolResult(edit, "", tracked), err: errors.New("nope"), complete: true},
 			want:   toolPresentation{outcome: toolOutcomeFailed, counts: "+3 −1"},
 			meta:   "failed",
 			detail: "failed",
 		},
 		{
 			name: "untracked command",
-			in:   toolPresentationInput{call: bash, result: toolResult("", untracked), complete: true},
+			in:   toolPresentationInput{call: bash, result: toolResult(bash, "", untracked), complete: true},
 			want: toolPresentation{outcome: toolOutcomeOK},
 		},
 		{
 			name: "untracked edit is not a command notice",
-			in:   toolPresentationInput{call: edit, result: toolResult("", map[string]any{messages.MetadataKeyToolSucceeded: true, "tool_data": map[string]any{"tracked": false}}), complete: true},
+			in:   toolPresentationInput{call: edit, result: toolResult(edit, "", map[string]any{messages.MetadataKeyToolSucceeded: true, "tool_data": map[string]any{"tracked": false}}), complete: true},
 			want: toolPresentation{outcome: toolOutcomeOK},
 		},
 		{
 			name: "hydrated failure from metadata",
-			in: toolPresentationInput{call: bash, result: toolResult("err\n", map[string]any{
+			in: toolPresentationInput{call: bash, result: toolResult(bash, "err\n", map[string]any{
 				messages.MetadataKeyToolSucceeded: false,
 				messages.MetadataKeyToolMillis:    1200,
 				"tool_data":                       map[string]any{"exitCode": float64(1)},
@@ -143,7 +145,7 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name:    "hydrated success from metadata",
-			in:      toolPresentationInput{call: bash, result: toolResult("a\nb", map[string]any{messages.MetadataKeyToolSucceeded: true, messages.MetadataKeyToolMillis: 500}), complete: true},
+			in:      toolPresentationInput{call: bash, result: toolResult(bash, "a\nb", map[string]any{messages.MetadataKeyToolSucceeded: true, messages.MetadataKeyToolMillis: 500}), complete: true},
 			want:    toolPresentation{outcome: toolOutcomeOK, lines: "2 lines", duration: 500 * time.Millisecond, hasText: true},
 			meta:    "2 lines",
 			detail:  "2 lines",
@@ -151,7 +153,7 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name:   "hydrated stream error",
-			in:     toolPresentationInput{call: bash, result: toolResult("", map[string]any{messages.MetadataKeyIsError: true}), complete: true},
+			in:     toolPresentationInput{call: bash, result: toolResult(bash, "", map[string]any{messages.MetadataKeyIsError: true}), complete: true},
 			want:   toolPresentation{outcome: toolOutcomeFailed},
 			meta:   "failed",
 			detail: "failed",
@@ -177,7 +179,7 @@ func TestNewToolPresentation(t *testing.T) {
 func TestToolPresentationLiveMatchesHydrated(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
 	live := newToolPresentation(live(call, "out\n", shellExitError(t, 1), 1200*time.Millisecond))
-	hydrated := newToolPresentation(toolPresentationInput{call: call, result: toolResult("out\n", map[string]any{
+	hydrated := newToolPresentation(toolPresentationInput{call: call, result: toolResult(call, "out\n", map[string]any{
 		messages.MetadataKeyToolSucceeded: false,
 		messages.MetadataKeyToolMillis:    1200,
 		"tool_data":                       map[string]any{"exitCode": float64(1)},

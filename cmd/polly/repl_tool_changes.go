@@ -37,25 +37,35 @@ type fileChanges struct {
 
 // fileChangesFromResult decodes the FileChanges a tool stored as tool_data:
 // the whole payload for edit_file and write_file, the "changes" member of a
-// bash CommandResult. Values arrive JSON-decoded, so every field is read
-// generically; anything else yields nil.
+// bash CommandResult. Only those tools' results are read. Another tool's data
+// is its own, whatever its shape, and is never shown as recorded changes.
+// Values arrive JSON-decoded, so every field is read generically; anything
+// else yields nil.
 func fileChangesFromResult(msg messages.ChatMessage) *fileChanges {
 	data, ok := msg.Metadata["tool_data"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	if nested, ok := data["changes"].(map[string]any); ok {
-		return decodeFileChanges(nested)
-	}
-	if _, ok := data["tracked"]; ok {
-		return decodeFileChanges(data)
+	switch msg.ToolName {
+	case "edit_file", "write_file":
+		if _, ok := data["tracked"]; ok {
+			return decodeFileChanges(data)
+		}
+	case "bash":
+		if nested, ok := data["changes"].(map[string]any); ok {
+			return decodeFileChanges(nested)
+		}
 	}
 	return nil
 }
 
-// exitCodeFromResult is the exit code a command stored in its result, so a
-// hydrated failure can name it without the live error chain.
+// exitCodeFromResult is the exit code a bash command stored in its result, so
+// a hydrated failure can name it without the live error chain. No other
+// tool's data is read as an exit code.
 func exitCodeFromResult(msg messages.ChatMessage) int {
+	if msg.ToolName != "bash" {
+		return 0
+	}
 	data, ok := msg.Metadata["tool_data"].(map[string]any)
 	if !ok {
 		return 0

@@ -373,7 +373,7 @@ func TestRecentFailedCommands(t *testing.T) {
 		return messages.ChatMessageToolCall{ID: id, Name: "bash", Arguments: `{"command":` + strconv.Quote(command) + `}`}
 	}
 	result := func(id string, code int) messages.ChatMessage {
-		return messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, Content: "out", Metadata: map[string]any{"tool_data": map[string]any{"exitCode": float64(code)}}}
+		return messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: "bash", Content: "out", Metadata: map[string]any{"tool_data": map[string]any{"exitCode": float64(code)}}}
 	}
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "build it"},
