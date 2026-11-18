@@ -2237,7 +2237,14 @@ func (s *sqliteSession) leasedWrite(ctx context.Context, write, settle bool, fn 
 		// memory. Counting it under the cache's hold means every update
 		// accepted before it is queued ahead of the wait in withTransaction.
 		cache := s.store.coordination
-		cache.held <- struct{}{}
+		// The cache may be held across another caller's whole transaction,
+		// so the wait for it ends with this caller's context.
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := cache.hold(ctx); err != nil {
+			return err
+		}
 		s.coord.writers++
 		s.coord.known = false
 		<-cache.held
