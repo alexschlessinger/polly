@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -300,5 +301,51 @@ func TestOpenAIResponsesAdapterHarvestsReasoningFromTerminalResponse(t *testing.
 	items, _ := msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)
 	if len(items) != 1 || items[0]["encrypted_content"] != "gAAAAA-payload" {
 		t.Fatalf("reasoning items = %#v, want one entry carrying the encrypted payload", items)
+	}
+}
+
+func TestOpenAIResponsesAdapterKeepsStreamedCallWhenTerminalIndexesShift(t *testing.T) {
+	call := ResponseOutputItem{Type: "function_call", ID: "fc_1", CallID: "call_1", Name: "bash", Arguments: `{"command":"ls"}`}
+	other := ResponseOutputItem{Type: "function_call", ID: "fc_0", CallID: "call_0", Name: "bash", Arguments: `{"command":"pwd"}`}
+	reasoning := ResponseOutputItem{Type: "reasoning", ID: "rs_1", EncryptedContent: "opaque"}
+	streamed := func(index int64, item ResponseOutputItem) *ResponseStreamEvent {
+		return &ResponseStreamEvent{Type: "response.output_item.done", OutputIndex: index, Item: &item}
+	}
+	for _, tc := range []struct {
+		name     string
+		stream   []*ResponseStreamEvent
+		terminal []ResponseOutputItem
+		calls    []string
+		order    []string
+	}{
+		{"terminal omits reasoning", []*ResponseStreamEvent{streamed(0, reasoning), streamed(1, call)}, []ResponseOutputItem{call},
+			[]string{"call_1"}, []string{"reasoning:rs_1", "function_call:call_1"}},
+		{"terminal adds reasoning", []*ResponseStreamEvent{streamed(0, call)}, []ResponseOutputItem{reasoning, call},
+			[]string{"call_1"}, []string{"reasoning:rs_1", "function_call:call_1"}},
+		{"terminal adds a call", []*ResponseStreamEvent{streamed(0, call)}, []ResponseOutputItem{other, call},
+			[]string{"call_1", "call_0"}, []string{"function_call:call_0", "function_call:call_1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := NewResponsesAdapter("gpt-5")
+			state := streaming.NewStreamState()
+			events := append(tc.stream, &ResponseStreamEvent{Type: "response.completed", Response: &Response{Status: ResponseStatusCompleted, Output: tc.terminal}})
+			for _, event := range events {
+				if err := adapter.ProcessChunk(event, state); err != nil {
+					t.Fatalf("ProcessChunk returned error: %v", err)
+				}
+			}
+			var calls []string
+			for _, toolCall := range state.GetToolCalls() {
+				calls = append(calls, toolCall.ID)
+			}
+			if !slices.Equal(calls, tc.calls) {
+				t.Fatalf("tool calls = %v, want %v", calls, tc.calls)
+			}
+			var msg messages.ChatMessage
+			adapter.EnrichFinalMessage(&msg, state)
+			if order, _ := msg.Metadata[ResponsesOutputOrderKey].([]string); !slices.Equal(order, tc.order) {
+				t.Fatalf("output order = %v, want %v", order, tc.order)
+			}
+		})
 	}
 }

@@ -83,6 +83,9 @@ func (a *ChatAdapter) EnrichFinalMessage(_ *messages.ChatMessage, _ streaming.St
 // ResponsesAdapter handles Responses API streaming events.
 type ResponsesAdapter struct {
 	outputOrder map[int]string
+	// outputIndexByItem is the output index of each item that has an id, by
+	// type and id, so the terminal response finds a streamed item again.
+	outputIndexByItem map[string]int
 	// OutputIndex is shared across reasoning/text/function_call items, so it
 	// can be sparse — map it to a dense tool-call index.
 	toolCallIndexByOutput map[int]int
@@ -116,6 +119,7 @@ func NewResponsesAdapter(model string) *ResponsesAdapter {
 	return &ResponsesAdapter{
 		toolCallIndexByOutput: make(map[int]int),
 		outputOrder:           make(map[int]string),
+		outputIndexByItem:     make(map[string]int),
 		model:                 model,
 	}
 }
@@ -179,6 +183,9 @@ func (a *ResponsesAdapter) handleOutputItem(item *ResponseOutputItem, index int,
 	case "function_call":
 		a.outputOrder[index] = "function_call:" + responseToolCallID(item.CallID, item.ID)
 	}
+	for _, id := range outputItemIDs(item) {
+		a.outputIndexByItem[id] = index
+	}
 	if item.Type == "reasoning" {
 		appendResponsesReasoningItem(state, item)
 		return
@@ -211,6 +218,42 @@ func (a *ResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, state st
 	state.UpdateToolCallAtIndex(toolIndex, updater)
 }
 
+// outputItemIDs names item by its type and each id it carries.
+func outputItemIDs(item *ResponseOutputItem) []string {
+	var ids []string
+	for _, id := range []string{item.ID, item.CallID} {
+		if id != "" {
+			ids = append(ids, item.Type+":"+id)
+		}
+	}
+	return ids
+}
+
+// terminalOutputIndex is the output index of the terminal response's item at
+// position. The stream numbers items by output_index and the terminal
+// response by position, and the two disagree once a gateway leaves an item
+// out of either, so an item the stream carried keeps the index the stream
+// gave it: by position a streamed function call would get a second slot and
+// run twice. An item the stream never carried takes its position, or, where
+// the stream gave that to another item, an index below every streamed one,
+// which orders reasoning the stream left out before the calls it led to.
+func (a *ResponsesAdapter) terminalOutputIndex(item *ResponseOutputItem, position int) int {
+	ids := outputItemIDs(item)
+	for _, id := range ids {
+		if index, ok := a.outputIndexByItem[id]; ok {
+			return index
+		}
+	}
+	if len(ids) > 0 {
+		for _, index := range a.outputIndexByItem {
+			if index == position {
+				return -1 - position
+			}
+		}
+	}
+	return position
+}
+
 func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamStateInterface) {
 	if resp == nil {
 		return
@@ -227,7 +270,7 @@ func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamS
 	// reasoning again here: whether encrypted_content rides on
 	// output_item.done or only on the final response varies by model.
 	for i := range resp.Output {
-		a.handleOutputItem(&resp.Output[i], i, state)
+		a.handleOutputItem(&resp.Output[i], a.terminalOutputIndex(&resp.Output[i], i), state)
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
