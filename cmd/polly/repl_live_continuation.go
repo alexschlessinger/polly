@@ -29,6 +29,10 @@ func prepareLiveDisplay(saved *replModel, tail []messages.ChatMessage) *replMode
 		}
 		h.tools = tool(h.tools)
 		h.reasoning, h.dockReasoning = thought(h.reasoning), thought(h.dockReasoning)
+		h.reasonings = make([]*reasoningRecord, len(saved.historyContinuation.reasonings))
+		for i, record := range saved.historyContinuation.reasonings {
+			h.reasonings[i] = thought(record)
+		}
 		h.toolGroups = make([]*toolDisclosureRecord, len(saved.historyContinuation.toolGroups))
 		for i, record := range saved.historyContinuation.toolGroups {
 			h.toolGroups[i] = tool(record)

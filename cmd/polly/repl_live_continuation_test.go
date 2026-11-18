@@ -1,8 +1,10 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -197,5 +199,46 @@ func TestLiveCommentaryIsDisplayedAndClosesReasoningRun(t *testing.T) {
 	durable := prepareChildDisplay(info, &Config{}, 100)
 	if text := continuationText(durable); strings.Count(text, "Checking the actual work now.") != 1 || len(durable.displayCatalog.thoughts) != 1 || durable.displayCatalog.thoughts[0].key != "thought:update" {
 		t.Fatalf("denied commentary/identity lost: %q / %+v", text, durable.displayCatalog.thoughts)
+	}
+}
+
+func TestLiveContinuationStampsStepStartsOnItsOwnRecords(t *testing.T) {
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	audit := messages.TurnAudit{Version: 1, ID: "turn", StartedAt: started, RunFinishedAt: started.Add(time.Minute), Status: "completed", Attempts: []messages.ModelAttemptAudit{
+		{ID: "first", Purpose: "conversation", StartedAt: started.Add(5 * time.Second)},
+		{ID: "second", Purpose: "conversation", StartedAt: started.Add(20 * time.Second)},
+	}}
+	first := continuationMessage("first", messages.MessageRoleAssistant, "")
+	first.Reasoning = "First reasoning segment."
+	call := messages.ChatMessageToolCall{ID: "same", DisplayID: "call-one", Name: "bash"}
+	first.ToolCalls = []messages.ChatMessageToolCall{call}
+	saved := newReplModel()
+	saved.hydrateHistory(append(messages.User("Investigate"), first), "agent")
+	saved.refreshReasoningRecords(100)
+	var base *reasoningRecord
+	for _, record := range saved.reasoningRecords.all() {
+		base = record
+	}
+	before := slices.Clone(base.segments)
+
+	result := continuationMessage(call.DisplayID, messages.MessageRoleTool, "result")
+	result.ToolCallID, result.ToolName = call.ID, call.Name
+	second := continuationMessage("second", messages.MessageRoleAssistant, "")
+	second.Reasoning = "Second reasoning segment."
+	marker := messages.ChatMessage{Role: messages.MessageRoleInternal, Metadata: map[string]any{messages.MetadataKeyTurnAudit: audit}}
+	for _, tail := range [][]messages.ChatMessage{{result, marker}, {result, second, marker}} {
+		live := prepareLiveDisplay(saved, tail)
+		record := live.reasoningRecords.get(base.id)
+		for i, want := range []time.Duration{5 * time.Second, 20 * time.Second}[:len(record.segments)] {
+			if segment := record.segments[i]; !segment.known || segment.at != want {
+				t.Fatalf("live segment %d of %d = %+v, want a start at %v", i, len(record.segments), segment, want)
+			}
+		}
+		if len(record.segments) != len(tail)-1 || !record.dirty {
+			t.Fatalf("live record not restamped: dirty %v, segments %+v", record.dirty, record.segments)
+		}
+		if base.dirty || !slices.Equal(base.segments, before) {
+			t.Fatalf("saved base mutated: dirty %v, segments %+v, were %+v", base.dirty, base.segments, before)
+		}
 	}
 }

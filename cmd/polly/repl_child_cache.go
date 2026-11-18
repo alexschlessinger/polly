@@ -172,6 +172,7 @@ func childDisplayCopy(src *replModel) *replModel {
 func cloneReasoningRecord(record *reasoningRecord) *reasoningRecord {
 	copy := *record
 	copy.tail = slices.Clone(record.tail)
+	copy.segments = slices.Clone(record.segments)
 	copy.previewLines = slices.Clone(record.previewLines)
 	copy.previewCode = nil // parser/highlight caches belong to the painting view
 	return &copy
