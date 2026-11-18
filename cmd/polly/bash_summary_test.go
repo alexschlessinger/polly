@@ -10,7 +10,9 @@ import (
 func TestBashSummaryPreservesShellStructure(t *testing.T) {
 	for _, tc := range []struct{ command, want string }{
 		{"git status --short", "git status --short"},
-		{"cd /workspace/polly && GOCACHE=/tmp/cache go test ./cmd/polly", "… && … go test ./cmd/polly"},
+		{"cd /workspace/polly && GOCACHE=/tmp/cache go test ./cmd/polly", "… go test ./cmd/polly"},
+		{"cd /workspace/polly && for r in a b; do echo \"$r\"; done", "for r in a b; do echo \"$r\"; done"},
+		{"cd /a && cd /b && go test ./...", "cd /b && go test ./..."},
 		{"env FOO=bar BAR=baz go test ./...", "… go test ./..."},
 		{"env -i FOO=bar go test ./...", "env -i FOO=bar go test ./..."},
 		{"cd /workspace/polly || echo failed", "cd /workspace/polly || echo failed"},

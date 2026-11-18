@@ -63,6 +63,14 @@ func bashSource(command string, node syntax.Node) string {
 	return command[node.Pos().Offset():node.End().Offset()]
 }
 
+// isBashCDPreamble reports a plain "cd <one word>" statement: no assignments,
+// redirections, negation or backgrounding, so only the directory changes.
+func isBashCDPreamble(stmt *syntax.Stmt) bool {
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	return ok && len(call.Args) == 2 && call.Args[0].Lit() == "cd" &&
+		len(call.Assigns) == 0 && len(stmt.Redirs) == 0 && !stmt.Negated && !stmt.Background
+}
+
 func bashStatementSource(command string, stmt *syntax.Stmt) string {
 	end := stmt.End().Offset()
 	if stmt.Semicolon.IsValid() && !stmt.Background && !stmt.Coprocess {
@@ -79,13 +87,14 @@ func (s *bashSummary) appendStmt(command string, stmt *syntax.Stmt) {
 		return
 	}
 	if binary, ok := stmt.Cmd.(*syntax.BinaryCmd); ok {
-		left, simple := binary.X.Cmd.(*syntax.CallExpr)
-		if binary.Op == syntax.AndStmt && simple && len(left.Args) == 2 && left.Args[0].Lit() == "cd" &&
-			len(left.Assigns) == 0 && len(binary.X.Redirs) == 0 && !binary.X.Negated && !binary.X.Background {
-			s.parts = append(s.parts, bashSummaryPart{text: "…"})
-		} else {
-			s.appendStmt(command, binary.X)
+		// A leading "cd <dir>" is setup for the rest of the line, not the call
+		// the line is about. Drop it and its operator, so the display does not
+		// open with "… &&" on every command that names its directory first.
+		if binary.Op == syntax.AndStmt && isBashCDPreamble(binary.X) {
+			s.appendStmt(command, binary.Y)
+			return
 		}
+		s.appendStmt(command, binary.X)
 		s.parts = append(s.parts, bashSummaryPart{text: binary.Op.String(), operator: true})
 		s.appendStmt(command, binary.Y)
 		return
