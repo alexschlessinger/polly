@@ -2094,6 +2094,11 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		return nil, nil
 	}
 	results := make([]messages.ChatMessage, len(toolCalls))
+	// execute indexes handles by call, so a batch resolved for other calls
+	// is refused here instead of panicking in a worker.
+	if len(handles) != len(toolCalls) {
+		return results, fmt.Errorf("execute tool calls: %d handles resolved for %d calls", len(handles), len(toolCalls))
+	}
 
 	// Determine which tools are approved
 	approved := make([]bool, len(toolCalls))
