@@ -20,6 +20,43 @@ import (
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
+// prepareWorkspaceChanges starts the baseline worker and waits for it, the
+// synchronous order a test wants when there is no REPL loop to finish it.
+func prepareWorkspaceChanges(t *testing.T, ctx context.Context, state *conversationState, tracker *worktree.ChangeTracker) {
+	t.Helper()
+	state.startWorkspaceChanges(ctx, tracker)
+	if state.workspaceChanges == nil {
+		return
+	}
+	select {
+	case <-state.workspaceChanges.startupDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	state.finishWorkspaceChanges(ctx)
+}
+
+func TestNoteWorkspaceWriter(t *testing.T) {
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
+	t.Cleanup(func() { registry.Close() })
+	for _, name := range []string{"read_file", "list_dir", "bash"} {
+		if _, err := registry.LoadToolAuto(name); err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+	}
+	turn := &turnExecution{state: &conversationState{toolRegistry: registry}}
+	for _, name := range []string{"read_file", "list_dir", "no_such_tool"} {
+		turn.noteWorkspaceWriter(name)
+		if turn.wroteWorkspace.Load() {
+			t.Fatalf("%s marked the turn as a workspace writer", name)
+		}
+	}
+	turn.noteWorkspaceWriter("bash")
+	if !turn.wroteWorkspace.Load() {
+		t.Fatal("bash did not mark the turn as a workspace writer")
+	}
+}
+
 func TestWorkspaceChangesOverrideToolHistory(t *testing.T) {
 	m := newReplModel()
 	call := messages.ChatMessageToolCall{ID: "edit", Name: "edit_file"}
@@ -115,7 +152,7 @@ func TestWorkspaceChangesSessionResumeAndClear(t *testing.T) {
 			t.Fatal(err)
 		}
 		state := &conversationState{session: session, toolRegistry: registry, artifactStore: session.ArtifactStore()}
-		state.initializeWorkspaceChanges(ctx, tracker)
+		prepareWorkspaceChanges(t, ctx, state, tracker)
 		if state.workspaceChanges.reason != "" {
 			t.Fatal(state.workspaceChanges.reason)
 		}
@@ -331,7 +368,7 @@ func TestWorkspaceChangesAdoptsInitializedRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 		state := &conversationState{session: session, toolRegistry: registry, artifactStore: session.ArtifactStore()}
-		state.initializeWorkspaceChanges(ctx, tracker)
+		prepareWorkspaceChanges(t, ctx, state, tracker)
 		return state
 	}
 	first := open()

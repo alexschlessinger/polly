@@ -19,6 +19,7 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
+	"github.com/alexschlessinger/pollytool/worktree"
 	"github.com/urfave/cli/v3"
 )
 
@@ -363,9 +364,15 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return nil, loadErr(err)
 		}
 	}
-	tracker := installChangeTracker(toolRegistry, storage.privatePaths)
-	if tracker != nil {
-		changeTracker = tracker
+	// Workspace change tracking feeds the managed REPL's change stats and
+	// inspector. One-shot and line sessions never show them, so they do not
+	// pay for a Git snapshot at open or after a turn.
+	var tracker *worktree.ChangeTracker
+	if o.outputCapabilities.surface == outputSurfaceManagedTUI {
+		tracker = installChangeTracker(toolRegistry, storage.privatePaths)
+		if tracker != nil {
+			changeTracker = tracker
+		}
 	}
 	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
 	if err != nil {
@@ -413,11 +420,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
 	}
-	if o.outputCapabilities.surface == outputSurfaceManagedTUI {
-		state.startWorkspaceChanges(state.sessionContext(), tracker)
-	} else {
-		state.initializeWorkspaceChanges(ctx, tracker)
-	}
+	state.startWorkspaceChanges(state.sessionContext(), tracker)
 	return state, nil
 }
 

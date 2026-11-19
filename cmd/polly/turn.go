@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
@@ -42,6 +43,11 @@ type turnExecution struct {
 	settledOutput bool
 	stats         turnToolStats
 	usage         turnUsage
+	// wroteWorkspace records that a call in this turn may have changed the
+	// workspace. The turn-end report costs a full snapshot, so a turn made
+	// only of reads skips it; a tool that does not declare ReadsOnly counts
+	// as a writer.
+	wroteWorkspace atomic.Bool
 }
 
 // prepareRequest resolves the user message against the session and builds
@@ -272,6 +278,7 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		},
 		// A spawned child's approvals come back through this turn's UI.
 		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
+			t.noteWorkspaceWriter(call.Name)
 			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
 		ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
@@ -283,7 +290,6 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		},
 		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
 			turnUI.AppendToolResult(tc, result)
-			t.refreshWorkspaceChanges()
 			if images := inspectionTranscriptImages(result, t.state.artifactStore); len(images) > 0 {
 				turnUI.AppendToolMedia(tc, images)
 			}
@@ -592,7 +598,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			cache.add(msg)
 		}
 	}
-	t.refreshWorkspaceChanges()
+	// One report per turn, and only when a call could have changed the
+	// workspace: a snapshot costs the whole working tree, and a read-only
+	// turn cannot have moved it.
+	if t.wroteWorkspace.Load() {
+		t.refreshWorkspaceChanges()
+	}
 	in, out, cost := t.recordUsage(resp)
 
 	// Folding every later stage's error into runErr means the trailer and

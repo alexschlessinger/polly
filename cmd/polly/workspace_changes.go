@@ -145,15 +145,6 @@ func (s *conversationState) finishWorkspaceChanges(ctx context.Context) bool {
 	return true
 }
 
-func (s *conversationState) initializeWorkspaceChanges(ctx context.Context, tracker *worktree.ChangeTracker) {
-	s.startWorkspaceChanges(ctx, tracker)
-	if s.workspaceChanges == nil {
-		return
-	}
-	<-s.workspaceChanges.startupDone
-	s.finishWorkspaceChanges(ctx)
-}
-
 func (s *conversationState) prepareWorkspaceBaseline(ctx context.Context, tracker *worktree.ChangeTracker) {
 	state := s.workspaceChanges
 	md, err := s.session.GetMetadata(ctx)
@@ -334,6 +325,18 @@ func (t *gotuiTurnUI) RecordWorkspaceChanges(report *tools.FileChanges) {
 	defer t.model.mu.Unlock()
 	if t.activeLocked() {
 		t.model.setWorkspaceChanges(workspaceChangesPresentation(report))
+	}
+}
+
+// noteWorkspaceWriter records a call that may change the workspace. A tool
+// that does not declare ReadsOnly counts, so an unknown tool never suppresses
+// the turn's report. Calls run concurrently, so the flag is atomic.
+func (t *turnExecution) noteWorkspaceWriter(name string) {
+	if t.wroteWorkspace.Load() {
+		return
+	}
+	if tool, ok := t.state.toolRegistry.Get(name); ok && !tools.ReadsOnly(tool) {
+		t.wroteWorkspace.Store(true)
 	}
 }
 
