@@ -70,6 +70,7 @@ func (r Retrier) Do(ctx context.Context, newRequest func() (*http.Request, error
 		if err != nil {
 			return nil, fmt.Errorf("%s: building request: %w", r.Prefix, err)
 		}
+		req.Header.Set("User-Agent", UserAgent())
 		resp, err := r.Client.Do(req)
 		if err != nil {
 			err = fmt.Errorf("%s: request failed: %w", r.Prefix, err)

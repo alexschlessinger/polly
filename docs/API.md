@@ -192,6 +192,12 @@ indexed by provider name. Build the router once and reuse it.
 
 All routing rules live in [defaultProviders](../llm/multipass.go).
 
+Polly identifies itself on provider HTTP requests with `User-Agent: polly/<version> (<os> <arch>)`.
+This identifies the build in HTTP logs that record the header, not a user or session.
+It does not create an app label in provider dashboards. OpenRouter has separate
+[app-attribution headers](#openrouter-routing-and-reasoning); for Anthropic usage
+reports, use a dedicated Polly API key or workspace.
+
 You can also skip the router and use a provider directly, with bare model
 names. Import the matching `llm/<provider>` package and call
 `openai.NewProvider(key, baseURL)`, `anthropic.NewProvider(key, baseURL)`,

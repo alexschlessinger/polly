@@ -35,7 +35,6 @@ func setHeaders(h http.Header, cred contract.Credential, sessionID, accept strin
 	h.Set("Authorization", "Bearer "+cred.AccessToken)
 	h.Set(accountHeader, cred.AccountID)
 	h.Set(originatorHeader, Originator)
-	h.Set("User-Agent", userAgent())
 	if sessionID != "" {
 		h.Set(sessionHeader, sessionID)
 	}

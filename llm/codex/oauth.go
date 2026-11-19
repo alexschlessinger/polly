@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
 const (
@@ -171,6 +173,7 @@ func (c *oauthClient) token(ctx context.Context, form url.Values) (Tokens, error
 
 // do sends req and returns the bounded body with its status.
 func (c *oauthClient) do(req *http.Request) ([]byte, int, error) {
+	req.Header.Set("User-Agent", httpx.UserAgent())
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, 0, err

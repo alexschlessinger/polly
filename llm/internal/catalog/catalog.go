@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
 // maxBody bounds one metadata response.
@@ -42,6 +43,7 @@ func FetchJSON(ctx context.Context, client *http.Client, method, uri string, bod
 	if err != nil {
 		return nil, fmt.Errorf("invalid metadata endpoint")
 	}
+	req.Header.Set("User-Agent", httpx.UserAgent())
 	req.Header.Set("Content-Type", "application/json")
 	if headers != nil {
 		headers(req)
