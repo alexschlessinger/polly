@@ -351,6 +351,30 @@ func TestChangeTrackerSandboxed(t *testing.T) {
 	}
 }
 
+// TestUnchangedSnapshotSkipsTheIgnoredSweep pins the cost of a snapshot that
+// finds nothing: one git status call. A changed snapshot still reconciles
+// ignored paths before staging.
+func TestUnchangedSnapshotSkipsTheIgnoredSweep(t *testing.T) {
+	tracker, root := changeFixture(t, ChangeLimits{})
+	snapshotTest(t, tracker, root)
+	calls := func() int64 {
+		t.Helper()
+		var timings worktreeTimings
+		ctx := context.WithValue(context.Background(), worktreeTimingsKey{}, &timings)
+		if _, ok, reason, err := tracker.Snapshot(ctx, root); err != nil || !ok {
+			t.Fatalf("snapshot: ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		return timings.gitCalls.Load()
+	}
+	if got := calls(); got != 1 {
+		t.Fatalf("unchanged snapshot made %d git calls, want 1", got)
+	}
+	writeTest(t, filepath.Join(root, "a.txt"), "changed\n")
+	if got := calls(); got != 4 {
+		t.Fatalf("changed snapshot made %d git calls, want status, sweep, add and write-tree", got)
+	}
+}
+
 func TestChangeTrackerObserversUseIndependentIndexes(t *testing.T) {
 	tracker, root := changeFixture(t, ChangeLimits{})
 	first := snapshotTest(t, tracker, root)

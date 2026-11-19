@@ -66,11 +66,11 @@ const changeObjectsRetention = 7 * 24 * time.Hour
 // index, refs and objects are never written.
 //
 // Each observer owns its shadow indexes for its lifetime, so their stat
-// caches stay warm. A snapshot reconciles ignored paths, then asks git status
-// whether anything changed since the last tree it wrote. One tracker serves
-// every repository a session touches, the parent
-// checkout and swarm member worktrees alike; repositories are set up on
-// first use.
+// caches stay warm. A snapshot asks git status whether anything changed since
+// the last tree it wrote, and only a snapshot that will stage reconciles
+// ignored paths first. One tracker serves every repository a session touches,
+// the parent checkout and swarm member worktrees alike; repositories are set
+// up on first use.
 type ChangeTracker struct {
 	registry     *tools.ToolRegistry
 	directory    string
@@ -242,9 +242,6 @@ func (t *ChangeTracker) snapshot(ctx context.Context, repo *trackedRepo) (string
 		now := time.Now()
 		_ = os.Chtimes(path, now, now)
 	}
-	if err := t.dropIgnoredUntracked(ctx, repo); err != nil {
-		return "", false, "", t.timedOut(ctx, repo, err)
-	}
 	changed, untracked, err := t.status(ctx, repo)
 	if err != nil {
 		return "", false, "", t.timedOut(ctx, repo, err)
@@ -252,6 +249,12 @@ func (t *ChangeTracker) snapshot(ctx context.Context, repo *trackedRepo) (string
 	if !changed && repo.lastTree != "" {
 		repo.timeouts = 0
 		return repo.lastTree, true, "", nil
+	}
+	// A change can be a new ignore rule rather than a file edit, so the sweep
+	// runs before staging. An unchanged snapshot skips it: nothing but staging
+	// puts an ignored path in the shadow index.
+	if err := t.dropIgnoredUntracked(ctx, repo); err != nil {
+		return "", false, "", t.timedOut(ctx, repo, err)
 	}
 	if reason := t.untrackedWithinLimits(repo, untracked); reason != "" {
 		return "", false, reason, nil
