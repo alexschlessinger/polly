@@ -14,7 +14,7 @@ Windows is cross-compiled; there are no Windows runtime tests.
 - [Add another Linux host](#add-another-linux-host)
 - [Start, stop, and fall back](#start-stop-and-fall-back)
 
-[Documentation index](../../docs/README.md) · [Sandbox validation](../../docs/SANDBOX_ENVIRONMENT_VALIDATION.md)
+[Documentation index](../../docs/README.md)
 
 ## Run checks locally
 

@@ -698,6 +698,3 @@ These files define the behavior above:
 | Storage and cleanup | [envstorage](../internal/envstorage), [repl_sandbox_storage_test.go](../cmd/polly/repl_sandbox_storage_test.go) |
 | Native enforcement | [Linux](../tools/sandbox/sandbox_linux.go), [macOS](../tools/sandbox/sandbox_darwin.go) |
 | Trial observation | [Linux](../tools/sandbox/observe_linux.go), [macOS](../tools/sandbox/observe_darwin.go) |
-
-See [sandbox validation](SANDBOX_ENVIRONMENT_VALIDATION.md) for native checks,
-build recipes, and live setup fixtures.

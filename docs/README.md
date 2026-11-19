@@ -18,17 +18,5 @@ Start with the [project overview and quick start](../README.md).
 |---|---|
 | [Go API](API.md) | Clients, agents, tools, sessions, and managed workflows |
 | [JavaScript workflow reference](../swarm/workflow_help.md) | Complete signatures and examples, also available through `workflow_help()` |
-| [Sandbox validation](SANDBOX_ENVIRONMENT_VALIDATION.md) | Native tests, build recipes, and live setup fixtures |
 | [Local CI](../.github/local-ci/README.md) | Docker checks and the configured macOS/Linux runner setup |
 | [Contributor instructions](../AGENTS.md) | Repository layout, conventions, and required checks |
-
-## Design
-
-[Replaceable tools and stores](RUNTIME-BACKENDS.md) describes host-supplied tool
-and workspace constructors, storage contracts, and backend verification.
-
-[Task output handoff](features/unified-task-results.md) describes artifact-backed
-file capture, retention, and restoration for worker results.
-
-[Asking the user from a turn](features/ask-user.md) describes the TUI-only
-`ask_user` dialog and how a turn blocks on its answer.

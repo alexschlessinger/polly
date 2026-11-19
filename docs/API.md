@@ -950,8 +950,8 @@ every member `sessions.SpawnOutcomeSession` as well, and `Store`
 sessions do. `New` refuses a store that cannot create sessions, and the
 runtime rejects and closes incompatible child handles at acquisition,
 including resumed members.
-The [shared storage contracts](RUNTIME-BACKENDS.md#implementation-and-verification)
-exercise SQLite and an independent reopenable test store through these interfaces.
+The shared storage contracts exercise SQLite and an independent reopenable test
+store through these interfaces.
 Cross-process recovery needs persistent storage, and `Promote`
 lets a host arrange that before coordination starts changing state.
 The host also supplies `PrivatePaths` for its active storage, promotion target,
