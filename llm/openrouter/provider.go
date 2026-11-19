@@ -72,7 +72,7 @@ func NewProvider(apiKey, baseURL string, opts ...Option) *Provider {
 	for _, opt := range opts {
 		opt(p)
 	}
-	p.client = openai.NewClient(apiKey, trimmed, openai.WithHTTPClient(p.httpClient))
+	p.client = openai.NewClient(apiKey, trimmed, openai.WithHTTPClient(attributedClient(p.httpClient)))
 	return p
 }
 

@@ -46,10 +46,21 @@ func complete(t *testing.T, p *Provider, req *contract.CompletionRequest) *messa
 	return final
 }
 
+func checkAppAttribution(t *testing.T, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("HTTP-Referer"); got != "https://github.com/alexschlessinger/polly" {
+		t.Errorf("HTTP-Referer = %q, want Polly's repository URL", got)
+	}
+	if got := r.Header.Get("X-OpenRouter-Title"); got != "Polly" {
+		t.Errorf("X-OpenRouter-Title = %q, want Polly", got)
+	}
+}
+
 func TestChatRequestCarriesGatewayExtensions(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
+		checkAppAttribution(t, r)
 		if r.URL.Path != "/v1/chat/completions" || json.Unmarshal(raw, &body) != nil {
 			t.Errorf("request %s: %s", r.URL.Path, raw)
 		}
@@ -106,6 +117,7 @@ func TestResponsesRoundTripReplaysReasoningItemsVerbatim(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				raw, _ := io.ReadAll(r.Body)
 				var body map[string]any
+				checkAppAttribution(t, r)
 				if r.URL.Path != "/v1/responses" || json.Unmarshal(raw, &body) != nil {
 					t.Errorf("request %s: %s", r.URL.Path, raw)
 				}

@@ -322,7 +322,10 @@ host pin unless it's given a new one.
 `openrouter.NewProvider(key, baseURL)` uses Chat Completions, as MultiPass does,
 and `openrouter.WithAPI(openrouter.ResponsesAPI)` switches to Responses. Both
 support the gateway's reasoning controls, host pinning, session IDs, and
-reasoning replay.
+reasoning replay. Both identify the app as **Polly** in OpenRouter activity using
+`HTTP-Referer: https://github.com/alexschlessinger/polly` and
+`X-OpenRouter-Title: Polly`. OpenRouter also uses this [app attribution](https://openrouter.ai/docs/app-attribution)
+for its public app rankings.
 
 `ResolveOpenRouterThinking` validates a preference and returns `Request`,
 `Display`, and `Notice`. `ResolveOpenRouterRequestThinking` adapts a saved
