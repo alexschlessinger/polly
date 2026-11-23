@@ -24,6 +24,7 @@ const turnCancelDetachAfter = 2 * time.Second
 // cumulative billed tokens.
 type sessionStatus struct {
 	modelName    string
+	modelSpeed   string // paid tier Polly expects to request, if any
 	contextName  string
 	title        string
 	titleSource  sessions.TitleSource
@@ -170,8 +171,8 @@ func shortModelName(model string) string {
 	return llm.BareModelName(model)
 }
 
-// statusRow renders stable session context. Per-turn activity and completion
-// metrics live in the fixed turn dock immediately above the composer.
+// statusRow renders session context. Detailed turn activity and completion
+// metrics live in the transcript.
 func (m *replModel) statusRow(width int) string {
 	m.status.modelField = statusSessionPlacement{}
 	m.status.sessionField = statusSessionPlacement{}
@@ -212,7 +213,11 @@ func (m *replModel) statusRow(width int) string {
 		// Show the bare model name; the provider prefix is redundant once
 		// you know which model you're talking to ("gpt-5.4", not
 		// "openai/gpt-5.4").
-		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName), color: "muted", place: &m.status.modelField})
+		model := shortModelName(m.status.modelName)
+		if m.status.modelSpeed != "" {
+			model += " [" + m.status.modelSpeed + "]"
+		}
+		fields = append(fields, field{drop: 3, text: model, color: "muted", place: &m.status.modelField})
 	}
 	fields = append(fields, field{text: m.status.displayLabel(), color: "accent", place: &m.status.sessionField})
 	if m.status.agents != "" {

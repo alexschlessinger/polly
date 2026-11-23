@@ -475,7 +475,7 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 	// that was not explicitly overridden on this command line; environment
 	// and configuration-file values are defaults for new sessions only.
 	for _, spec := range settingSpecs {
-		if spec.flagged() && !flagGiven(cmd, spec.key) {
+		if spec.flagged() && !spec.flagSet(cmd) {
 			spec.fromMeta(&settings, contextInfo)
 		}
 	}
@@ -547,7 +547,7 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 		Tools:            registry.All(),
 		ResponseSchema:   schema,
 		ThinkingEffort:   thinkingEffort,
-		Fast:             settings.Fast,
+		ServiceTier:      settings.ServiceTier,
 	}
 }
 

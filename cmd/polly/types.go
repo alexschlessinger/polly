@@ -20,7 +20,7 @@ type Settings struct {
 	MaxHistoryTokens int  // context limit requests are budgeted and compacted against
 	AutoMaxContext   bool // follow detected model capacity; MaxHistoryTokens is then a snapshot
 	ThinkingEffort   string
-	Fast             bool   // ask for the provider's fast tier
+	ServiceTier      string // empty (off), priority, or ultrafast
 	CompactModel     string // summarizes the conversation when it outgrows MaxHistoryTokens; empty = Model
 	SystemPrompt     string
 

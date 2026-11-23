@@ -421,7 +421,7 @@ Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
-| Preferences and defaults | `/set [key [value]]`, `/setup` |
+| Preferences and defaults | `/set [key [value]]`, `/speed`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context [text]`, `/compact`, `/attach <path>`, `/add-dir [path]` |
@@ -455,12 +455,12 @@ Use `/set` for session preferences: `/set` lists them, `/set <key>` inspects
 one, and `/set <key> <value>` changes it. Editable preferences come first,
 followed by the launch-only `system` and `skilldir` values. The editable keys
 are `model`, `modelhost`, `temp`, `maxtokens`, `maxcontext`, `compactmodel`,
-`effort`, `fast`, and `tooltimeout`. For example:
+`effort`, `speed`, and `tooltimeout`. For example:
 
 ```text
 /set model openai/gpt-5.4
 /set effort high
-/set fast on
+/speed fast
 /set maxcontext auto
 ```
 
@@ -825,23 +825,45 @@ OpenRouter's accepted values come from model metadata, and native providers may
 clamp levels differently. Reasoning is replayed only to the gateway and model
 that produced it.
 
-### Fast mode
+### Processing speed
 
-`--fast`, `/set fast on`, or `POLLYTOOL_FAST=1` in the configuration file asks
-the provider for its faster, costlier tier: priority processing on `openai/`
-models, and fast mode on `codex/` models, which the Codex backend describes
-as 1.5x speed at increased plan usage. `/set fast` shows the setting,
-`/set fast off` turns it off, and like effort it is saved with the session.
-Turning it on is refused for a provider without such a tier, and a model whose
-catalog rules the tier out runs at normal speed with a warning on the turn.
-The backend does not confirm the tier in its reply, so the setting is the
-record of what was asked for.
+Use `/speed` to see the current speed, or `/speed <mode>` to save a choice for
+this session. At launch, use `--speed <mode>`. Set `POLLYTOOL_SPEED` in the
+environment or `~/.pollytool/config` to set the default for new sessions;
+resuming a session keeps its saved choice unless you pass `--speed` explicitly.
+
+| Mode | What Polly requests |
+|---|---|
+| `default` | No tier override; the provider uses its default |
+| `fast` | OpenAI Priority or Codex Fast on supported models |
+| `ultrafast` | Ultrafast on supported OpenAI Responses or Codex models |
+
+Tab completion uses the model information Polly already has. The TUI shows
+`Fast` or `Ultrafast` beside the model when Polly expects to request it. When
+the saved tier can't be used for this model or endpoint, `/speed` shows
+Default and the saved choice. Polly omits the tier with a warning and never
+substitutes a different paid tier. The saved choice applies again when you
+return to a compatible model; `/speed default` clears it. If Codex support for
+Ultrafast hasn't been confirmed yet, `/speed` says so.
+
+For example, `polly --model openai/gpt-6.2-astra --speed ultrafast` requests
+Ultrafast on the native OpenAI Responses API. `gpt-6.2-sol`, `gpt-6-astra`, and
+`gpt-6.1-sol` are also supported. Leave `--baseurl` unset: a custom endpoint
+uses Chat Completions instead. For `codex/`, the signed-in account's model
+catalog must explicitly list Ultrafast for the selected model.
+
+Paid tiers may cost more or draw more on your plan. Ultrafast has higher
+pricing and separate rate limits; see [OpenAI’s Ultrafast guide](https://developers.openai.com/api/docs/guides/ultrafast-mode).
+Polly’s cost estimates use model rates, not tier-specific rates.
+
+Existing `/fast on` and `/fast off` commands, `--fast` and `--fast=false`
+flags, and `POLLYTOOL_FAST` defaults still work.
 
 ### Capability adaptation
 
 When a model's metadata explicitly says it lacks a feature, Polly adapts the
 outgoing request. It can leave out unsupported optional tools, temperature,
-or fast mode, replace images with explanatory text, or turn completed tool
+or processing tiers, replace images with explanatory text, or turn completed tool
 exchanges into text. Each adaptation is reported once per model for the
 session. Your original messages and saved settings are untouched. An incompatible
 *required* response tool or schema is an error instead. The

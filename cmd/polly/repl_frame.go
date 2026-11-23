@@ -392,6 +392,7 @@ func (r *managedREPL) render() {
 		// for the next paint rather than cascading reads through the history.
 		layoutTranscript()
 	}
+	r.refreshStatusSpeed()
 	status := r.model.statusRow(w)
 	inspectorFocus := r.inspectorFocused() || r.workspace().inspector.searching
 	divider := r.model.dividerRow(l, inspectorFocus)

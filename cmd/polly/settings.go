@@ -33,6 +33,9 @@ type settingSpec struct {
 	// from the key lists, so it is never advertised or offered.
 	alias string
 
+	// alternateFlag also overrides this row when explicitly given on the CLI.
+	alternateFlag string
+
 	// parse validates value and writes it onto s; nil marks the key
 	// read-only for /set. Error texts appear in transcripts; keep stable.
 	parse func(s *Settings, value string) error
@@ -285,21 +288,41 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ThinkingEffort = s.ThinkingEffort },
 	},
 	{
-		key: "fast",
+		key:           "speed",
+		alias:         "fast",
+		alternateFlag: "fast",
 		parse: func(s *Settings, value string) error {
-			on, err := parseFastMode(value)
+			tier, err := parseSpeed(value)
 			if err != nil {
 				return err
 			}
-			s.Fast = on
+			s.ServiceTier = tier
 			return nil
 		},
-		show:     fastModeDisplay,
-		validate: validateFastMode,
-		setWords: fastModeWords,
-		fromCmd:  func(s *Settings, cmd *cli.Command) { s.Fast = cmd.Bool("fast") },
-		fromMeta: func(s *Settings, md *sessions.Metadata) { s.Fast = md.Fast },
-		toMeta:   func(s *Settings, md *sessions.Metadata) { md.Fast = s.Fast },
+		show:        speedDisplay,
+		validate:    validateSpeed,
+		setWordsFor: speedWordsFor,
+		fromCmd: func(s *Settings, cmd *cli.Command) {
+			value := cmd.String("speed")
+			if cmd.IsSet("fast") {
+				value = cmd.String("fast")
+			}
+			s.ServiceTier, _ = parseSpeed(value) // validated by the flag actions
+		},
+		fromMeta: func(s *Settings, md *sessions.Metadata) {
+			s.ServiceTier = md.ServiceTier
+			if s.ServiceTier == "" && md.Fast {
+				s.ServiceTier = llm.ServiceTierPriority
+			}
+		},
+		toMeta: func(s *Settings, md *sessions.Metadata) {
+			// Keep priority readable by older versions; never write two tiers.
+			md.ServiceTier = s.ServiceTier
+			md.Fast = s.ServiceTier == llm.ServiceTierPriority
+			if md.Fast {
+				md.ServiceTier = ""
+			}
+		},
 	},
 	{
 		key: "tooltimeout",
@@ -392,7 +415,7 @@ func (s settingSpec) flagged() bool {
 // An explicit zero (--maxcontext 0 = unlimited) counts; an environment or
 // configuration-file default does not override a stored session.
 func (s settingSpec) flagSet(cmd *cli.Command) bool {
-	return s.flagged() && flagGiven(cmd, s.key)
+	return s.flagged() && (flagGiven(cmd, s.key) || (s.alternateFlag != "" && flagGiven(cmd, s.alternateFlag)))
 }
 
 func settingSpecFor(key string) (settingSpec, bool) {

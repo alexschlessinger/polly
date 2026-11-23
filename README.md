@@ -122,6 +122,7 @@ A few commands worth knowing:
 | `/set [key [value]]` | Inspect or change session preferences |
 | `/setup` | Configure model, key override, theme, and launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
+| `/speed [default\|fast\|ultrafast]` | Inspect or change processing speed for this session |
 | `/compact` | Summarize context now, retaining the saved transcript |
 | `/copy` | Copy the last completed response to the clipboard |
 | `/theme` | Preview and switch themes |
@@ -181,11 +182,13 @@ type one in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama
 endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or
-`/set effort <value>`. Fast mode (`--fast`, `/set fast on`) asks `openai/` models
-for priority processing and `codex/` models for the backend's fast tier: quicker
-replies that cost more, or draw more on a plan. Context limits are detected
-where possible, and `/set maxcontext <value>` adjusts them. A conversation that
-outgrows its limit is compacted, by a cheaper model if `--compactmodel` names one.
+`/set effort <value>`. Use [`/speed`](docs/CLI.md#processing-speed) in a session
+or `--speed <mode>` at launch to choose `default`, `fast`, or `ultrafast`.
+Fast and Ultrafast are available on supported OpenAI and Codex models and can
+cost more or draw more on your plan.
+Context limits are detected where possible; use `/set maxcontext <value>` to
+adjust them. A conversation that outgrows its limit is compacted, by a cheaper
+model if `--compactmodel` names one.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 

@@ -257,6 +257,7 @@ func modelConfigFlags() []cli.Flag {
 			},
 		},
 		newThinkingFlag(),
+		newSpeedFlag(),
 		newFastFlag(),
 	}
 }
@@ -602,15 +603,47 @@ func newThinkingFlag() *cli.StringFlag {
 	}
 }
 
-// newFastFlag asks for the provider's fast tier: OpenAI's priority
-// processing, which the Codex backend calls fast mode. A session setting
-// like effort, so a resumed session keeps it unless the flag is given.
-func newFastFlag() *cli.BoolFlag {
-	return &cli.BoolFlag{
-		Name:    "fast",
-		Usage:   "Fast mode: ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode)",
-		Sources: envDefault("POLLYTOOL_FAST"),
+func newSpeedFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    "speed",
+		Usage:   "Processing speed: `default|fast|ultrafast` (paid tiers depend on the model)",
+		Value:   "default",
+		Sources: envDefault("POLLYTOOL_SPEED", "POLLYTOOL_FAST"),
+		Action: func(_ context.Context, cmd *cli.Command, value string) error {
+			// An explicit legacy flag overrides defaults too. Let its action
+			// validate the selected value and reject two explicit flags.
+			if cmd.IsSet("fast") || (value == "" && !flagGiven(cmd, "speed")) {
+				return nil
+			}
+			_, err := parseSpeed(value)
+			return err
+		},
 	}
+}
+
+// fastFlag accepts a tier after '=', but a bare --fast means true and must
+// leave the next argument alone (it may be the user's prompt).
+type fastFlag struct{ *cli.StringFlag }
+
+func (*fastFlag) IsBoolFlag() bool { return true }
+func (*fastFlag) TakesValue() bool { return false } // no separate argument
+func (f *fastFlag) String() string { return cli.FlagStringer(f) }
+
+func newFastFlag() *fastFlag {
+	return &fastFlag{&cli.StringFlag{
+		Name:   "fast",
+		Hidden: true,
+		Action: func(_ context.Context, cmd *cli.Command, value string) error {
+			if flagGiven(cmd, "speed") {
+				return fmt.Errorf("--speed and --fast cannot be used together")
+			}
+			if value == "" {
+				return nil
+			}
+			_, err := parseSpeed(value)
+			return err
+		},
+	}}
 }
 
 func newPromptAndFileFreeStringFlag(name, usage string) *cli.StringFlag {

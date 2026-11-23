@@ -183,12 +183,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:         "/fast",
-		usage:        "/fast [on|off]",
-		summary:      "compatibility shortcut for /set fast [on|off]",
+		usage:        "/fast [on|off|ultrafast]",
+		summary:      "compatibility shortcut for /speed",
 		hidden:       true,
 		busySafeWhen: func(args []string) bool { return len(args) == 1 },
-		run:          replFastCommand,
-		complete:     completeFastCommand,
+		run:          replSpeedCommand,
+		complete:     completeSpeedCommand,
 	})
 	r.register(replCommand{
 		name:    "/exit",
@@ -279,6 +279,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		busySafeWhen: func(args []string) bool { return len(args) < 3 },
 		run:          replSetCommand,
 		complete:     completeSetCommand,
+	})
+	r.register(replCommand{
+		name:         "/speed",
+		usage:        "/speed [default|fast|ultrafast]",
+		summary:      "show or change processing speed for this session",
+		busySafeWhen: func(args []string) bool { return len(args) == 1 },
+		run:          replSpeedCommand,
+		complete:     completeSpeedCommand,
 	})
 	r.register(replCommand{
 		name:     "/screenshot",
@@ -893,15 +901,15 @@ func completeEffortCommand(ctx *replCommandContext, fields []string, prefix stri
 	return completeSetCommand(ctx, append([]string{"/set", "effort"}, fields[1:]...), prefix)
 }
 
-func replFastCommand(ctx *replCommandContext, args []string) replCommandResult {
+func replSpeedCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) > 2 {
-		return replCommandResult{err: ctx.replyLine("usage: /fast [on|off]")}
+		return replCommandResult{err: ctx.replyLine("usage: /speed [default|fast|ultrafast]")}
 	}
-	return replSetCommand(ctx, append([]string{"/set", "fast"}, args[1:]...))
+	return replSetCommand(ctx, append([]string{"/set", "speed"}, args[1:]...))
 }
 
-func completeFastCommand(ctx *replCommandContext, fields []string, prefix string) []string {
-	return completeSetCommand(ctx, append([]string{"/set", "fast"}, fields[1:]...), prefix)
+func completeSpeedCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	return completeSetCommand(ctx, append([]string{"/set", "speed"}, fields[1:]...), prefix)
 }
 
 func completeSetCommand(ctx *replCommandContext, fields []string, prefix string) []string {
