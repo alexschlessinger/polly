@@ -249,8 +249,11 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout) ui.Draw
 			cell.base.Rune = cornerRune
 		}
 	}
-	// The thumb, the caller link and the close button own their cells; the
-	// frame never paints them.
+	// Keep controls painted into the shared composer rule, including the
+	// spaces that separate the task marks from the rule.
 	r.border.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink, g.close}
+	if link := r.model.todoLink; !link.Empty() {
+		r.border.masks = append(r.border.masks, image.Rect(link.Min.X-1, link.Min.Y, link.Max.X+1, link.Max.Y))
+	}
 	return &chromeLayer{Drawable: drawable, r: r, close: g.close}
 }

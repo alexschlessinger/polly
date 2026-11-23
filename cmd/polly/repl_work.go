@@ -61,6 +61,20 @@ func (r *managedREPL) background(fn func()) bool {
 	return true
 }
 
+// backgroundPlanWork spans the window before the runtime registers a worker,
+// as well as work (e.g. a sandbox trial) not represented by a runtime member.
+func (r *managedREPL) backgroundPlanWork(state *conversationState, fn func()) bool {
+	if state == nil {
+		return r.background(fn)
+	}
+	state.planWork.Add(1)
+	if r.background(func() { defer state.planWork.Add(-1); fn() }) {
+		return true
+	}
+	state.planWork.Add(-1)
+	return false
+}
+
 func (r *managedREPL) postUI(ctx context.Context, fn func()) bool {
 	select {
 	case <-r.work.ctx.Done():

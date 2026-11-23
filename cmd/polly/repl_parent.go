@@ -84,32 +84,41 @@ func (r *managedREPL) requestParentLocked() {
 	})
 }
 
-// dividerRow is the rule above the composer. In an agent tab it carries the
-// link back to the caller, whose mouse target follows the layout, including
-// multiline input and short screens. Caller holds m.mu.
+// dividerRow is the rule above the composer. It carries the caller link on
+// the left and the compact checklist on the right when present. Hitboxes
+// follow the rule through resizes and multiline input. Caller holds m.mu.
 func (m *replModel) dividerRow(l frameLayout, inspectorFocused ...bool) string {
-	m.parentLink = image.Rectangle{}
+	m.parentLink, m.todoLink = image.Rectangle{}, image.Rectangle{}
 	if l.dividerRows == 0 || l.width <= 0 {
 		return ""
 	}
 	inactive := len(inspectorFocused) > 0 && inspectorFocused[0]
 	rule := func(x, cols int) string { return m.composerBoundaryRule(x, cols, inactive) }
-	if m.status.parentName == "" {
-		return rule(0, l.width)
-	}
-	// Inside a full-width frame the link sits past the corner glyphs.
-	col := 0
-	if l.chrome.joined && l.chrome.main.Empty() {
-		col = min(2, l.width-1)
-	}
-	label := rw.Truncate("← Back to caller", l.width-col, "…")
-	cols := rw.StringWidth(label)
 	y := l.composerRow(0) - 1
-	m.parentLink = image.Rect(col, y, col+cols, y+1)
-	tail := l.width - col - cols
-	if tail > 0 {
-		label += " "
-		tail--
+	row, x := "", 0
+	if m.status.parentName != "" {
+		// Inside a full-width frame the link sits past the corner glyphs.
+		col := 0
+		if l.chrome.joined && l.chrome.main.Empty() {
+			col = min(2, l.width-1)
+		}
+		label := rw.Truncate("← Back to caller", l.width-col, "…")
+		x = col + rw.StringWidth(label)
+		m.parentLink = image.Rect(col, y, x, y+1)
+		row = rule(0, col) + style.Styled(label, "accent", "")
+		if x < l.width {
+			row += " "
+			x++
+		}
 	}
-	return rule(0, col) + style.Styled(label, "accent", "") + rule(l.width-tail, tail)
+	// Keep the prompt-edge cue, a space on each side of the label, and
+	// the rightmost rule cell (the frame corner with an open inspector).
+	end := l.width - 2
+	label := m.planProgress.dividerLabel(end - max(x, composerBoundaryAccentCols) - 1)
+	if label == "" {
+		return row + rule(x, l.width-x)
+	}
+	start := end - rw.StringWidth(label)
+	m.todoLink = image.Rect(start, y, end, y+1)
+	return row + rule(x, start-x-1) + " " + style.Styled(label, "muted", "") + " " + rule(end+1, 1)
 }

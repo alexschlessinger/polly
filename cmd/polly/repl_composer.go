@@ -726,6 +726,11 @@ func (r *managedREPL) submitComposerLocked() bool {
 		m.followBottom = true
 		return false
 	}
+	// A plan action is an immediate decision, not a queued mode change or
+	// a delayed implementation approval. Refuse it during initialization.
+	if f := strings.Fields(trimmed); !strings.Contains(trimmed, "\n") && len(f) > 0 && strings.EqualFold(f[0], "/plan") && r.state.workspaceChangesPending() {
+		return r.runComposerCommandLocked(trimmed)
+	}
 	if r.state.workspaceChangesPending() && startupSafeCommand(trimmed) {
 		return r.runComposerCommandLocked(trimmed)
 	}

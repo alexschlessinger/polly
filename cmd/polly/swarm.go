@@ -20,19 +20,24 @@ import (
 )
 
 func registerSwarm(state *conversationState, config *Config, client llm.LLM) error {
-	// A child opened for human inspection must not acquire parent authority.
 	meta, err := state.session.GetMetadata(state.session.Context())
 	if err != nil {
 		return err
 	}
-	if meta.Parent != "" {
-		return nil
+	state.swarm, err = buildConversationSwarm(state, config, client, meta.Parent, state.toolRegistry, state.agentConfig(state.settings))
+	return err
+}
+
+func buildConversationSwarm(state *conversationState, config *Config, client llm.LLM, parent string, registry *tools.ToolRegistry, agentConfig llm.AgentConfig) (*swarm.Runtime, error) {
+	// A child opened for human inspection must not acquire parent authority.
+	if parent != "" {
+		return nil, nil
 	}
-	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
-		OpenTools:     tools.NativeOpenTools(state.toolRegistry, tools.WithNativeInstructions(repositoryInstructionsFor)),
-		OpenWorktrees: nativeWorktrees(state.toolRegistry),
-		Request:       *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
-		Agent:         state.agentConfig(state.settings),
+	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: registry, Client: client,
+		OpenTools:     tools.NativeOpenTools(registry, tools.WithNativeInstructions(repositoryInstructionsFor)),
+		OpenWorktrees: nativeWorktrees(registry),
+		Request:       *createCompletionRequest(config, &state.settings, nil, registry, nil, nil),
+		Agent:         agentConfig,
 		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
 		AgentSandbox:    config.AgentSandbox,
 		PrivatePaths:    state.storage.privatePaths,
@@ -43,11 +48,10 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	}
 	runtime, err := swarm.New(c)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	state.swarm = runtime
-	runtime.RegisterParentTools(state.toolRegistry)
-	return nil
+	runtime.RegisterParentTools(registry)
+	return runtime, nil
 }
 
 // The host selects Git's administrative registry separately from model tools.

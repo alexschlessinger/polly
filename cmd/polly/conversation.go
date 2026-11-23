@@ -19,11 +19,20 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"github.com/alexschlessinger/pollytool/worktree"
 	"github.com/urfave/cli/v3"
 )
 
 type conversationState struct {
+	// planReview is the revision last shown by this frontend. It is never
+	// restored from history or session storage.
+	planReview string
+	// resumeExecution is set only for a session reopened in draft mode. The
+	// frontend restores its normal tools at an explicit plan transition,
+	// with no active turns or workers. A failed restore leaves readers only.
+	resumeExecution func(context.Context) error
+	// planWork includes detached turns and background write-capable launches
+	// until their goroutines actually return (not merely until UI cancellation).
+	planWork         atomic.Int32
 	workspaceChanges *workspaceChangeState
 	swarm            *swarm.Runtime
 	sessionStore     sessions.SessionStore
@@ -251,7 +260,7 @@ func notifyStderr(line string) {
 // runtime from the settings prepare resolved for it. It only reads config,
 // so the managed REPL may run it off the UI goroutine while the visible
 // session keeps serving input.
-func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool) (state *conversationState, retErr error) {
+func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool) (_ *conversationState, retErr error) {
 	config, llmClient, sessionStore := o.config, o.llmClient, o.sessionStore
 	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
 		return nil, fmt.Errorf("modelhost is supported only for OpenRouter")
@@ -280,19 +289,10 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err != nil {
 		return nil, err
 	}
-	var toolRegistry *tools.ToolRegistry
-	var changeTracker io.Closer
 	defer func() {
-		if retErr == nil {
-			return
+		if retErr != nil {
+			retErr = closeAfterError(session, "session", retErr)
 		}
-		if changeTracker != nil {
-			retErr = closeAfterError(changeTracker, "change tracker", retErr)
-		}
-		if toolRegistry != nil {
-			retErr = closeAfterError(toolRegistry, "tool registry", retErr)
-		}
-		retErr = closeAfterError(session, "session", retErr)
 	}()
 	metadata, err := session.GetMetadata(ctx)
 	if err != nil {
@@ -319,109 +319,35 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err != nil {
 		return nil, err
 	}
-	// Discover skills before building the runtime tool registry, respecting
-	// storage exclusions and restoring --skill sources on resume; new sources
-	// are staged for the single write below.
-	skillResult, err := loadSkillCatalog(config, settings.SkillDirs, metadata.SkillSources, storage.privatePaths...)
-	if err != nil {
-		return nil, err
-	}
-	if len(skillResult.sources) > 0 {
-		metadata.SkillSources = skillResult.sources
-	}
-
-	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillResult, extraReadDirs, storage.privatePaths...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if state == nil {
-			_ = sandboxProfile.Close()
-		}
-	}()
-	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
-	// server) runs under the backend the probe is checking and fails first
-	// when that backend cannot start. The probe's diagnosis names the escape
-	// hatch, so it wins over the raw load error; a load that succeeds never
-	// waits.
-	loadErr := func(err error) error {
-		if probeErr := probe.wait(ctx); probeErr != nil {
-			return probeErr
-		}
-		return err
-	}
-	if len(config.Tools) > 0 {
-		// Command-line tools replace the session's persisted tools.
-		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
-		metadata.ActiveTools, err = loadSelectedTools(toolRegistry, config.Tools)
-		if err != nil {
-			return nil, loadErr(err)
-		}
-	} else {
-		toolRegistry, err = tools.LoadRegistry(metadata.ActiveTools, registryOpts...)
-		if err != nil {
-			return nil, loadErr(err)
-		}
-	}
-	// Workspace change tracking feeds the managed REPL's change stats and
-	// inspector. One-shot and line sessions never show them, so they do not
-	// pay for a Git snapshot at open or after a turn.
-	var tracker *worktree.ChangeTracker
-	if o.outputCapabilities.surface == outputSurfaceManagedTUI {
-		tracker = installChangeTracker(toolRegistry, storage.privatePaths)
-		if tracker != nil {
-			changeTracker = tracker
-		}
-	}
-	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
-	if err != nil {
-		return nil, err
-	}
-	if err := restoreActiveSkills(metadata, skillRuntime); err != nil {
-		return nil, err
-	}
-	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
-		return nil, err
-	}
-	if err := updateContextInfo(ctx, session, metadata, &settings); err != nil {
-		return nil, err
-	}
-
-	artifactStore := session.ArtifactStore()
-	agentConfig := selectedAgentConfig(settings, metadata.ActiveTools)
-	agentConfig.ArtifactStore = artifactStore
-	if coord, ok := session.(sessions.CoordinationSession); ok {
-		agentConfig.OpenArtifact = coord.OpenPublishedArtifact
-	}
-	agent := llm.NewAgent(llmClient, toolRegistry, agentConfig)
-	state = &conversationState{
+	opened := &conversationState{
 		sessionStore:       sessionStore,
 		storage:            storage,
 		session:            session,
 		settings:           settings,
 		metadataBaseURL:    config.BaseURL,
-		agent:              agent,
-		agentBuiltins:      agentConfig.Builtins,
-		artifactStore:      artifactStore,
-		toolRegistry:       toolRegistry,
-		skillCatalog:       skillResult.catalog,
-		skillRuntime:       skillRuntime,
-		skillSources:       skillResult.sources,
-		sandboxWarnings:    sandboxWarnings,
-		sandboxProbe:       probe,
-		sandboxProfile:     sandboxProfile,
+		artifactStore:      session.ArtifactStore(),
+		sandboxWarnings:    newBroadWritablePathWarner(),
 		displayContract:    o.displayContract,
 		outputCapabilities: o.outputCapabilities,
 	}
-	registerSessionTitleTool(state)
-	registerThemeTool(state)
-	registerAskUserTool(state)
-	if err := registerSwarm(state, config, llmClient); err != nil {
+	plan, err := currentPlan(ctx, opened)
+	if err != nil {
 		return nil, err
 	}
-	state.startWorkspaceChanges(state.sessionContext(), tracker)
-	return state, nil
+	draft := plan != nil && plan.Mode == sessions.PlanDraft
+	if err := o.installToolRuntime(ctx, opened, llmClient, metadata, draft); err != nil {
+		return nil, err
+	}
+	if draft {
+		opened.resumeExecution = func(ctx context.Context) error {
+			md, err := session.GetMetadata(ctx)
+			if err != nil {
+				return err
+			}
+			return o.installToolRuntime(ctx, opened, llmClient, md, false)
+		}
+	}
+	return opened, nil
 }
 
 // resolveSessionExtraReadDirs merges the --add-dir entries into the session's

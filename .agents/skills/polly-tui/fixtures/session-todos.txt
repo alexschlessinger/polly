@@ -1,0 +1,21 @@
+# A normal session: no plan, real tool calls, one verified outcome and one blocker.
+# POLLY_SHOT_FIXTURE=.agents/skills/polly-tui/fixtures/session-todos.json \
+#   .agents/skills/polly-tui/driver.sh hshot .agents/skills/polly-tui/fixtures/session-todos.txt
+track the release
+:at finished 15
+:wait "✓☐☐" 5
+:shot $POLLY_SHOT_DIR/todos-divider.png
+:click "✓☐☐" 5
+:wait "Publish the migration notes" 5
+:shot $POLLY_SHOT_DIR/todos-panel.png
+:size 52x24
+:settle
+:shot $POLLY_SHOT_DIR/todos-narrow.png
+:key esc
+:size 96x32
+/plan plan the rollout
+:at drafted 10
+:ready
+/plan review
+:wait "Run the import smoke test" 5
+:shot $POLLY_SHOT_DIR/plan-review.png

@@ -1,0 +1,16 @@
+{
+  "sessions": [{"name":"session-todos","metadata":{"title":"Prepare the import release"}}],
+  "turns": [
+    {"match":"track the release","steps":[{"tool":{"name":"update_todos","arguments":{"operation":"add","text":"Check the import format"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"add","text":"Verify the staging import"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"add","text":"Publish the migration notes"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"status","number":1,"state":"active"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"status","number":1,"state":"done"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"status","number":2,"state":"active"}}}]},
+    {"steps":[{"tool":{"name":"update_todos","arguments":{"operation":"status","number":2,"state":"blocked","reason":"Waiting for the staging export"}}}]},
+    {"steps":[{"content":"The format is verified. I need the staging export before I can test the import."}],"mark":"finished"},
+    {"match":"plan the rollout","steps":[{"tool":{"name":"read_plan_draft","arguments":{}}}]},
+    {"steps":[{"tool":{"name":"write_plan_draft","arguments":{"revision":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","text":"# Import rollout\n\nKeep existing imports working while the new format rolls out.\n\n## Steps\n- Validate the staging export against both formats\n- Run the import smoke test before rollout\n\n## Verification\nCompare row counts and report rejected records.\n"}}}]},
+    {"steps":[{"content":"The rollout draft is ready for review. Nothing has been deployed."}],"mark":"drafted"}
+  ]
+}

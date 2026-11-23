@@ -266,6 +266,9 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	done := make(chan error, 1)
 	tab.turnDone = done
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, state: tab.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
+	if tab.state != nil {
+		tab.state.planWork.Add(1)
+	}
 	go func() {
 		if tab.state != nil {
 			defer tab.state.sandboxInit.finish()
@@ -277,6 +280,9 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 			} else {
 				err = runTurn(turnCtx, turn.displayText, tui)
 			}
+		}
+		if tab.state != nil {
+			tab.state.planWork.Add(-1)
 		}
 		done <- err
 		r.wakeTabs()

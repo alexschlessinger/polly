@@ -20,3 +20,7 @@ Start with the [project overview and quick start](../README.md).
 | [JavaScript workflow reference](../swarm/workflow_help.md) | Complete signatures and examples, also available through `workflow_help()` |
 | [Local CI](../.github/local-ci/README.md) | Docker checks and the configured macOS/Linux runner setup |
 | [Contributor instructions](../AGENTS.md) | Repository layout, conventions, and required checks |
+
+## Design notes
+
+- [Session todos and plan mode](PLAN.md): how progress is recorded, what plan approval freezes, and how to resume without replaying work.

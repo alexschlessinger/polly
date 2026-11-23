@@ -425,6 +425,10 @@ func (r *managedREPL) render() {
 			// Leave breathing room inside the transcript, above the composer.
 			maxRows = max(1, min(24, l.transcriptHeight*2/3)-5)
 		}
+		if r.model.modal.todo != nil {
+			// Keep the composer visible while inspecting tasks.
+			maxRows = max(1, l.transcriptHeight-3)
+		}
 		if r.model.modal.context != nil {
 			// Anchored inspectors can use the rows above the status bar; the
 			// breathing room reserved for centered pickers would hide details.
@@ -493,6 +497,9 @@ func (r *managedREPL) render() {
 		if r.model.modal.details != nil {
 			x = w - modalWidth
 			y = max(0, h-1-modalHeight)
+		}
+		if r.model.modal.todo != nil {
+			x, y = w-modalWidth, max(0, l.transcriptHeight-modalHeight)
 		}
 		if docked {
 			x, y = 0, l.composerRow(0)

@@ -424,6 +424,7 @@ Up/Down, and press Esc to close it.
 | Preferences and defaults | `/set [key [value]]`, `/speed`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
+| Planning and progress | `/plan [goal]`, `/todo` |
 | Context and files | `/context [text]`, `/compact`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/theme [name]`, `/clear`, `/copy`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
@@ -448,6 +449,51 @@ clipboard copying.
 
 `/screenshot` saves a PNG of the screen as Polly renders it, images included,
 to `polly-screenshot.png` in the system temp directory unless you give a path.
+
+#### Track work without a plan
+
+For a multi-step request, Polly can keep a checklist without entering `/plan`.
+For example, ask: **“Check the import format, update the parser, and verify the
+old fixtures still pass. Track those outcomes.”** Open `/todo` to see what's
+active, what's done, and the reason for anything blocked. Ask in chat to add
+or rename an ordinary item; `/todo` itself is read-only.
+
+The checklist lives in the session, not in chat history. Only the
+`update_todos` tool records changes. A Markdown checkbox, a successful command,
+or a worker's reply does not mark an outcome done. Resuming a saved session
+restores its checklist without starting work.
+
+#### Plan first, then implement
+
+`/plan <goal>` starts an investigation without authorizing project changes;
+`/plan` without a goal enters or shows the current plan. While `PLAN` is
+visible, you can ask questions or revise the proposal. Open the advertised
+Markdown file in your editor (`/plan edit`), or revise it in chat. Put the
+outcomes you want tracked in one `## Steps` section, using one top-level list
+item per outcome. For example:
+
+```markdown
+## Steps
+- Include title-only matches in session search
+- Verify ranking and deduplication
+```
+
+Use `/plan review` to see what will become todos. Accept the displayed
+revision with `/plan accept` to start work, keep discussing to make changes, or `/plan exit` to
+leave without implementing. A save after review requires a fresh review.
+Acceptance freezes the reviewed outcomes. On the implementation turn, Polly
+adds them to the checklist with `update_todos`, keeping any ordinary items.
+Later saves to the draft are ignored, and checkmarks never count as progress.
+
+The divider above the TUI input shows `✓` for completed tasks and `☐` for unfinished ones.
+Click the marks, select them with Shift-Tab and Enter, or type `/todo` to see
+the checklist and any blocked reason. Once all tasks are done, the marks disappear;
+`/todo` still shows the completed checklist. In line mode the checklist is plain text.
+`/plan view` displays the accepted plan from the session database; there's no
+need to keep the draft file to track or resume execution. Reopening
+a session doesn't start an implementation turn: use `/plan continue` when
+you want to continue. Reopen from the original project directory to work on
+the plan. For a different plan, start a new session.
 
 #### Preferences and scope
 

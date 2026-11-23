@@ -546,11 +546,13 @@ func TestCompleteSlash(t *testing.T) {
 		{"/c", true, "/c", []string{"/clear", "/close", "/compact", "/context", "/copy"}},
 		{"/cl", true, "/cl", []string{"/clear", "/close"}},
 		{"/cle", true, "/clear", []string{"/clear"}},
-		// "/t" is ambiguous between titles, themes, and tools.
-		{"/t", true, "/t", []string{"/theme", "/title", "/tools"}},
+		// "/t" is ambiguous between themes, titles, todos, and tools.
+		{"/t", true, "/t", []string{"/theme", "/title", "/todo", "/tools"}},
 		{"/th", true, "/theme", []string{"/theme"}},
 		{"/ti", true, "/title", []string{"/title"}},
-		{"/to", true, "/tools", []string{"/tools"}},
+		{"/to", true, "/to", []string{"/todo", "/tools"}},
+		{"/tod", true, "/todo", []string{"/todo"}},
+		{"/pl", true, "/plan", []string{"/plan"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},
 		// No completion when it isn't a bare slash token.

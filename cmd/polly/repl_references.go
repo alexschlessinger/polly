@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -342,6 +343,15 @@ func activateComposerSkills(ctx context.Context, state *conversationState, msg m
 	}
 	if state == nil || state.skillRuntime == nil {
 		return msg, fmt.Errorf("skill runtime is unavailable")
+	}
+	// Activating a skill may start tool loaders or widen the registry before
+	// the shared turn dispatcher runs. Never activate one in a planning turn.
+	plan, err := currentPlan(ctx, state)
+	if err != nil {
+		return msg, err
+	}
+	if plan != nil && plan.Mode == sessions.PlanDraft {
+		return msg, fmt.Errorf("skills cannot be activated in plan mode")
 	}
 	var guidance []messages.ContentPart
 	for _, name := range md.Skills {

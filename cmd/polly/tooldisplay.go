@@ -63,6 +63,8 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeSandboxProposeArgs(args)
 	case askUserToolName:
 		return summarizeAskUserArgs(args)
+	case "update_todos":
+		return summarizeTodoArgs(args)
 	case "read":
 		return summarizeReadArgs(args)
 	case "read_file":
@@ -85,6 +87,33 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 }
 
 const genericToolSummaryWidth = 120
+
+// Keep the requested change legible both before approval and on replay. A
+// call row describes an intention; the dock reflects only committed changes.
+func summarizeTodoArgs(args tools.Args) string {
+	var label string
+	switch args.String("operation") {
+	case "add":
+		label = "add · " + args.String("text")
+	case "rename":
+		label = fmt.Sprintf("rename #%d · %s", args.Int("number", 0), args.String("text"))
+	case "status":
+		label = fmt.Sprintf("#%d → %s", args.Int("number", 0), args.String("state"))
+		if reason := args.String("reason"); reason != "" {
+			label += " · " + reason
+		}
+	case "init_plan":
+		label = "track approved outcomes"
+	case "list":
+		label = "view checklist"
+		if after := args.Int("after", 0); after > 0 {
+			label += fmt.Sprintf(" after #%d", after)
+		}
+	default:
+		return summarizeGenericToolArgs(args)
+	}
+	return style.Truncate(cleanActivityText(label), genericToolSummaryWidth)
+}
 
 // summarizeSandboxProposeArgs names a proposal by how many items it holds
 // and the command they are for.

@@ -85,6 +85,10 @@ type replCommandContext struct {
 	themeCommand func(name string) []string
 	// Picker and inspector callbacks are managed-TUI operations. Keeping
 	// them out of command parsing lets the fallback REPL retain text reports.
+	planChanged        func(*sessions.Plan, []sessions.PlanTodo)
+	planBusy           func() bool
+	openPlanEditor     func(path string) error
+	openTodoPanel      func()
 	openContextPopover func()
 	openHelp           func([]string, string)
 	openKeyManager     func()
@@ -121,6 +125,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	// /swarm is temporarily disabled. Keep its implementation available for
 	// later re-enablement; agent tools and the Agents inspector are independent.
 	registerWorkflowCommand(r)
+	registerPlanCommands(r)
 	r.register(replCommand{
 		name:    "/add-dir",
 		usage:   "/add-dir [path]",
@@ -416,6 +421,12 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 				r.model.discardQueuedInputs()
 				return err
 			}
+			r.state.planReview = ""
+			plan, todos, err := readChecklist(r.state.session.Context(), r.state)
+			if err != nil {
+				return err
+			}
+			r.model.setPlanProgress(plan, todos)
 			r.model.clearDisplay()
 			r.model.clearRestoredDraft()
 			r.model.lastOutcome = turnOutcomeNone
@@ -461,6 +472,10 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		sandboxTry:          r.openSandboxTry,
 		pickSandboxTry:      r.openSandboxTryPicker,
 		compactConversation: r.submitCompactTurnLocked,
+		planBusy:            r.planBusy,
+		planChanged:         r.model.setPlanProgress,
+		openTodoPanel:       r.openTodoPanel,
+		openPlanEditor:      openExternal,
 		startTurn:           r.submitCommandTurnLocked,
 		openContextPopover:  r.openContextPopover,
 		openHelp:            r.openHelp,
@@ -482,10 +497,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 
 func newWriterReplCommandContext(config *Config, state *conversationState, w io.Writer) *replCommandContext {
 	ctx := &replCommandContext{
-		ctx:      context.Background(),
-		config:   config,
-		state:    state,
-		registry: defaultReplCommands,
+		ctx:            context.Background(),
+		config:         config,
+		state:          state,
+		registry:       defaultReplCommands,
+		openPlanEditor: openExternal,
 		reply: func(line string) error {
 			_, err := fmt.Fprintln(w, line)
 			return err

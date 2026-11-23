@@ -127,7 +127,7 @@ func (r *managedREPL) startSandboxStorageWork(label string, run func(context.Con
 	if r.state != nil && r.state.session != nil {
 		parent = r.state.session.Context()
 	}
-	if !r.background(func() {
+	if !r.backgroundPlanWork(r.state, func() {
 		ctx, cancel := context.WithCancel(parent)
 		stop := context.AfterFunc(r.work.ctx, cancel)
 		defer cancel()

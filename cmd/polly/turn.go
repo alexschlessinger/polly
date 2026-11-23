@@ -19,12 +19,16 @@ import (
 // preparation, the agent run, persistence, and output. Each phase is a method
 // that reads on its own; executeTurnWithUserMessage sequences them.
 type turnExecution struct {
-	ctx      context.Context
-	config   *Config
-	state    *conversationState
-	settings *Settings
-	schema   *llm.Schema
-	turnUI   TurnUI
+	ctx         context.Context
+	config      *Config
+	state       *conversationState
+	settings    *Settings
+	schema      *llm.Schema
+	turnUI      TurnUI
+	plan        *sessions.Plan
+	todoSession sessions.TodoSession
+	todos       []sessions.PlanTodo // detached read at the start of this turn
+	runAgent    *llm.Agent          // restricted draft surface, or the normal session agent
 
 	userMsg   messages.ChatMessage
 	reuseUser bool
@@ -166,7 +170,15 @@ func sessionExtraReadDirs(ctx context.Context, state *conversationState) ([]stri
 // completionRequest resolves the session's request settings, model capacity,
 // pricing, and cache identity for either a normal turn or manual compaction.
 func (t *turnExecution) completionRequest(history []messages.ChatMessage) (*llm.CompletionRequest, error) {
-	req := createCompletionRequest(t.config, t.settings, history, t.state.effectiveTools(), t.state.skillCatalog, t.schema)
+	registry, catalog := t.state.effectiveTools(), t.state.skillCatalog
+	if t.runAgent != nil {
+		registry = t.runAgent.ToolRegistry()
+	}
+	if t.drafting() {
+		catalog = nil
+	}
+	history = applyDisplayContract(history, t.planContract())
+	req := createCompletionRequest(t.config, t.settings, history, registry, catalog, t.schema)
 	window := 0
 	if info, host, ok := t.state.modelInfoFor(t.ctx, t.settings.Model, t.settings.ModelHost); ok {
 		window = info.EffectiveCapabilities(host).ContextWindow()
@@ -278,7 +290,16 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		},
 		// A spawned child's approvals come back through this turn's UI.
 		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
-			t.noteWorkspaceWriter(call.Name)
+			// A denied or spoofed planning call (even one named bash) must
+			// not trigger a workspace snapshot via the session's full registry.
+			if call.Name == todoToolName && t.todoSession != nil {
+				// Never attach the todo capability to a worker launch or any
+				// other call that can propagate its context beyond this turn.
+				ctx = context.WithValue(ctx, todoTurnKey{}, t)
+			} else if !t.drafting() {
+				t.noteWorkspaceWriter(call.Name)
+			}
+			ctx = t.bindAcceptedPlanRead(ctx, call)
 			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
 		ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
@@ -511,6 +532,14 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		ctx = llm.WithIterationLimit(ctx, sandboxInitIterations)
 	}
 	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
+	closePlan, err := t.bindPlan()
+	if err != nil {
+		return 1, err
+	}
+	defer closePlan()
+	if !t.drafting() && state.resumeExecution != nil {
+		return 1, errors.New("execution tools are unavailable; reopen the session or use /plan continue for an accepted plan")
+	}
 	t.audit = newTurnAudit()
 	t.userMsg = t.audit.input(t.userMsg)
 	requestMessages, instructionWarnings, err := t.prepareRequest()
@@ -572,13 +601,17 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		state.spend.finishTurn(t.usage.cost(), in+out > 0)
 	}()
 	var resp *llm.AgentResponse
-	if state.swarm != nil {
+	if t.todoSession != nil && t.plan != nil && t.plan.Mode == sessions.PlanAccepted {
+		t.showTodoProgress(t.plan, t.todos)
+	}
+	useSwarm := state.swarm != nil && !t.drafting()
+	if useSwarm {
 		// The runtime owns the parent turn's lifecycle; the host still owns
 		// persistence and output and reports their verdict below.
 		updateSwarmDefaults(state, req, *t.settings)
-		resp, err = state.swarm.RunParent(ctx, state.agent, req, callbacks, turnUI.TurnPersistenceAllowed)
+		resp, err = state.swarm.RunParent(ctx, t.runAgent, req, callbacks, turnUI.TurnPersistenceAllowed)
 	} else {
-		resp, err = state.agent.Run(ctx, req, callbacks)
+		resp, err = t.runAgent.Run(ctx, req, callbacks)
 	}
 	if initRun && errors.Is(err, llm.ErrMaxIterations) {
 		err = fmt.Errorf("/sandbox-init reached its iteration limit (at most %d model calls); setup is incomplete. Saved settings are retained; build/test verification or AGENTS.md instructions may still be unfinished: %w", sandboxInitIterations, err)
@@ -624,7 +657,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
 		runErr = errors.Join(runErr, outputErr)
 	}
-	if state.swarm != nil {
+	if useSwarm {
 		state.swarm.ParentTurnSettled(runErr)
 	}
 	stopReason, code := classifyOutcome(resp, runErr)

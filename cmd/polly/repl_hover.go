@@ -56,7 +56,7 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 		if p.In(modal.listBounds) {
 			items := modal.filteredItems()
 			if index := modal.top + p.Y - modal.listBounds.Min.Y; index >= 0 && index < len(items) &&
-				(modal.details == nil || modal.context != nil && items[index].value != "") {
+				(modal.details == nil || items[index].value != "") {
 				return hoverTarget{rect: image.Rect(modal.listBounds.Min.X, p.Y, modal.listBounds.Max.X, p.Y+1)}
 			}
 		}
@@ -67,6 +67,9 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 	}
 	if r.scrollDrag.pane != "" || (!r.inspectorScrollbar.thumb.Empty() && p.In(r.inspectorScrollbar.track)) {
 		return hoverTarget{hint: hoverHintScroll}
+	}
+	if p.In(m.todoLink) {
+		return hoverTarget{rect: m.todoLink}
 	}
 	i := &r.workspace().inspector
 	if i.open && p.In(r.chrome.close) {

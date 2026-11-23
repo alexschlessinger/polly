@@ -12,9 +12,6 @@ import (
 // existing Shift-Tab action convention, without opening another view. Only
 // painted targets participate; paging the transcript exposes older actions.
 func (r *managedREPL) inlineKeyboardActions() []inspectorKeyboardAction {
-	if r.workspace().inspector.open && r.chrome.main.Empty() {
-		return nil
-	}
 	var actions []inspectorKeyboardAction
 	seen := map[string]bool{}
 	add := func(key string, rect image.Rectangle) {
@@ -24,6 +21,10 @@ func (r *managedREPL) inlineKeyboardActions() []inspectorKeyboardAction {
 			seen[key] = true
 			actions = append(actions, inspectorKeyboardAction{key: key, rect: rect, mark: rect})
 		}
+	}
+	add("todo", r.model.todoLink)
+	if r.workspace().inspector.open && r.chrome.main.Empty() {
+		return actions // The composer divider remains visible.
 	}
 	for _, kind := range disclosureKinds {
 		for _, p := range r.model.disclosurePlacements[kind] {
@@ -89,8 +90,13 @@ func (r *managedREPL) handleInlineActionKey(e ui.Event) bool {
 		// tool. Resolve identity against this frame, just as the panel does.
 		if index >= 0 {
 			point := actions[index].rect.Min
-			if !r.toggleToolOutputAt(m, point, nil) {
-				m.toggleDisclosureAt(point.X, point.Y, m.disclosureLayoutWidth(0))
+			switch actions[index].key {
+			case "todo":
+				r.openTodoPanel()
+			default:
+				if !r.toggleToolOutputAt(m, point, nil) {
+					m.toggleDisclosureAt(point.X, point.Y, m.disclosureLayoutWidth(0))
+				}
 			}
 		}
 		m.inlineKeyboardAction = ""

@@ -77,6 +77,8 @@ type replModel struct {
 
 	workspaceChanges *fileChanges
 
+	planProgress *planProgress
+
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
 	// tool line) whose text may contain inline style markup; entries are
@@ -225,6 +227,7 @@ type replModel struct {
 
 	status     sessionStatus
 	parentLink image.Rectangle
+	todoLink   image.Rectangle
 	quiet      bool
 	// masthead heads the transcript flow in root sessions; see mastheadBlock.
 	masthead mastheadState

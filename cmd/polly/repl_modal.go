@@ -61,6 +61,7 @@ type replModal struct {
 	// text is wrapped into display items at the current terminal width.
 	details   []string
 	context   *contextPopover
+	todo      *todoPanel
 	helpLines []string // searchable reference, centered above the composer
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
@@ -253,7 +254,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.login != nil {
 		return m.login.text(maxRows, modalWidth)
 	}
-	if m.context != nil {
+	if m.todo != nil {
+		m.todo.refreshItems(m, modalWidth)
+	} else if m.context != nil {
 		m.context.refreshItems(m, modalWidth)
 	} else if m.details != nil {
 		m.items = nil
@@ -306,7 +309,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		}
 		if m.details != nil || m.helpLines != nil {
 			prefix = ""
-			if m.context != nil && items[i].value != "" && i == m.selected {
+			if m.details != nil && items[i].value != "" && i == m.selected {
 				line = style.Styled(items[i].label, "accent", "bold")
 			}
 		} else if i == m.selected {
@@ -556,6 +559,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.login != nil {
 		return r.handleLoginEvent(m.login, e)
+	}
+	if m.todo != nil && r.handleTodoPanelEvent(m, e) {
+		return true
 	}
 	if m.context != nil {
 		wasUsage := m.context.usageOpen

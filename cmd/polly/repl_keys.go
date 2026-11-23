@@ -128,7 +128,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	switch e.ID {
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
-			if image.Pt(mouse.X, mouse.Y).In(m.parentLink) {
+			point := image.Pt(mouse.X, mouse.Y)
+			if point.In(m.todoLink) {
+				r.openTodoPanel()
+				return false
+			}
+			if point.In(m.parentLink) {
 				r.requestParentLocked()
 				return false
 			}
@@ -405,6 +410,7 @@ func keyBindingGroups() []keyGroup {
 			{"PgUp / PgDn", "Reach offscreen actions · Esc leaves inline selection"},
 			{"Output pages", "Previous/Next reads all recorded output"},
 			{"Backspace", "Return to the agent panel parent"},
+			{"Click task marks", "Open the checklist · PLAN and /todo also open it"},
 			{"Click tool row", "Show or hide its output inline"},
 			{"Click agent", "Open its conversation"},
 			{"Click disclosure", "Expand thinking or tool calls"},

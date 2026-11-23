@@ -108,6 +108,12 @@ projects are readable. Home writes still need a grant inside home. Known
 credential paths, Polly runtime storage, managed environments, and other members'
 scratch remain protected in either mode.
 
+Plan mode restricts what a model may dispatch during a turn, even without a
+process sandbox. Its draft reader and writer address only the session's file
+under `~/.pollytool/plans/`; no general-purpose tool gets a new path grant.
+Planning doesn't isolate your external editor or replace the usual startup
+policy for configured tool servers.
+
 `private-home` hides everything in home except grants. Presets retain read access
 to discovered Git configuration and its includes, plus install prefixes reached
 through home-based `PATH` entries. Shared roots such as `~/.local` are not exposed

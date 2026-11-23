@@ -98,6 +98,14 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	}
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)
+	plan, todos, err := readChecklist(ctx, state)
+	if err != nil {
+		return "", nil, fmt.Errorf("restore checklist: %w", err)
+	}
+	m.setPlanProgress(plan, todos)
+	if plan != nil && plan.Mode == sessions.PlanDraft {
+		m.appendNoticeLine(planDraftNotice(plan.Path))
+	}
 	if m.hasAgentRows() && state.sessionStore != nil {
 		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
 			m.hydrateAgentSessions(name, summaries)
@@ -133,7 +141,9 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		if !storageWork.begin() {
 			return errors.New("workspace is closing")
 		}
+		state.planWork.Add(1)
 		go func() {
+			defer state.planWork.Add(-1)
 			defer storageWork.wg.Done()
 			workCtx, cancel := context.WithCancel(ctx)
 			stop := context.AfterFunc(storageWork.ctx, cancel)
@@ -251,11 +261,15 @@ func runREPLLoopWithCommands(ctx context.Context, reader *bufio.Reader, promptWr
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	for {
+	for first := true; ; first = false {
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
+		prompt, err := linePlanPrompt(ctx, commandCtx, first)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprint(promptWriter, prompt); err != nil {
 			return err
 		}
 		line, err := readFallbackLine(ctx, reader)

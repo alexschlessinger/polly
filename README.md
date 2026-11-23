@@ -120,9 +120,11 @@ A few commands worth knowing:
 |---|---|
 | `/help` | Browse commands |
 | `/set [key [value]]` | Inspect or change session preferences |
+| `/speed [default\|fast\|ultrafast]` | Inspect or change processing speed for this session |
 | `/setup` | Configure model, key override, theme, and launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
-| `/speed [default\|fast\|ultrafast]` | Inspect or change processing speed for this session |
+| `/plan [goal]` | Draft and review a plan before allowing implementation |
+| `/todo` | See the session’s outcomes, progress, and blockers — no plan required |
 | `/compact` | Summarize context now, retaining the saved transcript |
 | `/copy` | Copy the last completed response to the clipboard |
 | `/theme` | Preview and switch themes |
@@ -202,9 +204,17 @@ view images, and recall earlier work:
 | Purpose | Tools |
 |---|---|
 | Shell and files | `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `restore_artifact` |
-| Agents and session | `spawn_agent`, `set_session_title`, `ask_user` (TUI only) |
+| Agents and session | `spawn_agent`, `set_session_title`, `update_todos`, `ask_user` (TUI only) |
 | Images and themes | `view_image`, `set_theme` (TUI only) |
 | Recall | `list_artifacts`, `read_artifact`, `read_transcript` |
+
+On multi-step requests, `update_todos` records outcomes and blockers in the
+session; `/todo` shows them. No plan is required. For work you want to approve
+first, `/plan` restricts Polly to investigation and editing the session draft
+with `read_plan_draft` and `write_plan_draft`. Once approved, the outcomes join
+the same checklist with their wording fixed. `read_accepted_plan` lets Polly
+read the frozen plan in pages without adding the whole document to every
+request. See [plan mode](docs/CLI.md#plan-first-then-implement).
 
 Add `--confirm` to approve each tool call yourself. To choose your own set, pass
 `-t` / `--tool` once per tool; **any `--tool` replaces the defaults**.

@@ -226,6 +226,9 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			case "<MouseWheelDown>":
 				r.inspectorScroll(3)
 			case "<MouseLeft>":
+				if point.In(r.model.todoLink) {
+					return false // The task marks belong to the composer, not the frame.
+				}
 				if point.In(r.chrome.close) {
 					r.inspectorAction("close")
 				}
@@ -295,7 +298,7 @@ func (r *managedREPL) followPointerFocus(p image.Point) {
 	if !i.open || i.searching || r.model.modal != nil || r.inspectorDragging || r.scrollDrag.pane != "" || r.chrome.frame.Empty() {
 		return
 	}
-	if focused := p.In(r.chrome.frame); focused != i.focused {
+	if focused := p.In(r.chrome.frame) && !p.In(r.model.todoLink); focused != i.focused {
 		i.focused = focused
 		// The frame brightens and the composer cursor hides with focus.
 		r.chromeHoverChanged = true

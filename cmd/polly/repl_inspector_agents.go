@@ -89,7 +89,11 @@ func (r *managedREPL) stopInspectedAgent(target viewTarget) {
 func (r *managedREPL) resumeInspectedAgent(target viewTarget) {
 	if runtime := r.inspectedSwarm(target); runtime != nil {
 		model := r.model
-		r.background(func() {
+		if err := writablePlanAction(r.state.sessionContext(), r.state); err != nil {
+			model.appendNoticeLine(err.Error())
+			return
+		}
+		r.backgroundPlanWork(r.state, func() {
 			if err := runtime.Resume(r.work.ctx, target.session.ID, 0); err != nil {
 				model.mu.Lock()
 				model.appendNoticeLine(err.Error())

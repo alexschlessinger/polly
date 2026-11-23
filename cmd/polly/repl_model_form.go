@@ -460,7 +460,8 @@ func (r *managedREPL) fetchFormCatalog(f *modelForm, force bool) {
 	state := r.state
 	target := f.target(r)
 	revision := f.revision
-	identity := state.agent.ModelMetadataIdentity(target)
+	agent := state.agent
+	identity := agent.ModelMetadataIdentity(target)
 	f.status = "Loading suggestions…"
 	r.background(func() {
 		callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -469,7 +470,7 @@ func (r *managedREPL) fetchFormCatalog(f *modelForm, force bool) {
 			r.postUI(ctx, func() {
 				r.model.mu.Lock()
 				defer r.model.mu.Unlock()
-				if ctx.Err() != nil || r.state != state || r.model.modal != f.modal || f.revision != revision || state.agent.ModelMetadataIdentity(target) != identity {
+				if ctx.Err() != nil || r.state != state || r.model.modal != f.modal || f.revision != revision || state.agent != agent || agent.ModelMetadataIdentity(target) != identity {
 					return
 				}
 				f.setCatalog(cat)
@@ -489,10 +490,10 @@ func (r *managedREPL) fetchFormCatalog(f *modelForm, force bool) {
 				r.fetchFormDetails(f, force)
 			})
 		}
-		cat, err := state.agent.ListModels(callCtx, target, force)
+		cat, err := agent.ListModels(callCtx, target, force)
 		apply(cat, err)
 		if cat.Stale && cat.Error == "" && !force {
-			cat, err = state.agent.ListModels(callCtx, target, true)
+			cat, err = agent.ListModels(callCtx, target, true)
 			apply(cat, err)
 		}
 	})
@@ -523,7 +524,8 @@ func (r *managedREPL) fetchFormDetails(f *modelForm, force bool) {
 	state := r.state
 	target := f.target(r)
 	revision := f.revision
-	identity := state.agent.ModelMetadataIdentity(target)
+	agent := state.agent
+	identity := agent.ModelMetadataIdentity(target)
 	for _, name := range names {
 		f.requested[name] = true
 		t := target
@@ -531,11 +533,11 @@ func (r *managedREPL) fetchFormDetails(f *modelForm, force bool) {
 		r.background(func() {
 			callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			cat, err := state.agent.LookupModel(callCtx, t, force)
+			cat, err := agent.LookupModel(callCtx, t, force)
 			r.postUI(ctx, func() {
 				r.model.mu.Lock()
 				defer r.model.mu.Unlock()
-				if ctx.Err() != nil || r.state != state || r.model.modal != f.modal || revision != f.revision || state.agent.ModelMetadataIdentity(target) != identity {
+				if ctx.Err() != nil || r.state != state || r.model.modal != f.modal || revision != f.revision || state.agent != agent || agent.ModelMetadataIdentity(target) != identity {
 					return
 				}
 				if err == nil && len(cat.Models) > 0 {

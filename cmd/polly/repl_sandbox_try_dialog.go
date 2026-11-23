@@ -175,7 +175,7 @@ func (r *managedREPL) runSandboxTrial(d *sandboxTryDialog) {
 	d.running, d.cancel, d.output = true, cancel, false
 	d.runningTrial, d.runningWith = len(d.try.trials)+1, d.try.ticked()
 	d.setStatus("", "")
-	started := r.background(func() {
+	started := r.backgroundPlanWork(r.state, func() {
 		stop := context.AfterFunc(r.work.ctx, cancel)
 		defer stop()
 		defer cancel()

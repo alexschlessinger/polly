@@ -104,7 +104,7 @@ func (r *managedREPL) applySpawnRequests() bool {
 		parent.model.mu.Unlock()
 		// Worktree capture and tool binding can take time. The runtime owns the
 		// member from launch onward, independently of the visible tab.
-		r.background(func() {
+		r.backgroundPlanWork(parent.state, func() {
 			var res subagent.Result
 			err := parent.state.waitWorkspaceChanges(r.work.ctx)
 			if err == nil {

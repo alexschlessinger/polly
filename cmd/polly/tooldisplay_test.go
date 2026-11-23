@@ -25,6 +25,19 @@ func TestSummarizeToolArgsGenericDeterministic(t *testing.T) {
 	}
 }
 
+func TestTodoCallSummaries(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"operation":"add","text":"Check fixtures"}`:                                  "add · Check fixtures",
+		`{"operation":"rename","number":3,"text":"Publish notes"}`:                     "rename #3 · Publish notes",
+		`{"operation":"status","number":2,"state":"blocked","reason":"Export needed"}`: "#2 → blocked · Export needed",
+		`{"operation":"init_plan"}`:                                                    "track approved outcomes",
+	} {
+		if got := summarizeToolArgs("update_todos", args); got != want {
+			t.Errorf("summary of %s = %q, want %q", args, got, want)
+		}
+	}
+}
+
 func TestSummarizeToolArgsGenericRedactsSensitiveKeys(t *testing.T) {
 	for _, key := range []string{"apiKey", "access_token", "client-secret", "password", "authorization", "credential_file", "cookieJar"} {
 		args := `{"` + key + `":"do not show"}`

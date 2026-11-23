@@ -24,7 +24,7 @@ func (r *managedREPL) startSwarmMaintenance(label, success string, run func(cont
 	if r.state != nil && r.state.session != nil {
 		parent = r.state.session.Context()
 	}
-	if !r.background(func() {
+	if !r.backgroundPlanWork(r.state, func() {
 		ctx, cancel := context.WithCancel(parent)
 		stop := context.AfterFunc(r.work.ctx, cancel)
 		defer cancel()
