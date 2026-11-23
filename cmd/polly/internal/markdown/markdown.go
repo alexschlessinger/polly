@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/yuin/goldmark"
@@ -713,7 +712,7 @@ func HighlightCodeLines(code, lang string) []string {
 	code = expandCodeTabs(code)
 	var lexer chroma.Lexer
 	if lang != "" {
-		lexer = lexers.Get(lang)
+		lexer = lexerFor(lang)
 	}
 	if lexer == nil {
 		return styledLines(code, "code", "")

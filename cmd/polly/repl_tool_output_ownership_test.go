@@ -79,7 +79,7 @@ func TestInlineToolOutputCompletesOnRetiredReplacement(t *testing.T) {
 			}
 			close(store.gate)
 			runInlineOutputTask(t, r)
-			if row.outputLoading || !row.output.loaded || !strings.Contains(plainStyledText(row.output.text), "full-agent-output") {
+			if row.outputLoading || !row.output.loaded || !strings.Contains(plainStyledText(row.output.text()), "full-agent-output") {
 				t.Fatalf("retired replacement lost completion: loading=%v output=%+v", row.outputLoading, row.output)
 			}
 			if other != nil {
@@ -98,7 +98,7 @@ func TestInlineToolOutputCompletesOnRetiredReplacement(t *testing.T) {
 			v = waitInspector(t, r, 160)
 			r.render()
 			_, row = v.model.toolOutputRow(link)
-			if row == nil || row.outputLoading || !row.output.loaded || !strings.Contains(plainStyledText(row.output.text), "full-agent-output") {
+			if row == nil || row.outputLoading || !row.output.loaded || !strings.Contains(plainStyledText(row.output.text()), "full-agent-output") {
 				t.Fatalf("reopened view lost completion: %+v", row)
 			}
 			if store.opens.Load() != 1 {
@@ -145,7 +145,7 @@ func TestInlineToolOutputFollowsCacheTransferWithoutChangingOldWorkspace(t *test
 		t.Fatal("completion changed the old workspace's navigation")
 	}
 	_, row := v.model.toolOutputRow(link)
-	if row == nil || row.outputLoading || !row.output.loaded || plainStyledText(row.output.text) != "transferred output" {
+	if row == nil || row.outputLoading || !row.output.loaded || plainStyledText(row.output.text()) != "transferred output" {
 		t.Fatalf("cache transfer lost completion: %+v", row)
 	}
 }
@@ -176,11 +176,11 @@ func TestInlineToolOutputReplacementRejectsSupersededSnapshot(t *testing.T) {
 				// Value equality is not proof that it owns this in-flight read.
 				next.artifact = &artifacts.Ref{ID: row.output.artifact.ID, Kind: artifacts.KindText}
 			}
-			next.text, next.loaded = "newer output", true
+			next.page, next.loaded = func() (string, bool) { return "newer output", false }, true
 			row.output, row.outputLoading = &next, false
 			close(f.store.gate)
 			runInlineOutputTask(t, f.r)
-			if row.output != &next || row.outputLoading || row.output.text != "newer output" {
+			if row.output != &next || row.outputLoading || row.output.text() != "newer output" {
 				t.Fatalf("stale %s read replaced the newer snapshot: %+v", superseded, row.output)
 			}
 		})

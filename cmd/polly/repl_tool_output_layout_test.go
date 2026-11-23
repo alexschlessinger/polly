@@ -24,7 +24,7 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 	}, "ctx")
 	openAllOutputs(m)
 	output := newInlineToolOutput(call, messages.ChatMessage{Content: body})
-	want := style.ParseCells(output.text, ui.StyleClear)
+	want := style.ParseCells(output.text(), ui.StyleClear)
 	prefix := style.ParseCells(toolBodyRail, ui.StyleClear)
 	for _, width := range []int{80, 18, 40, 140, 40} {
 		m.transcriptRows(width)

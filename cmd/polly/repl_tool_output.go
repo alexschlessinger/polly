@@ -9,10 +9,10 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -26,9 +26,9 @@ const inlineOutputLines = 500
 // Output snapshots are immutable, so a cached agent projection can share them
 // with its source without sharing expansion or in-flight load state.
 type inlineToolOutput struct {
-	body, language, text string
-	artifact             *artifacts.Ref
-	loaded               bool
+	body, language string
+	artifact       *artifacts.Ref
+	loaded         bool
 	// question is ask_user's Markdown prompt and answer the line the user's
 	// choice adds under it; both are empty for every other tool. rendered
 	// caches the prompt at the width it was last laid out for, since rows
@@ -45,9 +45,13 @@ type inlineToolOutput struct {
 	offset, end int64
 	previous    []int64
 	more        bool
-	empty       bool // the page holds no text
-	notice      string
-	retry       int
+	// page formats the retained page the first time a row shows it: its
+	// display text, and whether it holds none. A replayed session builds an
+	// output for every call and opens few of them. Copies of a snapshot
+	// share the answer.
+	page   func() (text string, empty bool)
+	notice string
+	retry  int
 }
 
 func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.ChatMessage) *inlineToolOutput {
@@ -58,9 +62,7 @@ func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.Chat
 	}
 	if call.Name == "read_file" || call.Name == "read" {
 		if file := fileSummaryOf(call); file != nil {
-			if lexer := lexers.Match(file.path); lexer != nil {
-				o.language = lexer.Config().Name
-			}
+			o.language = markdown.FileLanguage(file.path)
 		}
 	}
 	for _, part := range result.Parts {
@@ -223,9 +225,21 @@ func inlineOutputPageEnd(body string) int {
 func (o *inlineToolOutput) setPage(body string) {
 	end := inlineOutputPageEnd(body)
 	o.end, o.more = o.offset+int64(end), end < len(body)
-	o.empty = strings.TrimSpace(cleanInlineToolOutput(body[:end])) == ""
-	o.text = formatInlineToolOutput(body[:end], o.language)
+	page, language := body[:end], o.language
+	o.page = sync.OnceValues(func() (string, bool) {
+		return formatInlineToolOutput(page, language), strings.TrimSpace(cleanInlineToolOutput(page)) == ""
+	})
 	o.notice = ""
+}
+
+func (o *inlineToolOutput) text() string {
+	text, _ := o.page()
+	return text
+}
+
+func (o *inlineToolOutput) empty() bool {
+	_, empty := o.page()
+	return empty
 }
 
 func (o *inlineToolOutput) pageRequest(direction int) *inlineToolOutput {
@@ -302,10 +316,10 @@ func (row toolDisclosureRow) inlineOutputSection(width int) (label, body, contro
 		if o.loaded && (o.offset > 0 || o.more) {
 			parts = append(parts, fmt.Sprintf("bytes %s–%s", groupDigits(o.offset+1), groupDigits(o.end)))
 		}
-		if o.loaded && o.empty && o.notice == "" {
+		if o.loaded && o.empty() && o.notice == "" {
 			parts[0] = "no output"
 		} else {
-			body = o.text
+			body = o.text()
 		}
 		if o.notice != "" {
 			body += "\n" + style.Styled(o.notice, "muted", "")
@@ -539,6 +553,7 @@ func readInlineToolOutput(ctx context.Context, store artifacts.Store, source *in
 		}
 		if err == nil {
 			next.setPage(string(data))
+			next.page() // on this worker, not the event loop that shows it
 		}
 	}
 	if err != nil {

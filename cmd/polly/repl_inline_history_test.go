@@ -235,7 +235,7 @@ func TestInlineOutputPagesCoverRecordedBytes(t *testing.T) {
 					if o.more && strings.ContainsAny(part, "\r\n") && !strings.HasSuffix(part, "\n") && !strings.HasSuffix(part, "\r") {
 						t.Fatal("page split an ordinary line despite an earlier newline")
 					}
-					text := plainStyledText(o.text)
+					text := plainStyledText(o.text())
 					if len(text) > inlineOutputBytes || strings.Count(text, "\n")+1 > inlineOutputLines {
 						t.Fatalf("display budget exceeded at %d–%d", o.offset, o.end)
 					}
@@ -294,7 +294,7 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	chooseInlineTestAction(t, r, link.keyboardKey())
 	inlineTestKey(r, "<Enter>")
 	record, row := m.toolOutputRow(link)
-	if row.output.offset == 0 || row.output.more || !strings.Contains(plainStyledText(row.output.text), "last page") {
+	if row.output.offset == 0 || row.output.more || !strings.Contains(plainStyledText(row.output.text()), "last page") {
 		t.Fatal("keyboard Next did not reveal the last output page")
 	}
 	link.action = "previous"
@@ -411,7 +411,7 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 			choose("next")
 			waitPage(int64(len("first page\n") * inlineOutputLines))
 			_, row := v.model.toolOutputRow(link)
-			if row.output.offset == 0 || row.output.more || !strings.Contains(row.output.text, "last agent page") {
+			if row.output.offset == 0 || row.output.more || !strings.Contains(row.output.text(), "last agent page") {
 				t.Fatal("agent keyboard Next did not reveal final recorded output")
 			}
 			if source != nil {
@@ -490,7 +490,7 @@ func TestInlineArtifactPageCancellationAndRetry(t *testing.T) {
 	defer cancel()
 	store.cancel, store.read = cancel, 0
 	failed := readInlineToolOutput(ctx, store, first, 1)
-	if failed.notice == "" || failed.text != first.text || failed.offset != first.offset || failed.retry != 1 || store.closed != 2 || store.read > inlineOutputBytes {
+	if failed.notice == "" || failed.text() != first.text() || failed.offset != first.offset || failed.retry != 1 || store.closed != 2 || store.read > inlineOutputBytes {
 		t.Fatal("canceled page did not retain previous content, bound the skip or close the reader")
 	}
 	store.cancel = nil

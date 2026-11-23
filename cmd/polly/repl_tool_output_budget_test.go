@@ -23,7 +23,7 @@ func TestInlineOutputFormattingBudgetKeepsCompleteRawJSON(t *testing.T) {
 				t.Fatal("fixture must be valid JSON within one raw page")
 			}
 			o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: tc.body})
-			text := plainStyledText(o.text)
+			text := plainStyledText(o.text())
 			if len(text) > inlineOutputBytes || strings.Count(text, "\n")+1 > inlineOutputLines {
 				t.Fatalf("formatting escaped the page budget: raw=%d display=%d bytes/%d lines", len(tc.body), len(text), strings.Count(text, "\n")+1)
 			}
@@ -48,7 +48,7 @@ func TestInlineJSONIndentBudgetPreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
-		if got := plainStyledText(o.text); got != pretty.String() || len(got) > inlineOutputBytes || strings.Count(got, "\n")+1 > inlineOutputLines {
+		if got := plainStyledText(o.text()); got != pretty.String() || len(got) > inlineOutputBytes || strings.Count(got, "\n")+1 > inlineOutputLines {
 			t.Fatal("preflight changed safe formatting or undercounted its budget")
 		}
 	}
@@ -61,7 +61,7 @@ func TestInlineJSONIndentBudgetPreflight(t *testing.T) {
 			t.Fatal("unsafe indentation was allowed before allocation")
 		}
 		o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
-		if plainStyledText(o.text) != body || o.more {
+		if plainStyledText(o.text()) != body || o.more {
 			t.Fatal("unsafe indentation did not preserve the complete raw page")
 		}
 	}
