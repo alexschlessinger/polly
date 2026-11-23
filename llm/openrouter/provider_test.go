@@ -229,3 +229,28 @@ func TestChatStreamReportsBilledCost(t *testing.T) {
 		t.Fatalf("usage = %v", final.Metadata)
 	}
 }
+
+// TestCacheControlFollowsModelFamily: both dialects ask for automatic caching
+// only for a session whose model caches on request.
+func TestCacheControlFollowsModelFamily(t *testing.T) {
+	p := NewProvider("key", "http://unused/v1")
+	for _, tc := range []struct {
+		model, session string
+		want           bool
+	}{
+		{"anthropic/claude-sonnet-4-6", "sess", true},
+		{"~anthropic/claude-sonnet-latest", "sess", true},
+		{"anthropic/claude-sonnet-4-6", "", false},
+		{"google/gemini-2.5-pro", "sess", false},
+		{"openai/gpt-5.4", "sess", false},
+	} {
+		req := &contract.CompletionRequest{Model: tc.model, CacheSessionID: tc.session, Messages: messages.User("hi")}
+		chat, responses := p.chatRequest(req).CacheControl, p.responsesRequest(req).CacheControl
+		if (chat != nil) != tc.want || (responses != nil) != tc.want {
+			t.Fatalf("%s session=%q: chat=%v responses=%v, want sent=%v", tc.model, tc.session, chat, responses, tc.want)
+		}
+		if tc.want && (chat.Type != "ephemeral" || responses.Type != "ephemeral") {
+			t.Fatalf("%s: chat=%+v responses=%+v, want ephemeral", tc.model, chat, responses)
+		}
+	}
+}

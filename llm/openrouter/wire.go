@@ -2,6 +2,7 @@ package openrouter
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/openai"
@@ -23,8 +24,32 @@ type ChatRequest struct {
 	Reasoning *contract.OpenRouterReasoning `json:"reasoning,omitempty"`
 	Provider  *Routing                      `json:"provider,omitempty"`
 	// SessionID groups a conversation's requests for gateway-side caching.
-	SessionID string   `json:"session_id,omitempty"`
-	Plugins   []Plugin `json:"plugins,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// CacheControl asks for automatic prompt caching on models that cache
+	// only on request.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Plugins      []Plugin      `json:"plugins,omitempty"`
+}
+
+// CacheControl is the gateway's top-level automatic-caching request: the
+// upstream places one breakpoint on the last cacheable block and advances it
+// as the conversation grows. Omitting a TTL takes the five-minute default.
+type CacheControl struct {
+	Type string `json:"type"`
+}
+
+// explicitCacheFamily is the model family that caches only when asked. The
+// gateway's other families cache implicitly, and a control sent to them could
+// opt a request into billed cache writes it would not otherwise make.
+const explicitCacheFamily = "anthropic/"
+
+// cacheControl is the caching request for a session's model, or nil when
+// the request has no session or its model caches without being asked.
+func cacheControl(req *contract.CompletionRequest) *CacheControl {
+	if req.CacheSessionID == "" || !strings.HasPrefix(strings.TrimPrefix(req.Model, "~"), explicitCacheFamily) {
+		return nil
+	}
+	return &CacheControl{Type: "ephemeral"}
 }
 
 // Plugin configures one of the gateway's request plugins.
@@ -65,10 +90,11 @@ type ChatMessage struct {
 // one.
 type ResponsesRequest struct {
 	openai.ResponsesRequest
-	Reasoning *ResponsesReasoning `json:"reasoning,omitempty"`
-	Provider  *Routing            `json:"provider,omitempty"`
-	SessionID string              `json:"session_id,omitempty"`
-	Plugins   []Plugin            `json:"plugins,omitempty"`
+	Reasoning    *ResponsesReasoning `json:"reasoning,omitempty"`
+	Provider     *Routing            `json:"provider,omitempty"`
+	SessionID    string              `json:"session_id,omitempty"`
+	CacheControl *CacheControl       `json:"cache_control,omitempty"`
+	Plugins      []Plugin            `json:"plugins,omitempty"`
 }
 
 // Streaming implements openai.ResponsesBody around the embedded body.

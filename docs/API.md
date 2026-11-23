@@ -333,6 +333,12 @@ reasoning replay. Both identify the app as **Polly** in OpenRouter activity usin
 `X-OpenRouter-Title: Polly`. OpenRouter also uses this [app attribution](https://openrouter.ai/docs/app-attribution)
 for its public app rankings.
 
+A request that carries a session identity also sends a top-level
+`cache_control: {"type": "ephemeral"}` when its model is an `anthropic/` one,
+since those cache only on request; the upstream then keeps one breakpoint on
+the last cacheable block, with the default five-minute lifetime. Other models
+cache implicitly and get no control.
+
 `ResolveOpenRouterThinking` validates a preference and returns `Request`,
 `Display`, and `Notice`. `ResolveOpenRouterRequestThinking` adapts a saved
 preference the model no longer supports so a request can still run. Neither one

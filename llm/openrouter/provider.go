@@ -127,8 +127,8 @@ func reasoning(req *contract.CompletionRequest) *contract.OpenRouterReasoning {
 
 // chatRequest builds the Chat Completions body: the OpenAI shape with the
 // unified reasoning control in place of reasoning_effort, each assistant
-// turn's attributed reasoning replayed, session affinity, and any pinned
-// route.
+// turn's attributed reasoning replayed, session affinity, the caching request
+// a model needs, and any pinned route.
 func (p *Provider) chatRequest(req *contract.CompletionRequest) *ChatRequest {
 	base := openai.BuildChatCompletionRequest(req)
 	base.ReasoningEffort = ""
@@ -137,6 +137,7 @@ func (p *Provider) chatRequest(req *contract.CompletionRequest) *ChatRequest {
 		Messages:              make([]ChatMessage, len(base.Messages)),
 		Reasoning:             reasoning(req),
 		SessionID:             req.CacheSessionID,
+		CacheControl:          cacheControl(req),
 		Provider:              routing(req.ModelHost),
 		Plugins:               noCompression(),
 	}
@@ -159,6 +160,7 @@ func (p *Provider) responsesRequest(req *contract.CompletionRequest) *ResponsesR
 	params := &ResponsesRequest{
 		ResponsesRequest: *base,
 		SessionID:        req.CacheSessionID,
+		CacheControl:     cacheControl(req),
 		Provider:         routing(req.ModelHost),
 		Plugins:          noCompression(),
 	}

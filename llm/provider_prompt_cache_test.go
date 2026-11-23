@@ -77,9 +77,30 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 		if body["session_id"] != sessionID {
 			t.Fatalf("session_id = %#v, want %q; body=%s", body["session_id"], sessionID, got.body)
 		}
-		assertBodyKeysAbsent(t, body, "prompt_cache_key", "cache_control")
+		control, ok := body["cache_control"].(map[string]any)
+		if !ok || control["type"] != "ephemeral" || len(control) != 1 {
+			t.Fatalf("cache_control = %#v, want bare ephemeral; body=%s", body["cache_control"], got.body)
+		}
+		assertBodyKeysAbsent(t, body, "prompt_cache_key")
 		assertNoResponseCacheHeaders(t, got.header)
 		assertCacheMetadata(t, message, 13, 0)
+	})
+
+	// Only the family that caches on request gets the control: sent to an
+	// implicitly caching model it could buy cache writes nobody asked for.
+	t.Run("OpenRouter implicit-cache model", func(t *testing.T) {
+		serverURL, captured := newNativeRequestCaptureServer(t, `{
+			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":20,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":13}}
+		}`)
+		got, _ := capturePromptCacheRequest(t, openrouter.NewProvider("test-key", serverURL+"/v1"), &CompletionRequest{
+			Model: "google/gemini-2.5-pro", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
+		}, captured)
+		body := decodeCapturedBody(t, got.body)
+		if body["session_id"] != sessionID {
+			t.Fatalf("session_id = %#v, want %q; body=%s", body["session_id"], sessionID, got.body)
+		}
+		assertBodyKeysAbsent(t, body, "prompt_cache_key", "cache_control")
 	})
 
 	t.Run("custom OpenAI endpoint", func(t *testing.T) {
