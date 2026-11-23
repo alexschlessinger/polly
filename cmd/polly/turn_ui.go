@@ -138,6 +138,7 @@ type lineTurnUI struct {
 	renderCancel, renderDone chan struct{}
 	completed                bool
 	attemptOutput            bool
+	answerOpen               bool // answer text has gone out since the last tool call, discarded attempt or turn end
 	attemptThought           reasoningRecord
 	thinkingBreak            bool // pending separator between tool/model rounds, not clock intervals
 	size                     func(stdout bool) (columns, rows int)
@@ -188,6 +189,7 @@ func (ui *lineTurnUI) Start() {
 	ui.finished = false
 	ui.completed = false
 	ui.thinkingBreak = false
+	ui.answerOpen = false
 	ui.activity, ui.stream = nil, nil
 	ui.statusFrame = lineTerminalFrame{}
 	if ui.capabilities.rendersLineANSI() && ui.stdoutTTY && ui.config.SchemaPath == "" {
@@ -263,6 +265,9 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 	if ui.config.SchemaPath != "" {
 		return
 	}
+	if content != "" {
+		ui.answerOpen = true
+	}
 	if ui.capabilities.rendersLineANSI() {
 		if content == "" {
 			return
@@ -284,6 +289,19 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 		ui.contentPrinted = true
 		ui.endsWithNewline = strings.HasSuffix(content, "\n")
 	}
+}
+
+// endAnswerLocked commits the answer text so far and asks for a separator
+// before the next: the boundary between two messages of one turn. The line
+// ends here on a terminal; piped output gets the separator's newline alone.
+func (ui *lineTurnUI) endAnswerLocked() {
+	ui.flushBufferedMarkdown()
+	ui.needsSeparator = !ui.settledOutput
+	if ui.contentPrinted && !ui.endsWithNewline && (ui.stdoutTTY || ui.capabilities.rendersLineANSI()) {
+		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
+	}
+	ui.answerOpen = false
 }
 
 func (ui *lineTurnUI) flushBufferedMarkdown() {
@@ -319,6 +337,7 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
 	ui.needsSeparator = !ui.settledOutput
+	ui.answerOpen = false
 	if !ui.activityEnabled() {
 		return
 	}
@@ -509,6 +528,7 @@ func (ui *lineTurnUI) RecordTurnCost(usd float64, estimated bool) {
 func (ui *lineTurnUI) FinishTextTurn() {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	ui.answerOpen = false
 	ui.clearActivityLocked()
 	ui.flushBufferedMarkdown()
 	if ui.config.SchemaPath == "" && !ui.endsWithNewline {

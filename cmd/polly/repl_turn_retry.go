@@ -25,6 +25,11 @@ func (t *gotuiTurnUI) ModelAttemptStarted(_, _ int) {
 		return
 	}
 	m := t.model
+	// A request ends the answer before it. A coordinator answers, waits for
+	// its agents and answers again, with only hidden messages between: what
+	// the model says next is another message, a block of its own as it is
+	// when the session is opened again.
+	m.finishAssistantBlock("")
 	m.pauseThinkingSegment()
 	m.beginTurnStep()
 	t.attempt = tuiModelAttempt{}

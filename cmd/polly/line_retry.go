@@ -17,6 +17,15 @@ func (ui *lineTurnUI) SupportsAttemptRecovery() bool {
 func (ui *lineTurnUI) ModelAttemptStarted(_, _ int) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.answerOpen && !ui.completed {
+		// The request before this one answered in text. A coordinator
+		// answers, waits for its agents and answers again: what the model
+		// says next is another message, and starts on its own line as text
+		// after a tool call does.
+		ui.clearActivityLocked()
+		defer ui.renderActivityLocked()
+		ui.endAnswerLocked()
+	}
 	ui.attemptOutput = false
 	ui.thinkingBreak = true
 	ui.attemptThought = reasoningRecord{}
@@ -47,6 +56,7 @@ func (ui *lineTurnUI) ModelAttemptAborted(_, attempt int, _ error) {
 		ui.statusLineLocked(discardedAttemptLabel(attempt))
 		ui.needsSeparator = true
 	}
+	ui.answerOpen = false
 	if a := ui.activity; a != nil {
 		a.bankThinking()
 		a.state, a.toolName = turnStateWaiting, ""
