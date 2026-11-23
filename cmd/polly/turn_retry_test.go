@@ -123,6 +123,7 @@ func TestTUIRetryPreservesFailedReasoningFenceContext(t *testing.T) {
 		t.Fatal("failed reasoning fixture did not compact inside its fence")
 	}
 	ui.ModelAttemptAborted(1, 0, errors.New("disconnect"))
+	openAllThoughts(m) // only an open thought paints its text
 	m.refreshReasoningRecords(80)
 	if accepted.unsaved || string(accepted.tail) != "**accepted** reasoning" {
 		t.Fatal("retry discarded the accepted reasoning prefix")

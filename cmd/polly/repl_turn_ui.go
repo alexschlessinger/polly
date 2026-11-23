@@ -63,11 +63,31 @@ func (r *managedREPL) bindMemberUI(tab *replTab) {
 	tab.state.setMemberUI(&gotuiTurnUI{repl: r, model: tab.model, config: r.config, state: tab.state})
 }
 
+// Notices can arrive between batches (e.g. a model capability warning).
+// Never append the next thought or call above an intervening transcript line.
+// Check at a batch boundary, not when the notice arrives: in-flight results
+// must still settle on the record that launched them.
+func (m *replModel) closeSeparatedActivity() {
+	if m.runningTools != 0 {
+		return
+	}
+	if r := m.currentReasoningRecord(); r != nil && m.separatedAfter(r.transcriptIndex) {
+		m.finishThinkingSegment()
+	}
+	if r := m.toolDisclosures.get(m.turnToolDisclosureID); r != nil && m.separatedAfter(r.transcriptIndex) {
+		m.completeToolDisclosure()
+	}
+}
+
 func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	t.model.mu.Lock()
 	if !t.acceptingLocked() {
 		t.model.mu.Unlock()
 		return
+	}
+	if chunk != "" && !t.model.thinkingSegmentOpen {
+		t.model.closeSeparatedActivity()
+		t.model.inferNextTurnStep()
 	}
 	t.model.state = turnStateThinking
 	t.appendAttemptThinking(chunk)
@@ -115,6 +135,8 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		return
 	}
 	if len(calls) > 0 {
+		t.model.closeSeparatedActivity()
+		t.model.inferNextTurnStep()
 		t.model.turnHasOutput = true
 		// Tools pause the thinking clock without closing the record; an
 		// unbroken continuation resumes the same indicator.
@@ -131,10 +153,15 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		return
 	}
 	var record *toolDisclosureRecord
-	for _, c := range calls {
+	for i, c := range calls {
 		record = t.model.appendToolCallStart(c)
+		record.rows[len(record.rows)-1].batchStart = i == 0
 	}
 	t.model.refreshToolDisclosure(record)
+	// The thought that led these calls now belongs to their chunk. If the
+	// reader had it open, the chunk opens with it rather than folding the
+	// text away mid-sentence.
+	t.model.openChunkOfThought(record, t.model.turnStep)
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {

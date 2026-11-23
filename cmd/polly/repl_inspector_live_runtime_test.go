@@ -82,8 +82,19 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	if !v.live.active || !strings.Contains(inspectorText(v), "live assistant") {
 		t.Fatalf("pre-checkpoint content missing: source=%+v transcript=%q", v.live, inspectorText(v))
 	}
-	if text := inspectorRowsText(v, 70); !strings.Contains(text, "live assistant") || !strings.Contains(text, "Checking the live checkpoint handoff.") {
-		t.Fatalf("inspection omitted actual live update or thinking: %q", text)
+	// The thought shows as its row; its text, which only a click opens, is
+	// already in the projection.
+	if text := inspectorRowsText(v, 70); !strings.Contains(text, "live assistant") || !strings.Contains(text, thoughtGlyph+" Thought") {
+		t.Fatalf("inspection omitted the live update or the thought's row: %q", text)
+	}
+	thinking := func() (n int) {
+		for _, record := range v.model.reasoningRecords.all() {
+			n += strings.Count(string(record.tail), "Checking the live checkpoint handoff.")
+		}
+		return n
+	}
+	if thinking() != 1 {
+		t.Fatalf("inspection carried the live thinking %d times, want once", thinking())
 	}
 	base, rendered, histories := v.saved, v.model, counted.histories.Load()
 	r.inspectorRefreshAt = time.Time{}
@@ -106,8 +117,8 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	if v.live.active || strings.Count(inspectorText(v), "live assistant") != 1 {
 		t.Fatalf("terminal checkpoint duplicated/lost live output: source=%+v transcript=%q", v.live, inspectorText(v))
 	}
-	if text := inspectorRowsText(v, 70); strings.Count(text, "Checking the live checkpoint handoff.") != 1 {
-		t.Fatalf("checkpoint lost or duplicated recent thinking: %q", text)
+	if text := inspectorRowsText(v, 70); strings.Count(text, thoughtGlyph+" Thought") != 1 || thinking() != 1 {
+		t.Fatalf("checkpoint lost or duplicated recent thinking (%d records): %q", thinking(), text)
 	}
 	if text := r.inspectorHeader(100, 20, 0, 0).text; !headerSaved(text) {
 		t.Fatalf("terminal header still advertises live stream: %q", text)

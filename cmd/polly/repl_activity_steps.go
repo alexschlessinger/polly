@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,11 +16,11 @@ import (
 // Steps: a turn's activity by the model response that produced it.
 //
 // Every model response is one step. The thought it streamed and the calls
-// it made carry the step's number, and the activity line lays the steps out
-// in that order, each step's thought above its calls, so the line reads as
-// the turn happened rather than as thoughts, then calls, then agents. A
-// step also carries when it began, as time since the prompt, when the clock
-// is known: live from the attempt hook, on reload from the turn audit.
+// it made carry the step's number, and an open chunk lays its steps out in
+// that order, each step's thought above its calls, so the chunk reads as the
+// turn happened rather than as thoughts, then calls, then agents. A step
+// also carries when it began, as time since the prompt, when the clock is
+// known: live from the attempt hook, on reload from the turn audit.
 
 // beginTurnStep opens the next step of the running turn. Caller must hold
 // m.mu.
@@ -34,14 +34,26 @@ func (m *replModel) beginTurnStep() {
 	}
 }
 
+// inferNextTurnStep is the no-attempt-hook fallback. Once a tool batch has
+// drained, fresh reasoning or a new batch is observable evidence of another
+// response, even though we did not observe that response's start time.
+func (m *replModel) inferNextTurnStep() {
+	if m.turnSteps != 0 || m.runningTools != 0 {
+		return
+	}
+	r := m.currentToolDisclosure()
+	if r != nil && len(r.rows) > 0 && r.rows[len(r.rows)-1].step == m.turnStep {
+		m.turnStep++
+	}
+}
+
 // stepOffsetLabel is a step's start as the right column shows it: minutes
 // and seconds since the prompt, hours in front past the first.
-// stepColumn is the right column every row of an open line laid out at
+// stepColumn is the right column every row of an open chunk laid out at
 // width keeps for its step's start: the widest label short of an hour, two
-// columns clear of the row. Thought rows wrap short of it, so the start
-// sits on a thought's first row; call rows fit short of it, so they all end
-// at one edge. A narrow pane keeps the column's width for its rows and
-// puts each start on the first row with room for it.
+// columns clear of the row. Call rows fit short of it, so they all end at
+// one edge. A narrow pane keeps the column's width for its rows and puts
+// each start on the first row with room for it.
 func stepColumn(width int) int {
 	if width < stepColumnMinWidth {
 		return 0
@@ -64,8 +76,10 @@ func stepOffsetLabel(d time.Duration) string {
 
 // beginSegment opens a segment for step at the tail's end, unless the
 // newest segment is already that step's. A segment break that will put a
-// newline before the text starts the segment after it.
-func (record *reasoningRecord) beginSegment(step int, at time.Duration, known bool, segmentBreak bool, full bool) {
+// newline before the text starts the segment after it. open is whether the
+// part shows its text from the start, as it does while the reader follows
+// the turn's thinking.
+func (record *reasoningRecord) beginSegment(step int, at time.Duration, known bool, segmentBreak bool, open bool) {
 	if n := len(record.segments); n > 0 && record.segments[n-1].step == step {
 		return
 	}
@@ -73,7 +87,7 @@ func (record *reasoningRecord) beginSegment(step int, at time.Duration, known bo
 	if segmentBreak && start > 0 && record.tail[start-1] != '\n' {
 		start++
 	}
-	record.segments = append(record.segments, reasoningSegment{step: step, start: start, at: at, known: known, full: full})
+	record.segments = append(record.segments, reasoningSegment{step: step, start: start, at: at, known: known, open: open})
 }
 
 // ensureSegments gives a record whose tail was appended without a step one
@@ -82,6 +96,17 @@ func (record *reasoningRecord) ensureSegments() {
 	if len(record.segments) == 0 {
 		record.segments = []reasoningSegment{{}}
 	}
+}
+
+// partOpen reports whether part i of the thought shows its text.
+func (record *reasoningRecord) partOpen(i int) bool {
+	return i >= 0 && i < len(record.segments) && record.segments[i].open
+}
+
+// anyOpen reports whether any part of the thought shows its text. Only then
+// is the retained text worth rendering: a closed thought is one row.
+func (record *reasoningRecord) anyOpen() bool {
+	return slices.ContainsFunc(record.segments, func(s reasoningSegment) bool { return s.open })
 }
 
 // trimSegments moves the segments back by the runes compaction dropped
@@ -127,36 +152,25 @@ func (record *reasoningRecord) segmentTexts() []string {
 	return texts
 }
 
-// previewSegment is the preview rows segment i contributed, with the
-// segment's step facts; a record with no preview split yet owns one
-// segment of every row.
-func (record *reasoningRecord) previewSegment(i int) (lines []string, segment reasoningSegment) {
+// previewSegment is the rendered rows part i contributed; a record with no
+// preview split yet owns one part of every row. A part the last render did
+// not know has none until the next paint.
+func (record *reasoningRecord) previewSegment(i int) []string {
 	if len(record.previewSegments) == 0 {
 		if i == 0 {
-			if len(record.segments) > 0 {
-				segment = record.segments[0]
-			}
-			return record.previewLines, segment
+			return record.previewLines
 		}
-		return nil, reasoningSegment{}
+		return nil
+	}
+	if i < 0 || i >= len(record.previewSegments) {
+		return nil
 	}
 	start := 0
-	for j := 0; j < i && j < len(record.previewSegments); j++ {
+	for j := 0; j < i; j++ {
 		start += record.previewSegments[j]
 	}
 	end := min(len(record.previewLines), start+record.previewSegments[i])
-	if i < len(record.segments) {
-		segment = record.segments[i]
-	}
-	return record.previewLines[min(start, end):end], segment
-}
-
-// previewSegmentCount is how many parts the preview is split into.
-func (record *reasoningRecord) previewSegmentCount() int {
-	if len(record.previewSegments) == 0 {
-		return 1
-	}
-	return len(record.previewSegments)
+	return record.previewLines[min(start, end):end]
 }
 
 // decodeTurnAudit reads a saved turn audit back from message metadata,
@@ -206,243 +220,130 @@ func stepStartsFromAudit(audit messages.TurnAudit, stepIDs []string) map[int]tim
 	return starts
 }
 
-// activityBody is an open activity line's body: the block-indented rows,
-// the thought rows among them, and the targets at their line offsets.
+// activityBody is an open chunk's body: the block-indented rows and the
+// targets at their line offsets. open says the body ends in an opened detail
+// (a thought's text, an output, a diff), which wants a row of air before
+// whatever follows it.
 type activityBody struct {
 	text    string
-	thought string
 	targets []toolOutputTarget
+	open    bool
 }
 
-// activityStep is one model response as the body lays it out: the parts of
-// the line's thoughts it produced, then the calls it made, and when it
-// began where that is known.
-type activityStep struct {
-	step     int
-	at       time.Duration
-	known    bool
-	thoughts []activityThoughtPart
-	rows     []activityRowPart
+// stepStart is when the step that made part began, when that is known.
+func (p chunkPart) stepStart() (time.Duration, bool) {
+	if p.thought != nil {
+		if p.segment < len(p.thought.segments) {
+			return p.thought.segments[p.segment].at, p.thought.segments[p.segment].known
+		}
+		return 0, false
+	}
+	row := p.tools.rows[p.row]
+	return row.stepAt, row.stepKnown
 }
 
-type activityThoughtPart struct {
-	record *reasoningRecord
-	index  int
-	lines  []string
-	full   bool
-}
-
-type activityRowPart struct {
-	record *toolDisclosureRecord
-	row    toolDisclosureRow
-}
-
-// activitySteps groups the line's open records by step: every thought
-// segment and every ordinary call row, in step order, records in transcript
-// order within a step. Records never tagged with a step share step zero.
-func (m *replModel) activitySteps(reasoningIDs, toolIDs []int64) []*activityStep {
-	type ref struct {
-		index     int
-		reasoning *reasoningRecord
-		tools     *toolDisclosureRecord
-	}
-	var refs []ref
-	for _, id := range reasoningIDs {
-		if record := m.reasoningRecords.get(id); record != nil && record.expanded {
-			refs = append(refs, ref{index: record.transcriptIndex, reasoning: record})
-		}
-	}
-	for _, id := range toolIDs {
-		if record := m.toolDisclosures.get(id); record != nil && record.expanded {
-			refs = append(refs, ref{index: record.transcriptIndex, tools: record})
-		}
-	}
-	sort.SliceStable(refs, func(i, j int) bool { return refs[i].index < refs[j].index })
-	var steps []*activityStep
-	byNumber := map[int]*activityStep{}
-	stepFor := func(number int, at time.Duration, known bool) *activityStep {
-		step := byNumber[number]
-		if step == nil {
-			step = &activityStep{step: number}
-			byNumber[number] = step
-			steps = append(steps, step)
-		}
-		if known && !step.known {
-			step.at, step.known = at, true
-		}
-		return step
-	}
-	for _, r := range refs {
-		if r.reasoning != nil {
-			if m.depth == depthCalls {
-				continue // calls alone: no thinking
-			}
-			for i := range r.reasoning.previewSegmentCount() {
-				lines, segment := r.reasoning.previewSegment(i)
-				if len(lines) == 0 {
-					continue
-				}
-				step := stepFor(segment.step, segment.at, segment.known)
-				step.thoughts = append(step.thoughts, activityThoughtPart{record: r.reasoning, index: i, lines: lines, full: segment.full})
-			}
-			continue
-		}
-		for _, row := range r.tools.displayRows {
-			if row.line == "" {
-				continue
-			}
-			step := stepFor(row.step, row.stepAt, row.stepKnown)
-			step.rows = append(step.rows, activityRowPart{record: r.tools, row: row})
-		}
-	}
-	sort.SliceStable(steps, func(i, j int) bool { return steps[i].step < steps[j].step })
-	return steps
-}
-
-// activityStepBody lays the line's steps out under it. An abridged line
-// shows each step's thought as its newest reasoningPreviewLines rows of
-// text, then the step's calls, and only the newest activityRowWindow calls
-// of the line, the steps above them going whole; a step cut at its first
-// call keeps the thought that led to it. A full line shows every row; a
-// line at the calls depth shows no thought at all.
-// A blank row separates a step that opens with a thought from the one
-// before it, and the first row of a step whose start is known carries that
-// start, as time since the prompt, in the right column.
-func (m *replModel) activityStepBody(reasoningIDs, toolIDs []int64, width int) activityBody {
-	steps := m.activitySteps(reasoningIDs, toolIDs)
-	if len(steps) == 0 {
-		return activityBody{}
-	}
+// chunkBody lays an open chunk's rows out under its header: one row for
+// every recorded call, however many, and one for each thought, in the order
+// the turn made them. Nothing else opens with the chunk. A thought's text,
+// a call's output and an edit's diff show only where their own row was
+// opened by a click, and a row carries no blank row above it unless the row
+// before left a detail open. The first row of a step whose start is known
+// carries that start, as time since the prompt, in the right column; calls
+// requested together share it rather than each claiming a time.
+func (m *replModel) chunkBody(c *activityChunk, width int) activityBody {
 	rowWidth := activityRailContentWidth(width)
 	var lines []string
-	var thoughtLines []int
 	var targets []toolOutputTarget
-	type rowMark struct{ line, stepLine int }
-	var marks []rowMark
 	openAbove := false
-	for i, step := range steps {
-		// A thought is a heading for the calls under it and wants a blank
-		// row above; a step of bare calls follows the one before it
-		// directly, its start in the right column marking the boundary.
-		if i > 0 && len(step.thoughts) > 0 {
-			lines = append(lines, "")
-			openAbove = false
-		}
-		stepLine := len(lines)
+	stamped := map[int]bool{}
+	for _, p := range c.parts {
 		right := ""
-		if step.known {
-			right = stepOffsetLabel(step.at)
+		if at, known := p.stepStart(); known && !stamped[p.step] {
+			right = stepOffsetLabel(at)
 		}
-		// add appends one thought row, the step's start on the first
-		// (or, past an hour, the first with room for the longer label).
-		add := func(text string) {
-			if right != "" {
-				if padded, ok := padStepOffset(text, right, rowWidth); ok {
-					text, right = padded, ""
-				}
-			}
-			thoughtLines = append(thoughtLines, len(lines))
-			lines = append(lines, text)
-		}
-		for _, part := range step.thoughts {
+		if p.thought != nil {
 			if openAbove {
 				lines = append(lines, "")
 				openAbove = false
 			}
-			visible, text := part.lines, textRows(part.lines)
-			overflow := len(text) > reasoningPreviewLines
-			if part.full {
-				if part.index == 0 && part.record.tailCut {
-					add(reasoningBlockIndent + style.Styled("… earlier text not kept", "muted", ""))
-				}
-				visible = proseRows(part.lines)
-			} else {
-				// An abridged part is rows of text: the blank rows Markdown
-				// puts between paragraphs return with the whole part.
-				visible = text
-				if overflow {
-					visible = visible[len(visible)-reasoningPreviewLines:]
+			label, live := m.thoughtLabel(p, false)
+			row := reasoningBlockIndent + renderThoughtRow(fitLabel(headerText(label), max(1, rowWidth-len(reasoningBlockIndent)-2)), live)
+			cols := style.TextWidth(row) - len(reasoningBlockIndent)
+			if right != "" {
+				if padded, ok := padStepOffset(row, right, rowWidth); ok {
+					row = padded
+					stamped[p.step] = true
 				}
 			}
-			// A part with more than its abridged rows is a control: a
-			// click shows the whole of it, another abridges it again.
-			if overflow {
-				targets = append(targets, toolOutputTarget{recordID: part.record.id, key: thoughtPartKey(part.index), action: thoughtPartAction, line: len(lines), cols: rowWidth - 2})
-			}
-			// A cut part marks the rows above its first in the indent
-			// column, which doubles as the sign that a click opens it.
-			for i, line := range visible {
-				indent := reasoningBlockIndent
-				if i == 0 && overflow && !part.full {
-					indent = reasoningCutIndent
+			targets = append(targets, toolOutputTarget{recordID: p.thought.id, key: m.thoughtPartKey(p.thought, p.segment), action: thoughtPartAction, line: len(lines), cols: cols})
+			lines = append(lines, row)
+			if text := thoughtTextRows(p.thought, p.segment); len(text) > 0 {
+				for _, t := range text {
+					lines = append(lines, toolBodyIndent+t)
 				}
-				add(indent + line)
+				openAbove = true
 			}
+			continue
 		}
-		for _, part := range step.rows {
-			if openAbove {
-				lines = append(lines, "")
-			}
-			chunk := inlineToolRowChunk(part.row, rowWidth, m.toolBaseDir, part.record.id, right)
-			right = ""
-			marks = append(marks, rowMark{line: len(lines), stepLine: stepLine})
-			for _, target := range chunk.targets {
-				target.line += len(lines)
-				targets = append(targets, target)
-			}
-			lines = append(lines, strings.Split(chunk.text, "\n")...)
-			openAbove = chunk.open
+		// An agent has no row here: the chunk lists its agents beneath.
+		if p.ordinal < 0 || p.ordinal >= len(p.tools.displayRows) {
+			continue
 		}
+		row := p.tools.displayRows[p.ordinal]
+		if row.line == "" {
+			continue
+		}
+		if openAbove {
+			lines = append(lines, "")
+		}
+		chunk := inlineToolRowChunk(row, rowWidth, m.toolBaseDir, p.tools.id, right)
+		if right != "" {
+			stamped[p.step] = true
+		}
+		for _, target := range chunk.targets {
+			target.line += len(lines)
+			targets = append(targets, target)
+		}
+		lines = append(lines, strings.Split(chunk.text, "\n")...)
+		openAbove = chunk.open
 	}
-	// The abridged window keeps the newest calls, and the steps above them
-	// go whole; a step cut at its first call keeps the thought that led to
-	// it.
-	if hidden := len(marks) - activityRowWindow; hidden > 0 && m.depth != depthFull {
-		mark := marks[hidden]
-		cut := mark.line
-		if marks[hidden-1].stepLine != mark.stepLine {
-			cut = mark.stepLine
-		}
-		var windowed []toolOutputTarget
-		for _, target := range targets {
-			if target.line >= cut {
-				target.line -= cut
-				windowed = append(windowed, target)
-			}
-		}
-		var thought []int
-		for _, line := range thoughtLines {
-			if line >= cut {
-				thought = append(thought, line-cut)
-			}
-		}
-		lines, targets, thoughtLines = lines[cut:], windowed, thought
-	}
-	body := activityBody{text: strings.Join(lines, "\n"), targets: targets}
-	thought := make([]string, 0, len(thoughtLines))
-	for _, line := range thoughtLines {
-		thought = append(thought, lines[line])
-	}
-	body.thought = strings.Join(thought, "\n")
-	return body
+	return activityBody{text: strings.Join(lines, "\n"), targets: targets, open: openAbove}
 }
 
-// reasoningCutIndent stands in for a cut thought part's indent on its first
-// visible row; indentLines paints it in the rail column.
-const reasoningCutIndent = "… "
+// thoughtTextRows is the text an opened thought part shows under its row:
+// the retained, provider-supplied text of that one step, as last painted,
+// behind a note when the retained text lost its beginning. A closed part,
+// or one not painted yet, has none.
+func thoughtTextRows(record *reasoningRecord, segment int) []string {
+	if !record.partOpen(segment) {
+		return nil
+	}
+	rows := proseRows(record.previewSegment(segment))
+	if len(rows) > 0 && segment == 0 && record.tailCut {
+		rows = append([]string{style.Styled("… earlier text not kept", "muted", "")}, rows...)
+	}
+	return rows
+}
 
-// thoughtPartAction is the output-link action of a thought part's rows; the
-// link's key names the part. A click shows the whole part or abridges it.
+// thoughtPartAction is the output-link action of a thought row; the link's
+// key names the part. A click shows the part's text or hides it again.
 const thoughtPartAction = "thought"
 
-func thoughtPartKey(index int) string { return fmt.Sprintf("thought:%d", index) }
+// thoughtPartKey names one part of one thought. The record is in the key so
+// that two thought rows on screen are two keyboard stops, not one.
+func (m *replModel) thoughtPartKey(record *reasoningRecord, index int) string {
+	return fmt.Sprintf("thought:%d/%s", index, m.thoughtSection(record))
+}
 
-// toggleThoughtPart flips a thought part between abridged and whole, in
-// place. Caller holds m.mu.
+// toggleThoughtPart shows or hides one thought part's text, in place, and
+// nothing else: not the other parts of the same thought, not its
+// neighbours. Opening the thought that is still streaming follows the
+// turn's thinking: the turn's later thoughts open as they start, until the
+// reader hides one or the turn ends. Caller holds m.mu.
 func (m *replModel) toggleThoughtPart(link toolOutputLink) bool {
 	record := m.reasoningRecords.get(link.recordID)
 	var index int
-	if record == nil || !record.expanded {
+	if record == nil {
 		return false
 	}
 	if _, err := fmt.Sscanf(link.key, "thought:%d", &index); err != nil {
@@ -453,15 +354,49 @@ func (m *replModel) toggleThoughtPart(link toolOutputLink) bool {
 		return false
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchReasoningGroup([]int64{record.id}), func(bool) {
-		record.segments[index].full = !record.segments[index].full
-		m.visual.invalidate()
+		open := !record.segments[index].open
+		record.segments[index].open = open
+		if m.busy && slices.Contains(m.turnReasoningIDs, record.id) {
+			switch {
+			case !open:
+				m.followThoughts = false
+			case record.active && index == len(record.segments)-1:
+				m.followThoughts = true
+			}
+		}
+		// The text renders on the next paint; until then the row stands alone.
+		m.markReasoningDirty(record)
 	})
 	return true
 }
 
+// openChunkOfThought opens the chunk a thought has just joined when that
+// thought's text is showing, so a reader following the turn's thinking keeps
+// the text in view when its calls arrive and fold it into a run. record is
+// the tool record that took the step's calls. Caller holds m.mu.
+func (m *replModel) openChunkOfThought(record *toolDisclosureRecord, step int) {
+	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
+		return
+	}
+	chunks, thoughtIDs, toolIDs := m.lineChunks(record.transcriptIndex)
+	for i := range chunks {
+		c := &chunks[i]
+		if c.group == chunkThought || m.chunkOpen(c.key) {
+			continue
+		}
+		for _, p := range c.parts {
+			if p.thought != nil && p.step == step && p.thought.partOpen(p.segment) {
+				// A fold like any other, so a held viewport stays put.
+				m.setChunkOpen(c.key, thoughtIDs, toolIDs, 0, true)
+				break
+			}
+		}
+	}
+}
+
 // proseRows is rows with a blank row kept only after a paragraph of more
 // than one row: prose keeps its paragraph breaks, and the one-line
-// summaries some models think in stack as they do abridged.
+// summaries some models think in stack without gaps.
 func proseRows(rows []string) []string {
 	kept := make([]string, 0, len(rows))
 	run := 0
@@ -493,9 +428,9 @@ func textRows(rows []string) []string {
 	return kept
 }
 
-// padStepOffset puts right against the right edge of a block-indented
-// thought row laid out at rowWidth, two columns clear of the text, or
-// reports that the row has no room for it.
+// padStepOffset puts right against the right edge of a block-indented row
+// laid out at rowWidth, two columns clear of the text, or reports that the
+// row has no room for it.
 func padStepOffset(text, right string, rowWidth int) (string, bool) {
 	pad := rowWidth - style.TextWidth(text) - rw.StringWidth(right)
 	if pad < 2 {

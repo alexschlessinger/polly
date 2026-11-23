@@ -68,7 +68,7 @@ func checkTranscriptCellRows(t *testing.T, source []ui.Cell, followed bool, widt
 	if followed {
 		copyForSplit = append(copyForSplit, ui.Cell{Rune: '\n', Style: ui.StyleClear})
 	}
-	want, wantSpans := locateTranscriptImages(ui.SplitCells(copyForSplit, '\n'), images, native, width, 10, 20)
+	want, wantSpans := locateTranscriptImages(ui.SplitCells(copyForSplit, '\n'), nil, images, native, width, 10, 20)
 	got, spans := transcriptCellRowsWithImages(cells, followed, width, images, native, 10, 20)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rows differ, including empty-slice shape: got %#v, want %#v", got, want)

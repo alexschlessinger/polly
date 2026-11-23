@@ -1,19 +1,24 @@
+# Run with agent-live.json. An agent is a row of its run: open the run, then
+# the agent. The parent turn stays busy while its agent works, and its clock
+# never lets the screen settle, so each capture waits for the text it shows.
 Run the live inspection demo
 :at live-update
-:click Live inspection demo 10
-:wait checking the inspection view 10
+:click "1 agent running" 10
+:click "Live inspection demo" 10
+:wait "checking the inspection view" 10
 :shot $POLLY_SHOT_DIR/agent-live.png
 :size 80x36
-:settle
+:wait "checking the inspection view" 10
 :shot $POLLY_SHOT_DIR/agent-live-narrow.png
 :size 160x42
-:settle
 :release finish-live
-:wait sleep 5 10
+:wait "sleep 5" 10
 :wait toolcall 10
 :shot $POLLY_SHOT_DIR/agent-live-tools.png
 :at live-finished
-:settle
 :wait saved 10
+# The agent's result wakes the parent, which answers and ends its turn.
+:at parent-finished
+:settle
 :shot $POLLY_SHOT_DIR/agent-live-saved.png
 :quit

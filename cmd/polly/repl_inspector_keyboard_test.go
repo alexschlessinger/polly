@@ -134,11 +134,28 @@ func TestInspectorKeyboardConversationDisclosuresAndLinks(t *testing.T) {
 		}
 		t.Fatalf("no keyboard action matching %q: %+v", prefix, r.inspectorKeyboardActions())
 	}
-	choose("disclosure:")
+	// An inspected view starts expanded. Enter on a chunk's header folds
+	// that chunk, and the view keeps the fold through its next projection.
+	choose("chunk:")
+	target := r.workspace().inspector.target
+	if folds := r.workspace().viewState(target).chunks; len(folds) != 0 {
+		t.Fatalf("choosing a header folded something: %v", folds)
+	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	waitInspector(t, r, 140)
+	v := waitInspector(t, r, 140)
 	r.render()
-
+	folds := r.workspace().viewState(target).chunks
+	if len(folds) != 1 {
+		t.Fatalf("Enter on a header left folds %v, want the one chunk", folds)
+	}
+	for key, open := range folds {
+		if open || v.model.chunkOpen(key) || v.model.depth != depthExpanded {
+			t.Fatalf("chunk %q open=%v in the projection, state %s", key, v.model.chunkOpen(key), v.model.depth.label())
+		}
+	}
+	if len(v.model.toolOutputLinks) != 0 {
+		t.Fatalf("a folded chunk kept its call row reachable: %+v", v.model.toolOutputLinks)
+	}
 }
 
 // A keyboard-selected open thought is marked on every row it wraps to, as

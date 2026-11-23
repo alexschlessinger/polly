@@ -57,9 +57,11 @@ func (t viewTarget) key() string {
 type viewState struct {
 	agents       *agentsInspectorState
 	agentsParent *viewTarget
-	// depth is the view's Ctrl-O depth; explicit per-section choices in
-	// sections win over the depth's defaults. Never persisted.
+	// depth is the view's bulk state, what Ctrl-O last set; chunks holds the
+	// chunks folded or opened by hand since, which win over it, and
+	// sections the outputs and thoughts opened by a click. Never persisted.
 	depth    disclosureDepth
+	chunks   map[string]bool
 	top      int
 	follow   bool
 	search   string
@@ -70,7 +72,11 @@ type viewState struct {
 	lastWidth, lastTotal int
 	anchor               viewAnchor
 	sections             map[string]viewSection
-	revision             uint64
+	// A proposal can prepend a sibling or separate a previously adjacent
+	// batch with prose. Keep the runtime calls' host identities as fallback
+	// evidence for a fold whose heading key changes when the proposal lands.
+	runtimeFolds map[string]bool
+	revision     uint64
 }
 
 // resetScroll starts a newly shown view at its bottom, following new output.
@@ -157,7 +163,9 @@ func (w *sessionWorkspace) viewState(target viewTarget) *viewState {
 	}
 	s := w.states[target.key()]
 	if s == nil {
-		s = &viewState{follow: true}
+		// An inspected view opens expanded: the reader came to see the work,
+		// so its calls are listed. The main conversation opens collapsed.
+		s = &viewState{follow: true, depth: depthExpanded}
 		w.states[target.key()] = s
 	}
 	return s

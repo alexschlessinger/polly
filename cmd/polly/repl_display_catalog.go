@@ -158,6 +158,10 @@ func (m *replModel) projectDisplayCatalog(history []messages.ChatMessage, source
 			source.setResult(t.call, msg)
 			t.duration = msg.ToolDuration()
 		case messages.MessageRoleInternal:
+			if _, ok := msg.Compaction(); ok {
+				thoughtKey = ""
+				continue
+			}
 			if thought, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); thought != "" {
 				source.messageThoughtKey(&thoughtKey, msg.DisplayID())
 			}

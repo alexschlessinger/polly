@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,10 @@ type affordanceState struct {
 	agents  map[int64]time.Time
 	queued  map[int]queuedAffordance
 	inputAt time.Time
+	// A semantic identity, not the changing label, starts the handoff.
+	activityFocus string
+	activityTurn  uint64
+	activityAt    time.Time
 	// depthAt is when Ctrl-O last set a depth and depthWord that depth's
 	// name; the status bar shows it brightly until depthNoticeDuration has
 	// passed.
@@ -34,6 +39,7 @@ type affordanceState struct {
 }
 
 const queueFadeDuration = 400 * time.Millisecond
+const activityHandoffDuration = 200 * time.Millisecond
 
 // depthNoticeDuration is how long the status bar names a depth after a
 // Ctrl-O press.
@@ -155,6 +161,7 @@ type affordanceSpan struct {
 	fade       bool
 	cursor     bool
 	sweep      bool
+	handoff    bool
 }
 
 type affordanceCell struct {
@@ -231,6 +238,23 @@ func affordanceStrength(now time.Time, span affordanceSpan) float64 {
 
 func (c affordanceCell) frame(now time.Time) ui.Cell {
 	out := c.base
+	if c.span.handoff {
+		age := now.Sub(c.span.at)
+		if age < 0 || age >= c.span.duration {
+			return out
+		}
+		base, tint := out.Style.Fg, c.span.color
+		if base.IsRGB() && tint.IsRGB() {
+			strength := .6 * (1 - smoothAffordance(float64(age)/float64(c.span.duration)))
+			r, g, b := base.RGB()
+			tr, tg, tb := tint.RGB()
+			out.Style.Fg = ui.NewColorRGB(r+int32(float64(tr-r)*strength), g+int32(float64(tg-g)*strength), b+int32(float64(tb-b)*strength))
+		} else if age < c.span.duration/2 {
+			// ANSI slots are user-defined; use a single native tint, not synthetic RGB.
+			out.Style.Fg = tint
+		}
+		return out
+	}
 	if c.span.sweep {
 		// The light sweep from experiments/textfx: a Gaussian glint at 12 columns/s.
 		center := math.Mod(now.Sub(c.span.at).Seconds()*12, float64(c.span.cols)+20) - 10
@@ -313,8 +337,23 @@ func (r *managedREPL) tickAffordances(now time.Time) {
 	r.affordanceW.tick(ui.DefaultBackend.Screen, now)
 }
 
+// noteActivityHandoff records the call the running turn's live header
+// names, by identity, and returns when it last changed: the moment one call
+// handed the header to the next.
+func (m *replModel) noteActivityHandoff(focus string, now time.Time) time.Time {
+	a := &m.affordances
+	if a.activityTurn != m.activityTurn || focus == "" || a.activityFocus == "" {
+		a.activityAt = time.Time{}
+	} else if focus != a.activityFocus {
+		a.activityAt = now
+	}
+	a.activityTurn, a.activityFocus = m.activityTurn, focus
+	return a.activityAt
+}
+
 func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor image.Point, idle bool) []affordanceSpan {
 	if !m.affordancesVisible() {
+		m.noteActivityHandoff("", now)
 		return nil
 	}
 	var spans []affordanceSpan
@@ -333,10 +372,28 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 	// Work from semantic activity blocks, not arbitrary answer text: a child's
 	// completion lights the count on the launch row that owns it.
 	offset := 0
+	observedActivity := false
 	for _, block := range m.visual.blocks {
 		if len(block.rows) > 0 {
 			for _, label := range block.activityLabels {
-				if v.contains(offset+label.Y) && m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs) {
+				if label.chunk < 1 || label.chunk > len(block.chunks) {
+					continue
+				}
+				chunk := &block.chunks[label.chunk-1]
+				visible := v.contains(offset + label.Y)
+				// The running turn's newest chunk hands its header on from
+				// call to call; any other chunk still at work sweeps.
+				if block.currentActivity && label.chunk == len(block.chunks) {
+					observedActivity = true
+					focus := chunk.latest
+					if focus == "" {
+						focus = chunk.key
+					}
+					at := m.noteActivityHandoff(focus, now)
+					if visible && !chunk.failed && !at.IsZero() && now.Before(at.Add(activityHandoffDuration)) && os.Getenv("NO_COLOR") == "" {
+						spans = append(spans, affordanceSpan{x: label.X, y: v.screenY(offset + label.Y), cols: label.Cols, at: at, duration: activityHandoffDuration, color: chromeColor("accent"), handoff: true})
+					}
+				} else if chunk.live && visible {
 					spans = append(spans, affordanceSpan{x: label.X, y: v.screenY(offset + label.Y), cols: label.Cols, at: m.affordances.sweepAt, sweep: true})
 				}
 			}
@@ -378,6 +435,9 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 			}
 		}
 		offset += len(block.rows)
+	}
+	if !observedActivity {
+		m.noteActivityHandoff("", now)
 	}
 	if idle {
 		spans = append(spans, affordanceSpan{x: cursor.X, y: cursor.Y, cols: 1, at: m.affordances.inputAt, cursor: true})

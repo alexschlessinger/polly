@@ -344,10 +344,12 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 	r.inspect(tabViewTarget(r.visibleTab()))
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(v.target)
+	// The view opens expanded; a chunk folded by hand has to stay folded.
 	for _, rec := range v.model.toolDisclosures.all() {
-		if !rec.expanded {
-			v.model.toggleToolDisclosure(rec.id)
+		if !v.model.lineOpenOf(rec) {
+			t.Fatal("an inspected view did not open expanded")
 		}
+		v.model.setLineOpenOf(rec, false)
 	}
 	rememberViewSections(v.model, s)
 	rows := v.view.Rows(v.model, v.geometry.width)
@@ -368,112 +370,113 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 		t.Fatalf("lost logical anchor: %d %s", s.top, plainCells(v.model.visual.rows[s.top]))
 	}
 	for _, rec := range v.model.toolDisclosures.all() {
-		if !rec.expanded {
-			t.Fatal("expanded tools reset")
+		if v.model.lineOpenOf(rec) {
+			t.Fatal("a chunk folded by hand reopened")
 		}
 	}
 }
 
 // Ctrl-O follows the focused pane: with the inspector holding the keys it
-// opens that view's blocks, and the choice persists in the view for the next
-// projection instead of on the conversation beside it.
-func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
+// folds or opens that view's chunks, and the state persists in the view for
+// the next projection instead of on the conversation beside it.
+func TestFocusedInspectorCtrlOTogglesItsOwnView(t *testing.T) {
 	withDisplayTTY(t)
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	r.model.appendThinking("thought for the inspected view")
 	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "call", Name: "bash"})
-	// Start the view below the default depth so a press has somewhere to go.
-	r.workspace().viewState(tabViewTarget(r.visibleTab())).depth = depthAbridged
 	r.inspect(tabViewTarget(r.visibleTab()))
 	v := waitInspector(t, r, 140)
 	if v.model.reasoningRecords.count() == 0 || v.model.toolDisclosures.count() == 0 {
-		t.Fatalf("inspector view carried no disclosures: thoughts=%d tools=%d",
+		t.Fatalf("inspector view carried no activity: thoughts=%d tools=%d",
 			v.model.reasoningRecords.count(), v.model.toolDisclosures.count())
+	}
+	// An inspected view opens expanded; the conversation it shows, collapsed.
+	if v.model.depth != depthExpanded || r.model.depth != depthCollapsed {
+		t.Fatalf("fresh views: inspected=%v conversation=%v", v.model.depth, r.model.depth)
 	}
 	r.workspace().inspector.focused = true
 	// The conversation behind the inspector keeps whatever state it has.
 	behind := disclosureStates(r.model)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
-	if v.model.depth != depthFull {
-		t.Fatal("focused Ctrl-O did not move the inspected view to full")
+	if v.model.depth != depthCollapsed {
+		t.Fatal("focused Ctrl-O did not collapse the inspected view")
 	}
 	for _, rec := range v.model.reasoningRecords.all() {
-		if !rec.expanded || len(rec.segments) == 0 || !rec.segments[0].full {
-			t.Fatal("focused Ctrl-O did not make the inspected thought whole")
+		if rec.anyOpen() {
+			t.Fatal("focused Ctrl-O opened the inspected thought's text")
 		}
 	}
 	for _, rec := range v.model.toolDisclosures.all() {
-		if !rec.expanded || rec.rows[0].outputExpanded {
-			t.Fatal("focused Ctrl-O folded the inspected line or opened its output")
+		if v.model.lineOpenOf(rec) || rec.rows[0].outputExpanded {
+			t.Fatal("focused Ctrl-O left the inspected chunk open or opened its output")
 		}
 	}
 	if got := disclosureStates(r.model); got != behind {
-		t.Fatalf("inspected depth leaked into the visible conversation: %q, was %q", got, behind)
+		t.Fatalf("inspected state leaked into the visible conversation: %q, was %q", got, behind)
 	}
-	if s := r.workspace().viewState(v.target); s.depth != depthFull || len(s.sections) == 0 {
-		t.Fatal("the depth was not stored for the view")
+	if s := r.workspace().viewState(v.target); s.depth != depthCollapsed {
+		t.Fatal("the bulk state was not stored for the view")
 	}
 	r.model.completeToolDisclosure()
 	later := r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "view_image"})
 	behind = disclosureStates(r.model)
 	v = waitInspector(t, r, 140)
-	if rec := v.model.toolDisclosures.get(later.id); !rec.expanded || rec.rows[0].outputExpanded {
-		t.Fatal("later projected tool/media row did not open with its output closed")
+	if rec := v.model.toolDisclosures.get(later.id); v.model.lineOpenOf(rec) || rec.rows[0].outputExpanded {
+		t.Fatal("a later projected chunk did not follow the view's collapsed state")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
-	if v.model.depth != depthCalls {
-		t.Fatal("second Ctrl-O did not move the inspected view to calls")
+	if v.model.depth != depthExpanded {
+		t.Fatal("second Ctrl-O did not expand the inspected view")
 	}
 	for _, rec := range v.model.toolDisclosures.all() {
-		if !rec.expanded || rec.rows[0].outputExpanded {
-			t.Fatal("the calls depth folded the inspected line or opened its output")
+		if !v.model.lineOpenOf(rec) || rec.rows[0].outputExpanded {
+			t.Fatal("expanding left the inspected chunk folded or opened its output")
 		}
 	}
 	if got := disclosureStates(r.model); got != behind {
-		t.Fatalf("inspected depth leaked into the source conversation: %q, was %q", got, behind)
+		t.Fatalf("inspected state leaked into the source conversation: %q, was %q", got, behind)
 	}
 }
 
-// The depth holds across the inspected view's reprojections: a thought that
-// arrives later opens as the newest turn's and the view stays at its depth
-// until the next press.
-func TestFocusedInspectorCtrlODepthHoldsForLaterBlocks(t *testing.T) {
+// The bulk state holds across the inspected view's reprojections: activity
+// that arrives later follows it until the next press, and no press opens a
+// thought.
+func TestFocusedInspectorCtrlOStateHoldsForLaterActivity(t *testing.T) {
 	withDisplayTTY(t)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	r.model.appendThinking("earlier thought")
-	// Start the view below the default depth so a press has somewhere to go.
-	r.workspace().viewState(tabViewTarget(r.visibleTab())).depth = depthAbridged
+	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "earlier", Name: "bash"})
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.workspace().inspector.focused = true
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v := waitInspector(t, r, 140)
-	if s := r.workspace().viewState(v.target); s.depth != depthFull {
-		t.Fatal("focused Ctrl-O did not record the depth for the view")
+	if s := r.workspace().viewState(v.target); s.depth != depthCollapsed {
+		t.Fatal("focused Ctrl-O did not record the state for the view")
 	}
-	r.model.finishThinkingSegment()
+	r.model.completeToolDisclosure()
+	r.model.appendLine("prose between the runs")
 	r.model.appendThinking("later thought")
+	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "bash"})
 	v = waitInspector(t, r, 140)
-	expanded := 0
-	for _, rec := range v.model.reasoningRecords.all() {
-		if rec.expanded {
-			expanded++
-		}
+	if v.model.toolDisclosures.count() != 2 || v.model.depth != depthCollapsed {
+		t.Fatalf("later activity did not land in the collapsed view: tools=%d depth=%v", v.model.toolDisclosures.count(), v.model.depth)
 	}
-	if expanded != 2 || v.model.depth != depthFull {
-		t.Fatalf("later thought did not open in the inspected view at its depth: expanded=%d depth=%v", expanded, v.model.depth)
+	for _, rec := range v.model.toolDisclosures.all() {
+		if v.model.lineOpenOf(rec) {
+			t.Fatal("a later chunk did not follow the view's collapsed state")
+		}
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
-	if v.model.depth != depthCalls {
-		t.Fatal("second Ctrl-O did not move the view to calls")
+	if v.model.depth != depthExpanded {
+		t.Fatal("second Ctrl-O did not expand the view")
 	}
 	for _, rec := range v.model.reasoningRecords.all() {
-		if !rec.expanded {
-			t.Fatal("the calls depth folded an inspected thought")
+		if rec.anyOpen() {
+			t.Fatal("expanding opened an inspected thought's text")
 		}
 	}
 }
@@ -492,7 +495,7 @@ func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {
 	r.retireInspector(w)
 	behind := disclosureStates(r.model)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if got := disclosureStates(r.model); got != behind || r.model.depth != depthFull {
+	if got := disclosureStates(r.model); got != behind || r.model.depth != depthCollapsed {
 		t.Fatalf("Ctrl-O on a projecting inspector toggled the conversation behind it: %q, was %q", got, behind)
 	}
 }
@@ -502,10 +505,10 @@ func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {
 func disclosureStates(m *replModel) string {
 	var states []string
 	for id, rec := range m.reasoningRecords.all() {
-		states = append(states, fmt.Sprintf("t%d:%v", id, rec.expanded))
+		states = append(states, fmt.Sprintf("t%d:%v", id, m.lineOpenOf(rec)))
 	}
 	for id, rec := range m.toolDisclosures.all() {
-		state := fmt.Sprintf("c%d:%v", id, rec.expanded)
+		state := fmt.Sprintf("c%d:%v", id, m.lineOpenOf(rec))
 		for _, row := range rec.rows {
 			state += fmt.Sprintf("/%v", row.outputExpanded)
 		}
@@ -515,7 +518,7 @@ func disclosureStates(m *replModel) string {
 	return strings.Join(states, " ")
 }
 
-// Expanding every block re-lays the rows out without any new output, so a
+// Folding every chunk re-lays the rows out without any new output, so a
 // view scrolled up must not be told there is something new to follow.
 func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
 	withDisplayTTY(t)
@@ -526,6 +529,9 @@ func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
 	r.setupWidgets()
 	screen.SetSize(140, 32)
 	r.model.appendThinking(strings.Repeat("a long thought that opens below its row ", 12))
+	for n := range 6 {
+		r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: fmt.Sprint("call-", n), Name: "bash"})
+	}
 	r.inspect(tabViewTarget(r.visibleTab()))
 	// Each paint may start a projection at the painted geometry; the paint
 	// that follows must see it landed, as the event loop's would.
@@ -558,13 +564,11 @@ func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
 	r.workspace().inspector.focused = true
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = paint()
-	for _, rec := range v.model.reasoningRecords.all() {
-		if !rec.expanded {
-			t.Fatal("focused Ctrl-O did not expand the inspected thought")
-		}
+	if v.model.depth != depthCollapsed {
+		t.Fatal("focused Ctrl-O did not fold the inspected view")
 	}
 	if r.inspectorW.OverlayBottom != nil {
-		t.Fatal("expanding every block was reported as new output")
+		t.Fatal("folding every chunk was reported as new output")
 	}
 }
 
@@ -590,30 +594,36 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
 	v := waitInspector(t, r, 140)
 	r.render()
-	placements := v.model.disclosurePlacements[activityAll]
-	if len(placements) == 0 {
-		t.Fatal("inspected conversation laid out no activity control")
+	if len(v.model.disclosurePlacements[activityAll]) == 0 {
+		t.Fatal("inspected conversation laid out no chunk header")
 	}
-	p := placements[0]
-	// The agent's line opens open; the first click folds it, the second
-	// opens it again, and each choice survives a re-projection.
-	for _, expanded := range []bool{false, true} {
-		placements = v.model.disclosurePlacements[activityAll]
-		if len(placements) == 0 {
-			t.Fatal("re-projection lost the activity control")
+	// The agent's chunk opens open, its thought a closed row. A click on
+	// that row shows the text, another hides it, and each choice survives a
+	// re-projection.
+	for _, open := range []bool{true, false} {
+		var link *toolOutputLink
+		for n := range v.model.toolOutputLinks {
+			if v.model.toolOutputLinks[n].action == thoughtPartAction {
+				link = &v.model.toolOutputLinks[n]
+				break
+			}
 		}
-		p = placements[0]
-		r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(r.chrome.inner.Min.X+p.X, p.Y)))
+		if link == nil {
+			t.Fatal("re-projection lost the thought's row")
+		}
+		r.handleEvent(mouseEvent("<MouseLeft>", link.rect().Min))
 		// Any refresh after the click re-projects the view from its source.
 		r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
 		v = waitInspector(t, r, 140)
 		r.render()
-		if rec := v.model.reasoningRecords.get(p.recordID); rec == nil || rec.expanded != expanded {
-			t.Fatalf("click did not set the inspected thought to expanded=%v: %#v", expanded, rec)
+		for _, rec := range v.model.reasoningRecords.all() {
+			if rec.anyOpen() != open {
+				t.Fatalf("click did not set the inspected thought to open=%v: %#v", open, rec)
+			}
 		}
 		rows := strings.Join(transcriptRowsText(v.model.visual.rows), "\n")
-		if strings.Contains(rows, "consider the options") != expanded {
-			t.Fatalf("re-projection lost the thought's state (expanded=%v): %s", expanded, rows)
+		if strings.Contains(rows, "consider the options") != open {
+			t.Fatalf("re-projection lost the thought's state (open=%v): %s", open, rows)
 		}
 	}
 }
@@ -716,10 +726,10 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "image", Name: "view_image"}
 	r.model.appendToolCallStart(call)
 	r.model.currentToolDisclosure().rows[0].inspectionImages = inspectionTranscriptImages(messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}}, r.model.artifactStore)
-	r.model.currentToolDisclosure().expanded = true
+	r.model.setLineOpenOf(r.model.currentToolDisclosure(), true)
 	r.model.refreshToolDisclosure(r.model.currentToolDisclosure())
 	agent := childDisplayCopy(r.model)
-	r.model.currentToolDisclosure().expanded = false
+	r.model.setLineOpenOf(r.model.currentToolDisclosure(), false)
 	r.model.refreshToolDisclosure(r.model.currentToolDisclosure())
 	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)

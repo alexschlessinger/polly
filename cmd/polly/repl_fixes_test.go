@@ -236,7 +236,6 @@ func TestOutputStructuredValidJSONReturnsNil(t *testing.T) {
 // — appends, multi-line expansion, streamed text, and in-place tool refreshes.
 func TestFlattenTranscriptReflectsMutations(t *testing.T) {
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 
 	m.appendLine("one")
 	if got := m.flattenTranscript(); len(got) != 1 || got[0] != "one" {
@@ -256,26 +255,30 @@ func TestFlattenTranscriptReflectsMutations(t *testing.T) {
 		t.Fatalf("streamed text not reflected through cache: %v", got)
 	}
 
+	// A clock ticking behind a fold changes nothing on screen: the row
+	// updates and its entry holds still.
 	m.appendToolStartLine("id", "bash")
 	record := m.currentToolDisclosure()
-	if record == nil || record.expanded {
+	if record == nil || m.lineOpenOf(record) {
 		t.Fatalf("started tool disclosure = %#v", record)
 	}
 	m.activeTools[0].started = m.activeTools[0].started.Add(-2 * time.Second)
 	m.refreshActiveTools()
 	got = m.flattenTranscript()
-	if strings.Contains(got[len(got)-1], "2.0s") {
-		t.Fatalf("collapsed tool refresh leaked through cache: %q", got[len(got)-1])
+	if strings.Contains(strings.Join(got, "\n"), "2.0s") {
+		t.Fatalf("folded tool refresh leaked through cache: %q", got)
 	}
 	if !strings.Contains(record.rows[0].line, "2.0s") {
 		t.Fatalf("hidden live row did not update: %q", record.rows[0].line)
 	}
+	// Open, the entry follows the row.
 	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("tool disclosure did not expand")
+		t.Fatal("the chunk did not open")
 	}
+	m.refreshToolDisclosure(record)
 	got = m.flattenTranscript()
 	if !strings.Contains(got[len(got)-1], "2.0s") {
-		t.Fatalf("expanded tool refresh not reflected through cache: %q", got[len(got)-1])
+		t.Fatalf("open tool refresh not reflected through cache: %q", got[len(got)-1])
 	}
 }
 
@@ -322,7 +325,6 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 	t.Cleanup(func() { terminalFD = old })
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -330,15 +332,21 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, llm.ToolDeniedContent, 0, nil)
 
+	// The folded chunk marks the denial on its header; the open chunk lists
+	// the call's own denied row.
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || strings.Contains(r.model.transcript[record.transcriptIndex].text, "denied") {
-		t.Fatalf("denied tool should stay hidden while collapsed: record=%#v transcript=%q", record, transcriptTexts(r.model))
+	if record == nil || r.model.lineOpenOf(record) {
+		t.Fatalf("denied tool's chunk should start folded: record=%#v transcript=%q", record, transcriptTexts(r.model))
+	}
+	if folded := activityText(t, r.model, 80, 0); strings.Contains(folded, "\n") || !strings.HasSuffix(folded, chunkMarkSeparator+"denied") {
+		t.Fatalf("folded header = %q, want one row marked denied", folded)
 	}
 	if !r.model.toggleToolDisclosure(record.id) {
-		t.Fatal("denied tool disclosure did not expand")
+		t.Fatal("denied tool's chunk did not open")
 	}
-	if expanded := r.model.transcript[record.transcriptIndex].text; !strings.Contains(expanded, "denied") {
-		t.Fatalf("expanded denied tool should render a denied line, got %q", expanded)
+	open := strings.Split(activityText(t, r.model, 80, 0), "\n")
+	if len(open) != 2 || !strings.Contains(open[1], "bash") || !strings.Contains(open[1], "denied") {
+		t.Fatalf("open chunk should list the denied call, got %q", open)
 	}
 }
 
@@ -352,7 +360,6 @@ func TestToolEndDurationUsesFormatElapsed(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -379,7 +386,6 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 	t.Cleanup(func() { terminalFD = old })
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 

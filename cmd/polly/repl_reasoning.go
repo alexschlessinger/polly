@@ -12,12 +12,11 @@ import (
 
 // Reasoning records: streamed thinking previews and their disclosures.
 
-// reasoningPreviewLines is the bounded expanded tail: the newest rows each
-// step's thought shows on an open line. The preview uses the full transcript
-// width after its block indent. The retained/limit pair bounds the duplicate
-// display copy while amortizing compaction of streamed chunks.
+// The retained/limit pair bounds the duplicate display copy of a thought
+// while amortizing compaction of streamed chunks. An opened thought part
+// shows every retained row of its step, at the full transcript width after
+// the indent of a row's detail.
 const (
-	reasoningPreviewLines    = 3
 	reasoningTailRetainRunes = 8192
 	reasoningTailLimitRunes  = 2 * reasoningTailRetainRunes
 )
@@ -28,7 +27,7 @@ const reasoningBlockIndent = style.RailIndent
 // reasoning segments update this record instead of adding more transcript
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
-	record := &reasoningRecord{complete: complete, expanded: m.newRecordOpen()}
+	record := &reasoningRecord{complete: complete}
 	// The initial header names style roles but resolves no theme colors.
 	// Provider callbacks and history replay leave the preview for paint.
 	m.appendLine(m.reasoningRecordText(record, 80))
@@ -80,7 +79,9 @@ func (m *replModel) appendThinking(chunk string) {
 func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool) {
 	m.displayCatalog.thoughtKey(&record.sectionKey)
 	version := record.tailVersion
-	record.beginSegment(m.turnStep, m.turnStepAt, m.turnStepKnown, segmentBreak, m.depth == depthFull)
+	// A reader following the running turn's thinking sees each new step's
+	// thought open as it starts. Replayed history opens nothing.
+	record.beginSegment(m.turnStep, m.turnStepAt, m.turnStepKnown, segmentBreak, m.followThoughts && m.busy && !m.hydrating)
 	record.trimSegments(appendReasoningTail(record, text, segmentBreak))
 	if record.tailVersion != version {
 		m.visual.invalidate()
@@ -124,6 +125,15 @@ func appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool
 	return 0
 }
 
+// addThinkingTime banks one interval to both the whole record and the step
+// that produced it. Commentary can pause the same step's clock several times.
+func (record *reasoningRecord) addThinkingTime(d time.Duration) {
+	record.elapsed += d
+	if n := len(record.segments); n > 0 {
+		record.segments[n-1].elapsed += d
+	}
+}
+
 // finishThinkingSegment closes the current provider segment's disclosure.
 // The segment settles in place; a later reasoning segment opens a fresh
 // disclosure at its own transcript position. Caller must hold m.mu.
@@ -139,7 +149,7 @@ func (m *replModel) finishThinkingSegment() {
 	// way it is the current run and prose or settlement closes it here. A
 	// paused record already banked its elapsed time.
 	if m.thinkingSegmentOpen {
-		record.elapsed += time.Since(m.thinkingSegmentStart)
+		record.addThinkingTime(time.Since(m.thinkingSegmentStart))
 	}
 	record.active = false
 	record.complete = true
@@ -167,7 +177,7 @@ func (m *replModel) pauseThinkingClock() {
 		return
 	}
 	if record := m.currentReasoningRecord(); record != nil {
-		record.elapsed += time.Since(m.thinkingSegmentStart)
+		record.addThinkingTime(time.Since(m.thinkingSegmentStart))
 		record.active = false
 		m.markReasoningDirty(record)
 	}
@@ -179,6 +189,7 @@ func (m *replModel) pauseThinkingClock() {
 // whether the provider-generated messages were saved. Caller must hold m.mu.
 func (m *replModel) completeThinkingTurn(unsaved bool) {
 	m.finishThinkingSegment()
+	m.followThoughts = false
 	// Every segment of the turn settles where it stands; the newest line is
 	// the open one until the next turn begins. The "not saved" marker lands on
 	// each when the turn persisted nothing.
@@ -276,10 +287,10 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 // renderReasoningPreview is paint-only; reasoningRecordText merely assembles
 // role-named markup from this cache and can run during display projection.
 func (m *replModel) renderReasoningPreview(record *reasoningRecord, width int) {
-	// Thought rows wrap short of the step column, so a step's start sits
-	// on its thought's first row.
-	contentWidth := m.disclosureLayoutWidth(width) - rw.StringWidth(reasoningBlockIndent) - stepColumn(m.disclosureLayoutWidth(width))
-	if !record.expanded || contentWidth < 2 {
+	// A thought's text sits under its row like a call's output, two columns
+	// further in. A thought with no part open is one row and renders nothing.
+	contentWidth := m.disclosureLayoutWidth(width) - rw.StringWidth(reasoningBlockIndent) - toolBodyCols
+	if !record.anyOpen() || contentWidth < 2 {
 		return
 	}
 	if record.previewWidth != contentWidth || record.previewVersion != record.tailVersion || record.previewActive != record.active {
@@ -311,8 +322,9 @@ func (m *replModel) renderReasoningPreview(record *reasoningRecord, width int) {
 }
 
 func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) string {
+	open := record.anyOpen()
 	glyph := "▸"
-	if record.expanded {
+	if open {
 		glyph = "▾"
 	}
 
@@ -322,7 +334,7 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 	}
 	label := reasoningDisclosureLabel(record.active, record.unsaved, elapsed)
 	header := activityRowHeader(glyph, label)
-	if !record.expanded {
+	if !open {
 		return header
 	}
 
@@ -330,8 +342,8 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 	if contentWidth < 2 {
 		return header
 	}
-	// The entry holds every painted row; an abridged activity line shows
-	// the newest reasoningPreviewLines rows of text of each step's part.
+	// The entry holds every painted row; the activity line shows the rows
+	// of each part that is open.
 	lines := record.previewLines
 	if len(lines) == 0 {
 		return header
@@ -377,19 +389,6 @@ func reasoningTailLines(text string, width, limit int) []string {
 		lines = lines[len(lines)-limit:]
 	}
 	return lines
-}
-
-func (m *replModel) toggleReasoning(recordID int64, width int) bool {
-	record := m.reasoningRecords.get(recordID)
-	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
-		return false
-	}
-	if width > 0 {
-		m.reasoningWidth = width
-	}
-	// The record's line is the control: its calls and agents go with it.
-	thoughtIDs, toolIDs := m.lineRecords(record.transcriptIndex)
-	return m.toggleActivityLine(thoughtIDs, toolIDs, width)
 }
 
 // disclosureLayoutWidth resolves the width inline activity is laid out at:

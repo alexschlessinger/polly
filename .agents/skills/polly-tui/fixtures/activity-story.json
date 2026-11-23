@@ -1,0 +1,14 @@
+{
+  "sessions": [{"name": "activity-story", "metadata": {"title": "Check the CLI release"}}],
+  "turns": [
+    {"match": "check the release", "steps": [
+      {"tool": {"name": "read_file", "arguments": {"path": "README.md", "limit": 3}}},
+      {"tool": {"name": "read_file", "arguments": {"path": "docs/CLI.md", "limit": 3}}},
+      {"tool": {"name": "read_file", "arguments": {"path": "docs/API.md", "limit": 3}}},
+      {"tool": {"name": "read_file", "arguments": {"path": "docs/PLAN.md", "limit": 3}}}
+    ]},
+    {"steps": [{"reasoning": "The docs are in place. Check the diff renderer and the logo next.", "mark": "thinking"}, {"gate": "test"}, {"tool": {"name": "bash", "arguments": {"command": "go test ./internal/textdiff"}}}]},
+    {"steps": [{"tool": {"name": "view_image", "arguments": {"source": "cmd/polly/internal/termimg/assets/logo.png"}}}]},
+    {"steps": [{"content": "I checked the release materials."}], "mark": "finished"}
+  ]
+}

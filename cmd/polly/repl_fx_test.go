@@ -267,7 +267,6 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -290,7 +289,7 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	probe := exec.Command("bash", "-c", "exit 7").Run()
 	wrapped := fmt.Errorf("command failed: %w (output: secret stack trace)", probe)
 	tui.AppendToolEnd(calls[1], "secret stack trace", time.Second, wrapped)
-	if !record.expanded {
+	if !m.lineOpenOf(record) {
 		t.Fatal("deliberately expanded disclosure collapsed at batch end")
 	}
 	got := strings.Join(m.flattenTranscript(), "\n")
@@ -339,10 +338,9 @@ func TestApprovalShowsEachCallAboveThePrompt(t *testing.T) {
 
 const testThinkingWidth = 60
 
-func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) {
+func TestThoughtStartsClosedWithoutLeakingReasoning(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -354,15 +352,17 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 	if record == nil || m.reasoningRecords.count() != 1 || len(m.reasoningOrder) != 1 {
 		t.Fatalf("reasoning record = %#v, records/order = %d/%d", record, m.reasoningRecords.count(), len(m.reasoningOrder))
 	}
-	if record.expanded {
-		t.Fatal("a turn's reasoning disclosure should start collapsed")
+	if record.anyOpen() {
+		t.Fatal("a turn's thought should start closed")
+	}
+	// The thought is one row, with no call to lead yet: no fold, no text.
+	shown := activityText(t, m, testThinkingWidth, 0)
+	if shown != thoughtGlyph+" Thinking…" {
+		t.Fatalf("live thought row = %q", shown)
 	}
 	block := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(block, "▸ thought") {
-		t.Fatalf("collapsed disclosure = %q, want a thought label", block)
-	}
-	if strings.Contains(block, privateReasoning) {
-		t.Fatalf("collapsed disclosure leaked reasoning: %q", block)
+	if strings.Contains(block, privateReasoning) || strings.Contains(shown, privateReasoning) {
+		t.Fatalf("a closed thought leaked reasoning: %q / %q", block, shown)
 	}
 	if strings.Contains(block, "tok") {
 		t.Fatalf("quiet disclosure should not show an approximate token count: %q", block)
@@ -385,10 +385,11 @@ func TestReasoningTailCutIsHonest(t *testing.T) {
 	}
 }
 
-func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
+// An opened thought shows every retained row of its step, not a window of
+// the newest, and keeps showing the stream as it grows.
+func TestOpenedThoughtShowsItsWholeTextAndFollowsTheStream(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -396,59 +397,46 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 		tui.ShowThinking(fmt.Sprintf("reasoning sentence number %d about the parse loop. ", i))
 	}
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
-		t.Fatal("active reasoning disclosure did not expand")
+	clickThought(t, m, testThinkingWidth, record.id, 0)
+	if !record.partOpen(0) {
+		t.Fatal("a click on the live thought's row did not open it")
 	}
-
-	m.refreshReasoningRecords(testThinkingWidth)
-	// The entry keeps every retained row; the abridged line windows them
-	// to the newest rows of text.
 	entry := m.transcript[record.transcriptIndex].text
-	if plain := plainStyledText(entry); !strings.Contains(plain, "number 0 ") || !strings.Contains(plain, "▾ thought") || !strings.Contains(entry, "fg:muted") {
-		t.Fatalf("entry lost retained rows, its open label or preview styling: %q", entry)
+	if plain := plainStyledText(entry); !strings.Contains(plain, "number 0 ") || !strings.Contains(entry, "fg:muted") {
+		t.Fatalf("entry lost retained rows or preview styling: %q", entry)
 	}
-	window := func(stage string) string {
-		t.Helper()
-		block := plainStyledText(activityBlocks(m, testThinkingWidth)[0].activityReasoningDetail)
-		lines := strings.Split(block, "\n")
-		if got := len(lines); got != reasoningPreviewLines || strings.Contains(block, "earlier lines") {
-			t.Fatalf("%s: window rows = %d, want %d and no mark: %q", stage, got, reasoningPreviewLines, block)
-		}
-		if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
-			t.Fatalf("%s: window should show only the newest tail: %q", stage, block)
-		}
-		return block
+	shown := activityText(t, m, testThinkingWidth, 0)
+	if !strings.Contains(shown, "number 0 ") || !strings.Contains(shown, "number 15") {
+		t.Fatalf("opened thought should show the whole retained text: %q", shown)
 	}
-	window("expanded")
 
-	// New chunks repaint the open tail immediately without growing the window.
+	// New chunks repaint the open text immediately.
 	tui.ShowThinking(" newest-live-marker")
 	m.refreshReasoningRecords(testThinkingWidth)
-	if block := window("live"); !strings.Contains(block, "newest-live-marker") {
-		t.Fatalf("open disclosure did not follow the live stream: %q", block)
+	if shown := activityText(t, m, testThinkingWidth, 0); !strings.Contains(shown, "newest-live-marker") {
+		t.Fatalf("open thought did not follow the live stream: %q", shown)
+	}
+	// A second click hides the text and leaves the row.
+	clickThought(t, m, testThinkingWidth, record.id, 0)
+	if shown := activityText(t, m, testThinkingWidth, 0); strings.Contains(shown, "number") || !strings.HasPrefix(shown, thoughtGlyph+" Thinking…") {
+		t.Fatalf("closing the thought left its text: %q", shown)
 	}
 }
 
-func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
+func TestThoughtTextUsesFullTranscriptWidth(t *testing.T) {
 	const width = 140
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("wide reasoning preview content ", 32))
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, width) {
-		t.Fatal("reasoning disclosure did not expand")
-	}
-
-	m.refreshReasoningRecords(width)
-	want := width - rw.StringWidth(reasoningBlockIndent) - stepColumn(width)
+	clickThought(t, m, width, record.id, 0)
+	// The text sits under its row like a call's output: the block indent
+	// and two more columns in, and nothing held back for a time column.
+	want := width - rw.StringWidth(reasoningBlockIndent) - toolBodyCols
 	if record.previewWidth != want {
 		t.Fatalf("preview width = %d, want full available width %d", record.previewWidth, want)
-	}
-	if got := strings.Count(plainStyledText(activityBlocks(m, width)[0].activityReasoningDetail), "\n"); got >= reasoningPreviewLines+1 {
-		t.Fatalf("expanded window rows = %d, want at most %d plus a link", got, reasoningPreviewLines)
 	}
 }
 
@@ -456,18 +444,13 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.reasoningWidth = width
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("narrow reasoning preview content ", 32))
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, width) {
-		t.Fatal("reasoning disclosure did not expand")
-	}
-
-	m.refreshReasoningRecords(width)
-	wantWidth := width - rw.StringWidth(reasoningBlockIndent)
+	clickThought(t, m, width, record.id, 0)
+	wantWidth := width - rw.StringWidth(reasoningBlockIndent) - toolBodyCols
 	if record.previewWidth != wantWidth {
 		t.Fatalf("live preview width = %d, want %d", record.previewWidth, wantWidth)
 	}
@@ -480,247 +463,10 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	if record.previewWidth != wantWidth {
 		t.Fatalf("settled preview width = %d, want retained terminal width %d", record.previewWidth, wantWidth)
 	}
-	rows := transcriptBlockRows(activityBlocks(m, width)[0].text, false, width)
-	if got := len(rows) - 1; got > reasoningPreviewLines+1 {
-		t.Fatalf("settled window uses %d physical detail rows, want at most %d plus a link", got, reasoningPreviewLines)
-	}
-}
-
-func TestSettledThoughtStaysOpenAndIdleCtrlOSetsDepth(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.depth = depthAbridged // the cycle below the default depth
-	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	tui.ShowThinking(strings.Repeat("bounded reasoning tail ", 16))
-	record := m.currentReasoningRecord()
-	if record == nil || !record.expanded {
-		t.Fatal("the newest turn's thought did not open on its own")
-	}
-
-	r.endTurn(nil)
-	if !record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
-		t.Fatalf("completed reasoning record did not settle where it stood: %#v", record)
-	}
-
-	// With no active turn, Ctrl-O sets the view's depth: the open thought
-	// stays open and shows the whole of itself, then nothing at all, then
-	// its newest rows again.
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthFull || !record.expanded || !record.segments[0].full {
-		t.Fatalf("idle Ctrl-O did not move the view to full: depth=%v expanded=%v segments=%+v", m.depth, record.expanded, record.segments)
-	}
-	m.refreshReasoningRecords(testThinkingWidth)
-	if opened := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(opened, "bounded reasoning") {
-		t.Fatalf("opened completed thought = %q", opened)
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthCalls || !record.expanded || record.segments[0].full {
-		t.Fatalf("second idle Ctrl-O did not move the view to calls: depth=%v expanded=%v segments=%+v", m.depth, record.expanded, record.segments)
-	}
-	if body := plainStyledText(activityBlocks(m, testThinkingWidth)[0].activityToolDetail); strings.Contains(body, "bounded reasoning") {
-		t.Fatalf("calls depth showed the thought: %q", body)
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthCollapsed || record.expanded {
-		t.Fatalf("third idle Ctrl-O did not collapse: depth=%v expanded=%v", m.depth, record.expanded)
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthAbridged || !record.expanded {
-		t.Fatalf("fourth idle Ctrl-O did not abridge and reopen: depth=%v expanded=%v", m.depth, record.expanded)
-	}
-}
-
-func TestCtrlOSetsDepthAcrossTurns(t *testing.T) {
-	withDisplayTTY(t)
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.depth = depthAbridged // the cycle below the default depth
-	m.beginTurn("first")
-	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	firstUI.ShowThinking("older completed reasoning")
-	older := m.currentReasoningRecord()
-	olderCall := messages.ChatMessageToolCall{ID: "older", Name: "inspect"}
-	firstUI.AppendToolStart([]messages.ChatMessageToolCall{olderCall})
-	firstUI.AppendToolEnd(olderCall, "ok", time.Millisecond, nil)
-	olderTool := m.currentToolDisclosure()
-	r.endTurn(nil)
-
-	m.beginTurn("second")
-	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	secondUI.ShowThinking("new live reasoning")
-	active := m.currentReasoningRecord()
-	liveCall := messages.ChatMessageToolCall{ID: "live", Name: "bash"}
-	secondUI.AppendToolStart([]messages.ChatMessageToolCall{liveCall})
-	secondUI.AppendToolEnd(liveCall, "ok", time.Millisecond, nil)
-	liveTool := m.currentToolDisclosure()
-	if older == nil || olderTool == nil || active == nil || liveTool == nil {
-		t.Fatalf("fixture did not leave a thought and a tool block in each turn: older=%t olderTool=%t active=%t liveTool=%t",
-			older == nil, olderTool == nil, active == nil, liveTool == nil)
-	}
-	// The new turn left the older line open and opened its own.
-	if !older.expanded || !olderTool.expanded || !active.expanded || !liveTool.expanded {
-		t.Fatalf("turn start did not leave both lines open: older=%v/%v active=%v/%v", older.expanded, olderTool.expanded, active.expanded, liveTool.expanded)
-	}
-
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthFull || !older.expanded || !olderTool.expanded || !active.expanded || !liveTool.expanded {
-		t.Fatalf("Ctrl-O changed which lines are open: depth=%v older=%v/%v active=%v/%v", m.depth, older.expanded, olderTool.expanded, active.expanded, liveTool.expanded)
-	}
-	for _, record := range []*toolDisclosureRecord{olderTool, liveTool} {
-		for _, row := range record.rows {
-			if row.outputExpanded {
-				t.Fatalf("the full depth opened output for %q", row.callID)
-			}
+	for _, row := range transcriptRowsText(transcriptBlockRows(activityBlocks(m, width)[0].text, false, width)) {
+		if rw.StringWidth(row) > width {
+			t.Fatalf("row wider than the pane: %q", row)
 		}
-	}
-	m.refreshReasoningRecords(testThinkingWidth)
-	if shown := plainStyledText(m.transcript[active.transcriptIndex].text); !strings.Contains(shown, "new live reasoning") {
-		t.Fatalf("expanded inline block did not show the live tail: %q", shown)
-	}
-
-	// A tool phase pauses rather than breaks the run: the continuation
-	// resumes the same record, and the call joins the run's open tool
-	// block, its output closed like every other.
-	between := messages.ChatMessageToolCall{ID: "between", Name: "inspect"}
-	secondUI.AppendToolStart([]messages.ChatMessageToolCall{between})
-	secondUI.AppendToolEnd(between, "ok", time.Millisecond, nil)
-	secondUI.ShowThinking("continued reasoning")
-	if resumed := m.currentReasoningRecord(); resumed != active || !resumed.expanded {
-		t.Fatalf("unbroken continuation did not resume the open record: %#v", resumed)
-	}
-	if joined := m.currentToolDisclosure(); joined != liveTool || !joined.expanded || len(joined.rows) != 2 || joined.rows[1].outputExpanded {
-		t.Fatalf("tool phase did not join the run's open tool block with its output closed: %#v", joined)
-	}
-
-	// The calls depth leaves the lines as they are too.
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthCalls || !older.expanded || !olderTool.expanded || !active.expanded || !liveTool.expanded {
-		t.Fatalf("second Ctrl-O changed which lines are open: depth=%v older=%v/%v active=%v/%v", m.depth, older.expanded, olderTool.expanded, active.expanded, liveTool.expanded)
-	}
-	// A segment that arrives later opens as the newest turn's.
-	secondUI.AppendAssistantText("interim answer")
-	secondUI.ShowThinking("later reasoning segment")
-	if later := m.currentReasoningRecord(); later == nil || !later.expanded {
-		t.Fatalf("later reasoning segment of the newest turn did not open: %#v", later)
-	}
-}
-
-func TestCtrlOLeavesHandOpenedAndFoldedRunsAlone(t *testing.T) {
-	withDisplayTTY(t)
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.depth = depthAbridged // the cycle below the default depth
-	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-
-	// Prose after each round: two settled runs, each with its own record,
-	// both open as the newest turn's.
-	for i, thought := range []string{"first reasoning phase", "second reasoning phase"} {
-		tui.ShowThinking(thought)
-		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("group-%d", i), Name: "inspect"}
-		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-		tui.AppendToolEnd(call, "ok", time.Millisecond, nil)
-		tui.AppendAssistantText(fmt.Sprintf("answer %d. ", i))
-	}
-	ids := append([]int64(nil), m.turnReasoningIDs...)
-	if len(ids) != 2 || m.currentReasoningRecord() != nil {
-		t.Fatalf("fixture did not leave two settled current-turn records: ids=%v current=%#v", ids, m.currentReasoningRecord())
-	}
-
-	// A hand fold survives the depth change.
-	if !m.toggleReasoning(ids[0], testThinkingWidth) || m.reasoningRecords.get(ids[0]).expanded {
-		t.Fatal("fixture reasoning record did not fold")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthFull || m.reasoningRecords.get(ids[0]).expanded || !m.reasoningRecords.get(ids[1]).expanded {
-		t.Fatalf("Ctrl-O moved a hand-folded run: depth=%v first=%v second=%v",
-			m.depth, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
-	}
-	// So does a hand reopen.
-	if !m.toggleReasoning(ids[0], testThinkingWidth) || !m.reasoningRecords.get(ids[0]).expanded {
-		t.Fatal("fixture reasoning record did not reopen")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthCalls || !m.reasoningRecords.get(ids[0]).expanded || !m.reasoningRecords.get(ids[1]).expanded {
-		t.Fatalf("second Ctrl-O moved a hand-opened run: depth=%v first=%v second=%v",
-			m.depth, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
-	}
-	// A run that arrives later opens as the newest turn's.
-	tui.ShowThinking("third reasoning phase")
-	if later := m.currentReasoningRecord(); later == nil || !later.expanded {
-		t.Fatalf("later reasoning record of the newest turn did not open: %#v", later)
-	}
-}
-
-// The depth is sticky: it applies to rows that arrive later, in later runs,
-// batches and turns, while which lines are open follows the turns.
-func TestDepthHoldsForLaterBlocksAndTurns(t *testing.T) {
-	withDisplayTTY(t)
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.depth = depthAbridged // the cycle below the default depth
-	m.beginTurn("first")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	tui.ShowThinking("first run reasoning")
-	first := m.currentReasoningRecord()
-	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, "ok", time.Second, nil)
-	firstTool := m.currentToolDisclosure()
-
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthFull || !first.expanded || !firstTool.expanded || firstTool.rows[0].outputExpanded {
-		t.Fatalf("Ctrl-O did not move the present blocks to full with outputs closed: thought=%v tools=%v output=%v", first.expanded, firstTool.expanded, firstTool.rows[0].outputExpanded)
-	}
-
-	// Later blocks in the same turn open: a new run after prose, and a new
-	// batch after the prose settled the first one.
-	tui.AppendAssistantText("interim answer")
-	tui.ShowThinking("later run reasoning")
-	later := m.currentReasoningRecord()
-	if later == nil || later.id == first.id || !later.expanded {
-		t.Fatalf("later reasoning run did not open: %#v", later)
-	}
-	laterCall := messages.ChatMessageToolCall{ID: "c2", Name: "inspect"}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{laterCall})
-	tui.AppendToolEnd(laterCall, "ok", time.Second, nil)
-	laterTool := m.currentToolDisclosure()
-	if laterTool == nil || laterTool.id == firstTool.id || !laterTool.expanded || laterTool.rows[0].outputExpanded {
-		t.Fatalf("later tool batch did not open with its output closed: %#v", laterTool)
-	}
-
-	// Settlement keeps the turn's blocks as they are.
-	r.endTurn(nil)
-	if !first.expanded || !later.expanded || !firstTool.expanded || !laterTool.expanded {
-		t.Fatalf("turn settlement folded a block: first=%v later=%v tools=%v/%v",
-			first.expanded, later.expanded, firstTool.expanded, laterTool.expanded)
-	}
-
-	// The next turn leaves the first turn's lines open and opens its own,
-	// at the same depth.
-	m.beginTurn("second")
-	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	secondUI.ShowThinking("second turn reasoning")
-	secondTurn := m.currentReasoningRecord()
-	if secondTurn == nil || !secondTurn.expanded || !first.expanded || !later.expanded || !firstTool.expanded || !laterTool.expanded {
-		t.Fatalf("second turn did not open its own line beside the first: second=%v first=%v/%v tools=%v/%v", secondTurn != nil && secondTurn.expanded, first.expanded, later.expanded, firstTool.expanded, laterTool.expanded)
-	}
-	secondCall := messages.ChatMessageToolCall{ID: "c3", Name: "inspect"}
-	secondUI.AppendToolStart([]messages.ChatMessageToolCall{secondCall})
-	secondUI.AppendToolEnd(secondCall, "ok", time.Second, nil)
-	secondTool := m.currentToolDisclosure()
-	if secondTool == nil || !secondTool.expanded || len(secondTool.rows) != 1 || secondTool.rows[0].outputExpanded {
-		t.Fatalf("second-turn tool batch did not open with its output closed: %#v", secondTool)
-	}
-
-	// The next depth leaves the lines alone too.
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.depth != depthCalls || !first.expanded || !later.expanded || !secondTurn.expanded {
-		t.Fatalf("second Ctrl-O moved a line: depth=%v first=%v later=%v second=%v", m.depth, first.expanded, later.expanded, secondTurn.expanded)
-	}
-	if !firstTool.expanded || !laterTool.expanded || !secondTool.expanded {
-		t.Fatalf("second Ctrl-O tool blocks: first=%v later=%v second=%v", firstTool.expanded, laterTool.expanded, secondTool.expanded)
 	}
 }
 
@@ -730,7 +476,7 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning before clear")
-	m.disclosurePlacements[activityThought] = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
+	m.disclosurePlacements[activityThought] = []disclosurePlacement{{key: "stale", Cols: 10}}
 	m.clearDisplay()
 	if m.reasoningRecords.count() != 0 || m.reasoningRecords.count() != 0 || len(m.disclosurePlacements[activityThought]) != 0 || m.currentReasoningRecord() != nil {
 		t.Fatalf("clear retained reasoning state: records=%d at=%d placements=%d current=%#v",
@@ -744,33 +490,32 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	}
 }
 
-func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
+// Prose closes a reasoning run: the thought after it is a record of its own,
+// at its own place, and a thought opened by hand stays open through the
+// turn's settlement and the next turn's start. Opening one opens no other.
+func TestThoughtRecordsArePerRunAndOpenOneAtATime(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("first")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	tui.ShowThinking("first phase reasoning")
 	first := m.currentReasoningRecord()
-	if first == nil || !m.toggleReasoning(first.id, testThinkingWidth) {
-		t.Fatal("first disclosure did not expand")
-	}
 	tui.AppendAssistantText("interim prose")
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "ok", time.Second, nil)
-	// The tool phase settles the open reasoning segment in place — expansion
-	// survives until the turn settles — and a later segment opens its own
-	// disclosure at its own transcript position.
-	if !first.expanded || !first.complete {
-		t.Fatalf("tool phase did not settle the first segment in place: %#v", first)
+	// Prose settled the first thought in place. Opening a settled thought
+	// shows that one alone: only an opened live thought follows the turn.
+	clickThought(t, m, testThinkingWidth, first.id, 0)
+	if !first.partOpen(0) || !first.complete || m.followThoughts {
+		t.Fatalf("a settled thought opened wrong: follow=%v record=%#v", m.followThoughts, first)
 	}
 	tui.ShowThinking("second phase reasoning")
 	second := m.currentReasoningRecord()
 	if second == nil || second.id == first.id || m.reasoningRecords.count() != 2 {
-		t.Fatalf("second segment did not open its own disclosure: records=%d first=%#v second=%#v", m.reasoningRecords.count(), first, second)
+		t.Fatalf("second segment did not open its own record: records=%d first=%#v second=%#v", m.reasoningRecords.count(), first, second)
 	}
 	if got := string(first.tail); !strings.Contains(got, "first phase reasoning") || strings.Contains(got, "second phase") {
 		t.Fatalf("first segment tail changed after settling: %q", got)
@@ -788,32 +533,33 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 
 	tui.AppendAssistantText("final prose")
 	r.endTurn(nil)
-	if !first.expanded || second.expanded || !second.complete {
-		t.Fatal("turn completion changed the segments' state")
+	if !first.partOpen(0) || second.anyOpen() || !second.complete {
+		t.Fatal("turn completion changed which thoughts are open")
 	}
 
 	m.beginTurn("second turn")
 	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	secondUI.ShowThinking("independent second-turn reasoning")
 	third := m.currentReasoningRecord()
-	if third == nil || third.id == first.id || third.id == second.id || third.expanded {
-		t.Fatalf("second turn did not start with an independent collapsed record: third=%#v", third)
+	if third == nil || third.id == first.id || third.id == second.id || third.anyOpen() {
+		t.Fatalf("second turn did not start with an independent closed thought: third=%#v", third)
 	}
-	if !m.toggleReasoning(first.id, testThinkingWidth) || first.expanded || third.expanded {
-		t.Fatalf("folding the older turn affected the active turn: first=%#v third=%#v", first, third)
+	// Hiding the older turn's thought touches nothing else, and no Ctrl-O
+	// press opens a thought.
+	clickThought(t, m, testThinkingWidth, first.id, 0)
+	if first.anyOpen() || third.anyOpen() {
+		t.Fatalf("closing the older thought affected the active turn: first=%#v third=%#v", first, third)
 	}
-	// Leaving the collapsed depth opens every line.
-	if !m.toggleAllDisclosures(testThinkingWidth) || m.depth != depthAbridged || !first.expanded || !second.expanded || !third.expanded {
-		t.Fatalf("leaving collapsed did not open every line: first=%v second=%v third=%v",
-			first.expanded, second.expanded, third.expanded)
+	if !m.toggleAllDisclosures(testThinkingWidth) || m.depth != depthExpanded || first.anyOpen() || second.anyOpen() || third.anyOpen() {
+		t.Fatalf("expanding every chunk opened a thought: first=%v second=%v third=%v", first.anyOpen(), second.anyOpen(), third.anyOpen())
 	}
 }
 
 func TestReasoningTailLinesUseDisplayWidthForCJK(t *testing.T) {
-	const width = 6
-	lines := reasoningTailLines("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未", width, reasoningPreviewLines)
-	if len(lines) != reasoningPreviewLines {
-		t.Fatalf("CJK preview rows = %#v, want %d", lines, reasoningPreviewLines)
+	const width, limit = 6, 3
+	lines := reasoningTailLines("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未", width, limit)
+	if len(lines) != limit {
+		t.Fatalf("CJK preview rows = %#v, want %d", lines, limit)
 	}
 	for i, line := range lines {
 		if got := style.TextWidth(line); got > width {
@@ -836,7 +582,7 @@ func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 	if record == nil {
 		t.Fatal("reasoning record was not created")
 	}
-	record.expanded = true
+	openThoughts(m, record.id)
 	m.refreshReasoningRecords(rw.StringWidth(reasoningBlockIndent) + 1)
 	if got := strings.Count(m.transcript[record.transcriptIndex].text, "\n"); got != 0 {
 		t.Fatalf("tiny terminal rendered wrapped preview rows: %q", m.transcript[record.transcriptIndex].text)
@@ -846,15 +592,11 @@ func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
-		t.Fatal("short reasoning disclosure did not expand")
-	}
-	m.refreshReasoningRecords(testThinkingWidth)
+	clickThought(t, m, testThinkingWidth, record.id, 0)
 	shown := m.transcript[record.transcriptIndex].text
 	if got := strings.Count(shown, "\n"); got != 2 {
 		t.Fatalf("expanded short reasoning has %d detail rows, want 2: %q", got, shown)
@@ -868,40 +610,35 @@ func TestLiveReasoningGrowthReanchorsScrolledViewport(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, width) {
-		t.Fatal("reasoning fixture did not expand")
-	}
-	m.refreshReasoningRecords(width)
+	clickThought(t, m, width, record.id, 0)
 	for i := 0; i < 8; i++ {
 		m.appendLine(fmt.Sprintf("later %d", i))
 	}
 	// Hold the viewport below the reasoning block: growth above the anchor
 	// must shift it so the same content stays on screen.
+	rows := transcriptRowsText(m.transcriptRows(width))
 	m.followBottom = false
-	m.scrollAnchor = m.entryVisualStart(len(m.transcript)-1, width)
-	before := m.scrollAnchor
+	m.scrollAnchor = len(rows) - 1
+	held := rows[m.scrollAnchor]
 
 	tui.ShowThinking(strings.Repeat(" additional words", 20))
 	m.refreshReasoningRecords(width)
-	grown := m.entryVisualLineCount(record.transcriptIndex, width)
-	if grown < 2 {
-		t.Fatalf("grown reasoning block rows = %d, want growth", grown)
-	}
-	if m.scrollAnchor <= before {
-		t.Fatalf("inline growth did not re-anchor held viewport: anchor=%d, was %d", m.scrollAnchor, before)
+	rows = transcriptRowsText(m.transcriptRows(width))
+	if m.scrollAnchor >= len(rows) || rows[m.scrollAnchor] != held {
+		t.Fatalf("inline growth did not re-anchor the held viewport: row %d of %d is not %q", m.scrollAnchor, len(rows), held)
 	}
 }
 
-func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
+// A settled thought that led no call keeps its own row in the transcript: a
+// click on it shows its text, and it is not a fold for Ctrl-O to move.
+func TestCompletedThoughtKeepsItsRow(t *testing.T) {
 	const width = 50
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("clickable completed reasoning")
@@ -911,21 +648,21 @@ func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 		m.appendLine(fmt.Sprintf("later row %d", i))
 	}
 
-	// The settled reasoning block stays inline and clickable.
 	rows := m.transcriptRows(width)
-	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
-	if len(visible) != 1 || visible[0].recordID != -record.id {
-		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
+	if visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll); len(visible) != 0 {
+		t.Fatalf("a thought row was laid out as a fold: %#v", visible)
 	}
-
-	// Clicking the line opens the thought; the settled turn rides on the
-	// line's right column, not on a trailer row.
-	m.disclosurePlacements[activityAll] = visible
-	if !m.toggleDisclosureAt(visible[0].X, visible[0].Y, width) || !record.expanded {
-		t.Fatal("clicking the completed thought control did not open it")
+	link := thoughtLink(t, m, width, record.id, 0)
+	if link.X != 0 || link.Cols < 3 {
+		t.Fatalf("completed thought lost its row target: %#v", link)
 	}
-	if trailer := m.turnTrailers.latest(); trailer != nil || record.trailer == nil {
-		t.Fatalf("settled trailer = %#v, record trailer = %#v", trailer, record.trailer)
+	clickThought(t, m, width, record.id, 0)
+	if !record.partOpen(0) || !strings.Contains(activityText(t, m, width, 0), "clickable completed reasoning") {
+		t.Fatal("clicking the completed thought's row did not show its text")
+	}
+	// The settled turn rides on the prompt's row, not on a trailer row.
+	if trailer := m.turnTrailers.latest(); trailer != nil || m.transcript[m.newestTurnStart()].trailer == nil {
+		t.Fatalf("settled trailer row = %#v, prompt trailer = %#v", trailer, m.transcript[m.newestTurnStart()].trailer)
 	}
 }
 
@@ -969,35 +706,20 @@ func TestActivityTickerWhileScrolledUp(t *testing.T) {
 
 func TestDividerRowCount(t *testing.T) {
 	// Normal terminal: one divider row between transcript and bottom chrome.
-	if got := dividerRowCount(24, 1, 1, 0, false); got != 1 {
+	if got := dividerRowCount(24, 1, 1, false); got != 1 {
 		t.Fatalf("divider on roomy terminal = %d, want 1", got)
 	}
 	// Quiet mode stays chromeless.
-	if got := dividerRowCount(24, 1, 0, 0, true); got != 0 {
+	if got := dividerRowCount(24, 1, 0, true); got != 0 {
 		t.Fatalf("divider in quiet mode = %d, want 0", got)
 	}
 	// Too short to spare a row: the transcript wins.
-	if got := dividerRowCount(3, 1, 1, 0, false); got != 0 {
+	if got := dividerRowCount(3, 1, 1, false); got != 0 {
 		t.Fatalf("divider on cramped terminal = %d, want 0", got)
 	}
 	// Boundary: exactly one transcript row left after chrome keeps the divider.
-	if got := dividerRowCount(4, 1, 1, 0, false); got != 1 {
+	if got := dividerRowCount(4, 1, 1, false); got != 1 {
 		t.Fatalf("divider at boundary = %d, want 1", got)
-	}
-	if got := dividerRowCount(4, 1, 1, 1, false); got != 0 {
-		t.Fatalf("divider with a dock on cramped terminal = %d, want 0", got)
-	}
-}
-
-func TestTurnDockRowCountPreservesCrampedTranscript(t *testing.T) {
-	if got := turnDockRowCount(24, 1, 1, true); got != 1 {
-		t.Fatalf("roomy terminal dock rows = %d, want 1", got)
-	}
-	if got := turnDockRowCount(3, 1, 1, true); got != 0 {
-		t.Fatalf("cramped terminal dock rows = %d, want 0", got)
-	}
-	if got := turnDockRowCount(24, 1, 1, false); got != 0 {
-		t.Fatalf("hidden dock rows = %d, want 0", got)
 	}
 }
 
@@ -1040,7 +762,6 @@ func TestLineToggleAddressesOneLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("work")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -1062,13 +783,13 @@ func TestLineToggleAddressesOneLine(t *testing.T) {
 	if !m.toggleDisclosureGroup(activityTools, ids, 0) {
 		t.Fatal("line toggle returned false")
 	}
-	if first, second := m.toolDisclosures.get(ids[0]), m.toolDisclosures.get(ids[1]); !first.expanded || second.expanded {
-		t.Fatalf("toggle opened the wrong lines: first=%v second=%v", first.expanded, second.expanded)
+	if first, second := m.toolDisclosures.get(ids[0]), m.toolDisclosures.get(ids[1]); !m.lineOpenOf(first) || m.lineOpenOf(second) {
+		t.Fatalf("toggle opened the wrong lines: first=%v second=%v", m.lineOpenOf(first), m.lineOpenOf(second))
 	}
-	if !m.toggleToolDisclosure(ids[1]) || !m.toolDisclosures.get(ids[1]).expanded || !m.toolDisclosures.get(ids[0]).expanded {
+	if !m.toggleToolDisclosure(ids[1]) || !m.lineOpenOf(m.toolDisclosures.get(ids[1])) || !m.lineOpenOf(m.toolDisclosures.get(ids[0])) {
 		t.Fatal("toggling the second line changed the first")
 	}
-	if !m.toggleToolDisclosure(ids[0]) || m.toolDisclosures.get(ids[0]).expanded || !m.toolDisclosures.get(ids[1]).expanded {
+	if !m.toggleToolDisclosure(ids[0]) || m.lineOpenOf(m.toolDisclosures.get(ids[0])) || !m.lineOpenOf(m.toolDisclosures.get(ids[1])) {
 		t.Fatal("folding the first line changed the second")
 	}
 }

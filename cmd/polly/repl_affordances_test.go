@@ -33,7 +33,6 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
@@ -43,20 +42,20 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	r.endTurn(nil)
 	m.ed.setText("draft") // Keep the normal editor cursor throughout this check.
 	r.render()
-	// The folded line and the call row under it are two hitboxes of one line.
-	if hits := m.disclosurePlacements[activityAll]; len(hits) != 2 || hits[1].Y != hits[0].Y+1 || hits[1].recordID != hits[0].recordID {
-		t.Fatalf("tool disclosure hitboxes = %#v, want the line and its call row", hits)
+	// The header's triangle and label are one target for the whole chunk.
+	if hits := m.disclosurePlacements[activityAll]; len(hits) != 1 || hits[0].Cols != 13 {
+		t.Fatalf("chunk hitboxes = %#v, want one header target over \"▸ Read a file\"", hits)
 	}
 	target := m.disclosurePlacements[activityAll][0]
 	_, idle, _ := screenSnapshot(t, screen).Get(target.X, target.Y)
 	at := time.Now()
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
 	r.render()
-	if !m.currentToolDisclosure().expanded {
+	if !m.lineOpenOf(m.currentToolDisclosure()) {
 		t.Fatal("click did not expand the disclosure")
 	}
 	for _, p := range m.disclosurePlacements[activityAll] {
-		if p.recordID == target.recordID {
+		if p.key == target.key {
 			target = p
 		}
 	}

@@ -411,7 +411,6 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	}
 
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	if len(m.reasoningOrder) != 1 {
 		t.Fatalf("denied reasoning disclosures = %d, want 1", len(m.reasoningOrder))
@@ -462,7 +461,6 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 		t.Fatalf("reloaded model history leaked internal reasoning: %#v", visible)
 	}
 	reloaded := newReplModel()
-	reloaded.depth = depthCollapsed
 	reloaded.hydrateHistory(reloadedHistory, "denied-reasoning")
 	if len(reloaded.reasoningOrder) != 1 || !strings.Contains(string(reloaded.reasoningRecords.get(reloaded.reasoningOrder[0]).tail), "inspect the requested file") {
 		t.Fatalf("reloaded denied reasoning disclosure = %#v", reloaded.reasoningRecords)
@@ -498,10 +496,11 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "inspect"}}, durable...), "ctx")
-	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "▸ 1 tool") ||
+	// The folded chunk keeps the denial on its header, which names the call
+	// as it was asked: nothing ran.
+	plain := shown(m, 80)
+	if !strings.Contains(plain, "I will inspect that.") || !strings.HasSuffix(plain, "\n▸ Run a command · denied") ||
 		strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") {
 		t.Fatalf("prose + denial hydration = %q", plain)
 	}
@@ -561,7 +560,6 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "mixed-tools")
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(testSessionHistory(t, reopened), "mixed-tools")
 	if m.toolDisclosures.count() != 1 {
 		t.Fatalf("reloaded tool disclosures = %d, want 1", m.toolDisclosures.count())
@@ -570,15 +568,16 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 	for _, candidate := range m.toolDisclosures.all() {
 		record = candidate
 	}
-	if record == nil || !record.complete || record.expanded || len(record.rows) != 2 {
+	if record == nil || !record.complete || m.lineOpenOf(record) || len(record.rows) != 2 {
 		t.Fatalf("reloaded mixed disclosure = %#v, want two completed collapsed rows", record)
 	}
 	if record.rows[0].label != deniedName || record.rows[1].label != successName {
 		t.Fatalf("reloaded mixed row order = %#v, want %s then %s", record.rows, deniedName, successName)
 	}
 
-	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(collapsed, "▸ 2 tools") {
+	// One header for the batch, counting the denial; no call's row shows.
+	collapsed := shown(m, 80)
+	if !strings.Contains(collapsed, "\n▸ Used 2 tools · 1 denied\n") {
 		t.Fatalf("reloaded collapsed header = %q", collapsed)
 	}
 	for _, hidden := range []string{deniedName, successName, rawBody, llm.ToolDeniedContent} {

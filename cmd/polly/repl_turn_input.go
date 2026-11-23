@@ -233,6 +233,7 @@ func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 		_, prefix := queuedEcho(&item, "")
 		m.fadeQueuedInput(item.transcriptIndex, prefix)
 		m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
+		m.notePrompt(item.transcriptIndex, item.text)
 		if item.turn != nil {
 			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 		}
@@ -269,6 +270,8 @@ func (m *replModel) discardQueuedInputs() int {
 func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	prompt := turn.displayText
 	m.activityTurn++
+	m.markTurnPrompt()
+	m.followThoughts = false
 	m.startTurnDock()
 	m.busy = true
 	m.canceling = false

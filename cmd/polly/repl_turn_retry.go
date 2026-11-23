@@ -31,6 +31,7 @@ func (t *gotuiTurnUI) ModelAttemptStarted(_, _ int) {
 	if record := m.currentReasoningRecord(); record != nil {
 		copy := *record
 		copy.tail = slices.Clone(record.tail)
+		copy.segments = slices.Clone(record.segments)
 		t.attempt.prior = &copy
 	}
 	m.retry = modelRetryStatus{}
@@ -75,9 +76,9 @@ func (t *gotuiTurnUI) ModelAttemptAborted(_, attempt int, _ error) {
 			t.attempt.shared.elapsed = max(0, record.elapsed-prior.elapsed)
 			// Preserve its current position: peer notices or display operations
 			// may have moved entries while the provider was streaming.
-			anchor, expanded := record.transcriptAnchor, record.expanded
+			anchor := record.transcriptAnchor
 			*record = *prior
-			record.transcriptAnchor, record.expanded = anchor, expanded
+			record.transcriptAnchor = anchor
 			record.complete, record.active = true, false
 			m.markReasoningDirty(record)
 		}
@@ -86,7 +87,7 @@ func (t *gotuiTurnUI) ModelAttemptAborted(_, attempt int, _ error) {
 			m.turnReasoningIDs = append(m.turnReasoningIDs, record.id)
 			m.appendReasoningTail(record, string(t.attempt.shared.tail), false)
 			record.tailPrefix = t.attempt.shared.tailPrefix
-			record.elapsed = t.attempt.shared.elapsed
+			record.addThinkingTime(t.attempt.shared.elapsed)
 			record.tailCut = record.tailCut || t.attempt.shared.tailCut
 			record.unsaved = true
 			m.markReasoningDirty(record)

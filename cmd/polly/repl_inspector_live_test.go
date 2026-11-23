@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -125,15 +126,65 @@ func TestInspectorLiveMetadataToolsUseOnlyHostIdentity(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "provider-reused", DisplayID: "host-first", Name: "bash", Arguments: `{"command":"pwd"}`}
 	testToolStart(m, call)
 	testToolEnd(m, call, "done", nil)
+	settled := m.currentTurnToolRecord()
 	second, legacy := call, call
 	second.DisplayID, legacy.DisplayID = "host-second", ""
 	m.adoptLiveTools([]swarm.LiveToolActivity{{Call: call, Started: time.Now()}, {Call: second, Started: time.Now()}, {Call: legacy, Started: time.Now()}})
 	record := m.currentTurnToolRecord()
-	if record == nil || len(record.rows) != 3 || !record.rows[0].settled || record.rows[1].settled || record.rows[2].settled {
-		t.Fatalf("metadata merged provider-ID siblings or repeated the completed row: %+v", record)
+	if record == nil || record == settled || len(settled.rows) != 1 || !settled.rows[0].settled || len(record.rows) != 2 || record.rows[0].settled || record.rows[1].settled {
+		t.Fatalf("metadata merged provider-ID siblings or repeated the completed row: settled=%+v running=%+v", settled, record)
 	}
-	if record.rows[1].displayID != "host-second" || record.rows[2].displayID != "" || len(m.activeTools) != 2 {
+	if record.rows[0].displayID != "host-second" || record.rows[1].displayID != "" || len(m.activeTools) != 2 {
 		t.Fatalf("live rows lost their identities: %+v active=%+v", record.rows, m.activeTools)
+	}
+	if a, b := record.rows[0], record.rows[1]; !a.batchStart || b.batchStart || a.step != settled.rows[0].step+1 || b.step != a.step {
+		t.Fatalf("runtime calls did not open one new step/batch: %+v", record.rows)
+	}
+}
+
+func TestInspectorRuntimeBatchKeepsFoldWhenProposalAddsLeadingCall(t *testing.T) {
+	const width = 100
+	prior, missed, running := readCall("prior"), readCall("missed"), editCall("running")
+	prior.DisplayID, missed.DisplayID, running.DisplayID = "host-prior", "host-missed", "host-running"
+	result := continuationMessage(prior.DisplayID, messages.MessageRoleTool, "read complete")
+	result.ToolCallID, result.ToolName = prior.ID, prior.Name
+	result.SetToolSucceeded(true)
+	history := append(messages.User("Task"), messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{prior}}, result)
+	saved := newReplModel()
+	saved.hydrateHistory(history, "worker")
+	live := []swarm.LiveToolActivity{{Call: running, Started: time.Now()}}
+	fallback := childDisplayCopy(saved)
+	fallback.adoptLiveTools(live)
+	choice := viewState{depth: depthExpanded}
+	applyViewSections(fallback, choice)
+	if keys, open := foldStates(fallback, width); !slices.Equal(keys, []string{"call:host-prior", "call:host-running"}) || !slices.Equal(open, []bool{true, true}) {
+		t.Fatalf("runtime edit took over the older read batch: keys=%v open=%v", keys, open)
+	}
+	clickHeader(t, fallback, width, "call:host-running")
+	rememberViewSections(fallback, &choice)
+
+	// The batch was known only through the runtime's still-active subset;
+	// the real proposal includes a leading sibling and therefore a new key.
+	proposal := messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{missed, running}}
+	projected := prepareLiveDisplay(saved, []messages.ChatMessage{proposal})
+	projected.adoptLiveTools(live)
+	applyViewSections(projected, choice)
+	if keys, open := foldStates(projected, width); !slices.Equal(keys, []string{"call:host-prior", "call:host-missed"}) || !slices.Equal(open, []bool{true, false}) {
+		t.Fatalf("manual fold did not follow the same runtime call to its proposal: keys=%v open=%v", keys, open)
+	}
+	batch := projected.currentTurnToolRecord()
+	if len(batch.rows) != 3 || len(projected.activeTools) != 1 || batch.rows[2].step != 1 || batch.rows[2].runtimeOnly {
+		t.Fatalf("proposal did not replace the synthetic batch: %+v", batch.rows)
+	}
+	if !projected.toggleAllDisclosures(width) {
+		t.Fatal("bulk disclosure did not change")
+	}
+	choice.depth = projected.depth
+	rememberViewSections(projected, &choice)
+	rebuilt := prepareLiveDisplay(saved, []messages.ChatMessage{proposal})
+	applyViewSections(rebuilt, choice)
+	if _, open := foldStates(rebuilt, width); len(choice.runtimeFolds) != 0 || !slices.Equal(open, []bool{false, false}) {
+		t.Fatalf("bulk state did not clear the provisional choice: aliases=%v open=%v", choice.runtimeFolds, open)
 	}
 }
 
@@ -169,7 +220,7 @@ func TestInspectorLiveContinuationKeepsReadingAndDisclosureAtCheckpoint(t *testi
 	live := prepareLiveDisplay(base, []messages.ChatMessage{assistant, result})
 	live.renderPendingMarkdown()
 	live.transcriptRows(70)
-	state := &viewState{top: 5, follow: false, sections: map[string]viewSection{"tool:host-call": {open: true, outputExpanded: true}}}
+	state := &viewState{top: 5, follow: false, depth: depthExpanded, sections: map[string]viewSection{"tool:host-call": {outputExpanded: true}}}
 	applyViewSections(live, *state)
 	live.transcriptRows(70)
 	rememberViewPosition(live, state)

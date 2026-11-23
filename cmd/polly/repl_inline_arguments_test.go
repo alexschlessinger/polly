@@ -49,8 +49,9 @@ func TestInlineBashDetailsRetainOriginalCommandLiveAndSaved(t *testing.T) {
 				}
 				preview := strings.Join(transcriptRowsText(m.transcriptRows(240)), "\n")
 				if strings.Contains(preview, "Command") || strings.Contains(preview, "/workspace/staging-checkout") || strings.Contains(preview, "MODE=staging") {
-					t.Fatalf("abridged preview stopped being concise: %s", preview)
+					t.Fatalf("collapsed preview stopped being concise: %s", preview)
 				}
+				expandLines(m, nil)
 				openAllOutputs(m)
 				for _, width := range []int{240, 48, 18, 80} {
 					m.transcriptRows(width)

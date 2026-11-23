@@ -29,18 +29,18 @@ func TestActivityCaretStaysFlushBelowUserPrompt(t *testing.T) {
 						tui.AppendAssistantText("Done.")
 						r.endTurn(nil)
 					}
-					for _, expanded := range []bool{true, false} {
+					for _, open := range []bool{false, true} {
 						rows := (conversationView{}).Rows(m, width)
 						text := transcriptRowsText(rows)
-						glyph := "▸"
-						if expanded {
-							glyph = "▾"
+						want := "▸ Read AGENTS.md"
+						if open {
+							want = "▾ Read AGENTS.md"
 						}
-						if len(text) <= headerRow || !strings.HasPrefix(text[headerRow], glyph+" thought") {
-							t.Fatalf("settled=%v expanded=%v: activity is not flush below the prompt: %q", settled, expanded, text)
+						if len(text) <= headerRow || !strings.HasPrefix(text[headerRow], want) {
+							t.Fatalf("settled=%v open=%v: activity is not flush below the prompt: %q", settled, open, text)
 						}
-						if expanded && (len(text) <= headerRow+1 || text[headerRow+1] != "  Checking the diff.") {
-							t.Fatalf("expanded detail should have a two-space indent: %q", text)
+						if open && (len(text) <= headerRow+1 || !strings.HasPrefix(text[headerRow+1], "  "+thoughtGlyph+" thought")) {
+							t.Fatalf("first evidence row should be the indented thought row below the header: %q", text)
 						}
 						hits := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
 						if len(hits) == 0 || hits[0].X != 0 || hits[0].Y != headerRow {

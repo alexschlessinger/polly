@@ -41,7 +41,7 @@ func TestLiveContinuationPreservesSavedBaseAndIdentity(t *testing.T) {
 		if record.complete || len(record.rows) != 1 || record.rows[0].settled || record.rows[0].pres.outcome != toolOutcomeRunning {
 			t.Fatalf("pending row is not running: %+v", record)
 		}
-		record.expanded = true
+		live.setLineOpenOf(record, true)
 		record.rows[0].outputExpanded = true
 	}
 	choice := viewState{}
@@ -53,7 +53,7 @@ func TestLiveContinuationPreservesSavedBaseAndIdentity(t *testing.T) {
 	durable.hydrateHistory(append(history, proposal, result), "agent")
 	applyViewSections(durable, choice)
 	for _, record := range durable.toolDisclosures.all() {
-		if !record.expanded || !record.rows[0].outputExpanded || !record.rows[0].settled {
+		if !durable.lineOpenOf(record) || !record.rows[0].outputExpanded || !record.rows[0].settled {
 			t.Fatalf("choice/result lost at checkpoint: %+v", record)
 		}
 	}
@@ -153,7 +153,7 @@ func TestLiveDeniedReasoningKeepsDisclosureAndAnchor(t *testing.T) {
 	proposal.ToolCalls = []messages.ChatMessageToolCall{{ID: "reused", DisplayID: "denied-host", Name: "bash"}}
 	live := prepareLiveDisplay(saved, []messages.ChatMessage{proposal})
 	thought := live.reasoningRecords.get(live.reasoningOrder[0])
-	thought.expanded, thought.dirty = true, true
+	openThoughts(live, thought.id)
 	state := viewState{}
 	rememberViewSections(live, &state)
 	continuationText(live)
@@ -164,7 +164,7 @@ func TestLiveDeniedReasoningKeepsDisclosureAndAnchor(t *testing.T) {
 	applyViewSections(durable, state)
 	continuationText(durable)
 	record := durable.reasoningRecords.get(durable.reasoningOrder[0])
-	if !record.expanded || record.sectionKey != "thought:thought-host" {
+	if !record.anyOpen() || record.sectionKey != "thought:thought-host" {
 		t.Fatalf("denied thought lost identity/choice: %+v", record)
 	}
 	found := false

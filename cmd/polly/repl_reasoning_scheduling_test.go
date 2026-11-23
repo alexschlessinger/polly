@@ -35,6 +35,7 @@ func TestReasoningCallbacksDeferMarkdownUntilPaint(t *testing.T) {
 			ui := &gotuiTurnUI{model: m, config: &Config{}}
 			ui.ShowThinking("**initial** thought.\n\nvisible **unfinished")
 			record := m.currentReasoningRecord()
+			openThoughts(m, record.id) // only an open thought renders its text
 			version, revision := record.tailVersion, m.visual.revision
 			tc.call(ui)
 			if record.previewWidth != 0 || record.previewVersion != 0 || len(record.previewLines) != 0 || !record.dirty {
@@ -63,8 +64,9 @@ func TestReasoningPauseKeepsPaintedPreviewUntilNextPaint(t *testing.T) {
 	m.beginTurn("explain")
 	ui := &gotuiTurnUI{model: m, config: &Config{}}
 	ui.ShowThinking("visible **unfinished")
-	(conversationView{}).Rows(m, 40)
 	record := m.currentReasoningRecord()
+	openThoughts(m, record.id) // only an open thought renders its text
+	(conversationView{}).Rows(m, 40)
 	before := strings.Join(record.previewLines, "\n")
 	version := record.previewVersion
 	// Held viewports used to enter layout from the callback as well. All
@@ -96,6 +98,7 @@ func TestReasoningRetryRestorationDefersMarkdownUntilPaint(t *testing.T) {
 			t.Fatal("retry parsed Markdown while restoring or splitting reasoning")
 		}
 	}
+	openAllThoughts(m) // only an open thought renders its text
 	(conversationView{}).Rows(m, 80)
 	if accepted.unsaved || !strings.Contains(plainStyledText(m.transcript[accepted.transcriptIndex].text), "accepted reasoning") {
 		t.Fatal("accepted prefix was not restored and painted")
@@ -124,6 +127,7 @@ func TestReasoningHistoryAndChildProjectionsDeferMarkdownUntilPaint(t *testing.T
 			t.Fatal("history/child projection parsed reasoning before paint")
 		}
 	}
+	openAllThoughts(projected) // only an open thought renders its text
 	rows := (conversationView{}).Rows(projected, 80)
 	text := strings.Join(transcriptRowsText(rows), "\n")
 	if !strings.Contains(text, "Plan") || !strings.Contains(text, "restored thought") || strings.Contains(text, "**restored**") {

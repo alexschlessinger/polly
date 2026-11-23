@@ -158,7 +158,6 @@ func TestRenderDiffLinesStylesAndCaps(t *testing.T) {
 func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	t.Cleanup(func() { _ = r.work.close() })
 	m := r.model
 	m.beginTurn("edit")
@@ -203,7 +202,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 			t.Fatalf("row wider than pane: %q", line)
 		}
 	}
-	if strings.Contains(rows, "Edited") {
+	if strings.Contains(rows, "Edited main.go: 1 replacement(s).") || strings.Contains(rows, "\n    Edited") {
 		t.Fatalf("edit click showed the raw tool response: %s", rows)
 	}
 	// The hunk lands behind the rail, not as a loose indented block.
@@ -224,7 +223,6 @@ func TestInlineHunkWrapsAtPaintWidth(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("edit")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "e1", Name: "write_file", Arguments: `{"path":"x.txt"}`}
@@ -272,7 +270,6 @@ func TestBashMultiFileChangesShowsEveryRecordedHunk(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "b1", Name: "bash", Arguments: `{"command":"sed -i s/a/b/ *.txt"}`}
@@ -355,7 +352,6 @@ func TestFailedToolResultKeepsRecordedChanges(t *testing.T) {
 
 func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	h := historyHydrator{m: m}
 	call := messages.ChatMessageToolCall{ID: "one", Name: "edit_file", Arguments: `{"path":"main.go"}`}
 	h.assistant(messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"unicode"
 
 	ui "github.com/metaspartan/gotui/v5"
@@ -14,12 +15,11 @@ type viewAnchor struct {
 }
 
 // viewSection is one activity record's or row's choices as a view keeps
-// them: whether its line is open, a row's output, and for a thought which of
-// its parts show every retained row.
+// them: a row's output, and for a thought which of its parts show their
+// text. Chunk folds are kept beside them, by chunk key.
 type viewSection struct {
-	open           bool
 	outputExpanded bool
-	full           []bool
+	open           []bool
 }
 
 func rowTextUnits(row []ui.Cell) int {
@@ -88,11 +88,6 @@ func rememberViewSections(m *replModel, s *viewState) {
 		s.sections = make(map[string]viewSection)
 	}
 	for _, r := range m.toolDisclosures.all() {
-		if key := toolSectionKey(r); key != "" {
-			v := s.sections[key]
-			v.open = r.expanded
-			s.sections[key] = v
-		}
 		for _, row := range r.rows {
 			if row.sectionKey == "" {
 				continue
@@ -106,27 +101,108 @@ func rememberViewSections(m *replModel, s *viewState) {
 		if r.sectionKey == "" {
 			continue
 		}
-		full := make([]bool, len(r.segments))
+		open := make([]bool, len(r.segments))
 		for i, segment := range r.segments {
-			full[i] = segment.full
+			open[i] = segment.open
 		}
-		s.sections[r.sectionKey] = viewSection{open: r.expanded, full: full}
+		s.sections[r.sectionKey] = viewSection{open: open}
 	}
+	s.chunks = maps.Clone(m.chunkFolds)
+	s.runtimeFolds = m.rememberRuntimeFolds(s.runtimeFolds)
 	s.revision++
 }
 
-// applyViewSections gives a projection the view's depth and the
-// choices made in it: a section the view remembers takes its remembered
-// state, any other output stays closed and any other thought part takes the
-// depth's default, and a line nobody chose for stays as the projection
-// opened it.
+// visitRuntimeFoldChunks visits only lines carrying evidence for a runtime
+// fold handoff. A line may hold several disclosures; build its chunks once.
+func (m *replModel) visitRuntimeFoldChunks(match func(*toolDisclosureRow) bool, visit func(*activityChunk)) {
+	seen := map[int64]bool{}
+	for _, record := range m.toolDisclosures.all() {
+		if seen[record.id] {
+			continue
+		}
+		for i := range record.rows {
+			if !match(&record.rows[i]) {
+				continue
+			}
+			chunks, _, tools := m.lineChunks(record.transcriptIndex)
+			for _, id := range tools {
+				seen[id] = true
+			}
+			for i := range chunks {
+				visit(&chunks[i])
+			}
+			break
+		}
+	}
+}
+
+func (m *replModel) rememberRuntimeFolds(previous map[string]bool) map[string]bool {
+	if len(m.chunkFolds) == 0 || len(previous) == 0 && len(m.activeTools) == 0 {
+		return nil
+	}
+	// Keep absent calls until the next projection can reconcile them. Use
+	// copy-on-write so an in-flight inspector projection owns its snapshot.
+	hints := maps.Clone(previous)
+	match := func(row *toolDisclosureRow) bool {
+		_, tracked := previous[row.displayID]
+		return row.displayID != "" && (row.runtimeOnly || tracked)
+	}
+	m.visitRuntimeFoldChunks(match, func(c *activityChunk) {
+		open, manual := m.chunkFolds[c.key]
+		for _, p := range c.parts {
+			if p.tools == nil || !match(&p.tools.rows[p.row]) {
+				continue
+			}
+			id := p.tools.rows[p.row].displayID
+			if manual {
+				if hints == nil {
+					hints = make(map[string]bool)
+				}
+				hints[id] = open
+			} else {
+				delete(hints, id)
+			}
+		}
+	})
+	return hints
+}
+
+func (m *replModel) projectedChunkFolds(s viewState) map[string]bool {
+	folds := maps.Clone(s.chunks)
+	if len(folds) == 0 || len(s.runtimeFolds) == 0 {
+		return folds
+	}
+	match := func(row *toolDisclosureRow) bool {
+		_, ok := s.runtimeFolds[row.displayID]
+		return ok
+	}
+	m.visitRuntimeFoldChunks(match, func(c *activityChunk) {
+		if _, manual := folds[c.key]; manual {
+			return // an explicit choice for the resulting chunk wins
+		}
+		for _, p := range c.parts {
+			if p.tools != nil {
+				if open, ok := s.runtimeFolds[p.tools.rows[p.row].displayID]; ok {
+					folds[c.key] = open
+					break
+				}
+			}
+		}
+	})
+	return folds
+}
+
+// applyViewSections gives a projection the view's bulk state and the
+// choices made in it: a chunk the view folded or opened by hand takes that
+// fold and any other follows the bulk state; an output or a thought the view
+// opened is open, and every other one stays closed.
 func applyViewSections(m *replModel, s viewState) {
-	m.depth = s.depth
-	full := s.depth == depthFull
-	// Output and part choices live outside the record's text, so a record
-	// whose text does not change still needs the layout redone when they
-	// do.
-	changed := false
+	// The bulk state, the folds and the part choices live outside the
+	// records' text, so a record whose text does not change still needs the
+	// layout redone when they do.
+	folds := m.projectedChunkFolds(s)
+	changed := m.depth != s.depth || !maps.Equal(m.chunkFolds, folds)
+	m.depth, m.chunkFolds = s.depth, folds
 	for _, r := range m.toolDisclosures.all() {
 		for i := range r.rows {
 			row := &r.rows[i]
@@ -138,28 +214,19 @@ func applyViewSections(m *replModel, s viewState) {
 				row.outputExpanded, changed = want, true
 			}
 		}
-		if v, ok := s.sections[toolSectionKey(r)]; ok && r.expanded != v.open {
-			r.expanded, changed = v.open, true
-		}
 		m.refreshToolDisclosureWithAnchor(r, false)
 	}
 	for _, r := range m.reasoningRecords.all() {
-		v, ok := s.sections[r.sectionKey]
+		v := s.sections[r.sectionKey]
 		r.ensureSegments()
 		for i := range r.segments {
-			want := full
-			if ok && i < len(v.full) {
-				want = v.full[i]
+			want := i < len(v.open) && v.open[i]
+			if r.segments[i].open != want {
+				// The bounded tail lives in the transcript entry; the dirty
+				// sweep renders it at the pane's width before the view
+				// paints, so the row never opens with nothing under it.
+				r.segments[i].open, r.dirty, changed = want, true, true
 			}
-			if r.segments[i].full != want {
-				r.segments[i].full, changed = want, true
-			}
-		}
-		if ok && r.expanded != v.open {
-			// The bounded tail lives in the transcript entry; the dirty sweep
-			// re-renders it at the pane's width before the view paints, so
-			// the row never opens with nothing under it.
-			r.expanded, r.dirty = v.open, true
 		}
 	}
 	if changed {

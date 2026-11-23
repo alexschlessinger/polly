@@ -14,7 +14,6 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run tests")
 	command := "cd /workspace/polly && GOCACHE=/tmp/polly-cache go test ./cmd/polly -run TestExpandedToolDisclosure -count=1 | tail -40"
 	args, _ := json.Marshal(map[string]string{"command": command})
@@ -29,7 +28,7 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 			var detail string
 			for _, block := range model.transcriptDisplayEntries(width) {
 				if len(block.toolDisclosureIDs) > 0 {
-					detail = plainStyledText(inlineActivityDetail(block.text))
+					_, detail, _ = strings.Cut(plainStyledText(block.text), "\n")
 				}
 			}
 			if strings.Count(detail, "\n") != 0 || rw.StringWidth(detail) > width || !strings.Contains(detail, glyph+" $ ") {
@@ -58,8 +57,8 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	assertRows(m, "→")
 	tui.AppendToolEnd(call, strings.Repeat("output\n", 28), 1200*time.Millisecond, nil)
 	assertRows(m, "✓")
-	wide := toolDisclosureTextAtWidth(record, 200)
-	narrow := toolDisclosureTextAtWidth(record, 48)
+	wide := toolRecordText(record, 200, true)
+	narrow := toolRecordText(record, 48, true)
 	if !strings.Contains(plainStyledText(wide), "28 lines") || strings.Contains(plainStyledText(narrow), "28 lines") {
 		t.Fatalf("output counts did not yield to command: wide=%q narrow=%q", wide, narrow)
 	}
@@ -70,7 +69,6 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	result.SetToolSucceeded(true)
 	result.SetToolDuration(1200 * time.Millisecond)
 	reloaded := newReplModel()
-	reloaded.depth = depthCollapsed
 	reloaded.hydrateHistory([]messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "run tests"},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},

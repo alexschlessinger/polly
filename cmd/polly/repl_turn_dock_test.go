@@ -2,24 +2,28 @@ package main
 
 import (
 	"context"
+	"errors"
+	"maps"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
+func TestSettledTurnRidesOnItsPromptRow(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	tui.ShowThinking("inspect the response framing and preserve the newest reasoning tail")
-	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
+	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: `{"path":"stream.go"}`}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "ok", 1200*time.Millisecond, nil)
 	tui.AppendAssistantText("The stream closed before its final event.")
@@ -40,23 +44,127 @@ func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 	if m.turnDock.visible {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
-	// The tool record is the turn's last activity, so it carries the dock
-	// and its line ends with the turn's time; the tokens are /context's.
-	if record.trailer == nil || record.trailer.inputTokens != 18600 || m.turnTrailers.count() != 0 {
-		t.Fatalf("settled turn did not land on its activity record: trailer=%#v rows=%d", record.trailer, m.turnTrailers.count())
+	// The prompt that started the turn carries the dock, so its row ends
+	// with the turn's time and no chunk's does; the tokens are /context's.
+	prompt := m.transcript[m.newestTurnStart()]
+	if prompt.trailer == nil || prompt.trailer.inputTokens != 18600 || m.turnTrailers.count() != 0 {
+		t.Fatalf("settled turn did not land on its prompt: trailer=%#v rows=%d", prompt.trailer, m.turnTrailers.count())
 	}
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
-	var line string
+	var line, header string
 	for _, row := range strings.Split(visible, "\n") {
-		if strings.Contains(row, "1 tool call") {
+		if strings.HasPrefix(row, "▎ ") {
 			line = row
 		}
+		if strings.HasPrefix(row, "▸ ") {
+			header = row
+		}
 	}
-	if !strings.HasPrefix(line, "▸ thought") || !strings.HasSuffix(line, "  34.0s") || strings.Contains(visible, "18.6k") {
-		t.Fatalf("settled activity line = %q in %q", line, visible)
+	if !strings.HasSuffix(line, "  34.0s") || len([]rune(line)) != 160 || header != "▸ Read stream.go" || strings.Contains(visible, "18.6k") || record == nil {
+		t.Fatalf("settled prompt row = %q, header = %q in %q", line, header, visible)
 	}
 	if got := m.lastTurnSummary(); got != "34.0s · 18.6k in / 1.2k out" {
 		t.Fatalf("last turn summary = %q", got)
+	}
+}
+
+// A settled turn's time sits at the right edge of its prompt's last row, two
+// columns clear of the words. A row without room for the outcome keeps the
+// time alone, and one without room for that keeps neither: settling never
+// wraps or clips what the reader wrote.
+func TestPromptTrailerFitsItsRowOrStaysOff(t *testing.T) {
+	withDisplayTTY(t)
+	for _, tc := range []struct {
+		name, prompt string
+		err          error
+	}{
+		{"done", "explain the layout", nil},
+		{"failed", "explain the layout", errors.New("provider unavailable")},
+		{"two lines", "explain the layout\nand the folds under it", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newManagedREPL(&Config{}, "ctx", 0, 0)
+			m := r.model
+			m.beginTurn(tc.prompt)
+			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+			tui.AppendAssistantText("An answer.")
+			m.turnStarted = time.Now().Add(-34 * time.Second)
+			prompt := func(width int) []string {
+				var rows []string
+				for _, row := range strings.Split(shown(m, width), "\n") {
+					if strings.HasPrefix(row, "▎") {
+						rows = append(rows, row)
+					}
+				}
+				return rows
+			}
+			widths := []int{100, 44, 36, 30, 28, 26, 24, 22, 20, 12}
+			before := map[int][]string{}
+			for _, width := range widths {
+				before[width] = prompt(width)
+			}
+			r.endTurn(tc.err)
+			entry := m.transcript[m.newestTurnStart()]
+			if entry.trailer == nil || m.turnTrailers.count() != 0 {
+				t.Fatalf("the settled turn did not land on its prompt: %#v, %d status rows", entry.trailer, m.turnTrailers.count())
+			}
+			field := m.promptTrailerField(*entry.trailer)
+			if field.elapsed != "34.0s" || (tc.err == nil) != (field.raw == field.elapsed) || (tc.err != nil && field.raw != "✗ failed · 34.0s") {
+				t.Fatalf("prompt field = %+v", field)
+			}
+			fitted := map[string]bool{}
+			for _, width := range widths {
+				was, now := before[width], prompt(width)
+				last := len(was) - 1
+				if len(now) != len(was) || !slices.Equal(now[:last], was[:last]) {
+					t.Fatalf("width %d: settling re-wrapped the prompt: %q -> %q", width, was, now)
+				}
+				room := width - style.TextWidth(was[last])
+				want := was[last]
+				for _, text := range []string{field.raw, field.elapsed} {
+					if room >= 2+style.TextWidth(text) {
+						want += strings.Repeat(" ", room-style.TextWidth(text)) + text
+						fitted[text] = true
+						break
+					}
+				}
+				if want == was[last] {
+					fitted[""] = true
+				}
+				if now[last] != want {
+					t.Fatalf("width %d: prompt row %q, want %q", width, now[last], want)
+				}
+			}
+			// The widths cover each case: the whole field, the time alone
+			// where an outcome leads it, and nothing.
+			if !fitted[field.raw] || !fitted[field.elapsed] || !fitted[""] {
+				t.Fatalf("fixture widths missed a case: %v", fitted)
+			}
+		})
+	}
+}
+
+// A turn that echoed no prompt has no row to carry its time; it keeps a row
+// of its own, as before.
+func TestTurnWithoutAPromptRowKeepsItsTrailerRow(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginManagedTurnState(textManagedTurn("unechoed"))
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	tui.AppendAssistantText("An answer.")
+	m.turnStarted = time.Now().Add(-2 * time.Second)
+	r.endTurn(nil)
+	trailer := m.turnTrailers.latest()
+	if trailer == nil || m.turnTrailers.count() != 1 {
+		t.Fatalf("a turn with no prompt row left %d trailer rows", m.turnTrailers.count())
+	}
+	for i, entry := range m.transcript {
+		if entry.trailer != nil {
+			t.Fatalf("entry %d took the trailer of a turn that echoed no prompt", i)
+		}
+	}
+	if got := shown(m, 80); !strings.HasSuffix(got, "✓ 2.0s") {
+		t.Fatalf("the trailer row: %q", got)
 	}
 }
 
@@ -69,10 +177,9 @@ func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	tui.ShowThinking("reasoning detail")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "read", Name: "read_file"}})
 
-	// Live activity is inline in the transcript where it occurs. The reasoning
-	// segment settled when the tool phase began, so it already reads "thought".
-	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "read") {
+	// Live activity is inline in the transcript where it occurs: one header
+	// that names the call in flight, the thought that led it behind the fold.
+	if visible := shown(m, 100); visible != "▎ work\n▸ Reading a file" {
 		t.Fatalf("live activity missing from transcript: %q", visible)
 	}
 	// There is no dock row while the turn runs: the clock is in the status
@@ -93,9 +200,10 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	r.endTurn(nil)
 
 	m.beginTurn("second")
-	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(history, "✓ 2.0s") || strings.Contains(history, "1.2k in") {
-		t.Fatalf("previous turn trailer wants the outcome and time alone: %q", history)
+	history := shown(m, 100)
+	// The previous turn's time rides on its prompt's row, without tokens.
+	if first := strings.SplitN(history, "\n", 2)[0]; !strings.HasPrefix(first, "▎ first ") || !strings.HasSuffix(first, "  2.0s") || len([]rune(first)) != 100 || strings.Contains(history, "1.2k in") {
+		t.Fatalf("previous turn's prompt row wants the time alone at its right edge: %q", history)
 	}
 	if !strings.Contains(history, "▎ second") {
 		t.Fatalf("second prompt missing from transcript: %q", history)
@@ -149,7 +257,6 @@ func TestPriorThoughtExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the check below opens a folded line by hand
 	m.beginTurn("first")
 	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	firstUI.ShowThinking("prior reasoning detail")
@@ -178,7 +285,6 @@ func TestExpandedToolsPreserveLiteralBracketsWithoutLeakingStyleMarkup(t *testin
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{
@@ -249,7 +355,7 @@ func TestQueuedTurnSwitchesDockWithoutAddingTrailer(t *testing.T) {
 	}
 }
 
-func TestHydratedHistoryHandsTurnsToTheirActivityLines(t *testing.T) {
+func TestHydratedHistoryLeavesNoTrailerRows(t *testing.T) {
 	firstAssistant := messages.ChatMessage{
 		Role:      messages.MessageRoleAssistant,
 		Content:   "first answer",
@@ -272,27 +378,22 @@ func TestHydratedHistoryHandsTurnsToTheirActivityLines(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	// Both turns had activity, so neither leaves a trailer row, and the
-	// transcript repeats no token count.
+	// A replayed turn has no clock and finished, so it has nothing to say:
+	// neither turn leaves a trailer row or a time on its prompt, and the
+	// transcript repeats no token count. The last turn's tokens are
+	// /context's to report.
 	if m.turnDock.visible || m.turnTrailers.count() != 0 || strings.Contains(transcript, " in / ") {
 		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v transcript:%q", m.turnTrailers, m.turnDock, transcript)
 	}
-	var docks []int
-	for _, record := range m.toolDisclosures.all() {
-		if record.trailer != nil {
-			docks = append(docks, record.trailer.inputTokens)
+	for i, entry := range m.transcript {
+		if entry.trailer != nil {
+			t.Fatalf("hydrated prompt %d carries a trailer with nothing to say: %#v", i, entry.trailer)
 		}
 	}
-	for _, record := range m.reasoningRecords.all() {
-		if record.trailer != nil {
-			docks = append(docks, record.trailer.inputTokens)
-		}
-	}
-	if len(docks) != 2 || docks[0]+docks[1] != 2800 {
-		t.Fatalf("hydrated turns did not land on their activity records: %v", docks)
+	if m.settledDock.inputTokens != 1800 {
+		t.Fatalf("last hydrated turn's tokens = %d, want 1800", m.settledDock.inputTokens)
 	}
 	if strings.Count(transcript, "▸ thought") != 2 {
 		t.Fatalf("hydrated reasoning missing its inline rows: %q", transcript)
@@ -359,9 +460,9 @@ func TestLastTurnSummaryShowsEstimatesAndCost(t *testing.T) {
 	m.turnStarted = time.Now().Add(-34 * time.Second)
 	r.endTurn(nil)
 	m.renderPendingMarkdown()
-	// A turn with no activity line leaves the outcome and time as a row.
-	if got := plainStyledText(m.transcript[len(m.transcript)-1].text); got != "  ✓ 34.0s" {
-		t.Fatalf("settled trailer = %q", got)
+	// The time rides on the prompt's row; no row repeats it.
+	if first := strings.SplitN(shown(m, 160), "\n", 2)[0]; !strings.HasPrefix(first, "▎ explain ") || !strings.HasSuffix(first, "  34.0s") || m.turnTrailers.latest() != nil {
+		t.Fatalf("settled prompt row = %q, status row = %#v", first, m.turnTrailers.latest())
 	}
 	if got := m.lastTurnSummary(); got != "34.0s · 18.6k in / 1.2k out · $0.02" {
 		t.Fatalf("settled summary = %q", got)
@@ -433,5 +534,71 @@ func TestStatusRowShowsSessionSpend(t *testing.T) {
 	// The total is dropped before the session name on a narrow row.
 	if narrow := plainStyledText(m.statusRow(len("ctx"))); strings.Contains(narrow, "$") {
 		t.Fatalf("narrow status row kept the cost: %q", narrow)
+	}
+}
+
+// A prompt queued while a turn runs is echoed in the middle of that turn's
+// work. The turn's time still lands on the prompt that started it; the echo
+// gets a time only when its own turn has run.
+func TestQueuedPromptEchoNeverTakesAnotherTurnsTime(t *testing.T) {
+	for _, activate := range []bool{true, false} {
+		name := "discarded"
+		if activate {
+			name = "activated"
+		}
+		t.Run(name, func(t *testing.T) {
+			withDisplayTTY(t)
+			r := newManagedREPL(&Config{}, "ctx", 0, 0)
+			m := r.model
+			m.beginTurn("first")
+			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+			tui.AppendToolStart([]messages.ChatMessageToolCall{readCall("a")})
+			tui.AppendToolEnd(readCall("a"), "ok", time.Second, nil)
+
+			queuedTurn := textManagedTurn("second")
+			item := queuedREPLInput{text: "second", turn: &queuedTurn}
+			m.appendQueuedInput(&item)
+			m.queue = append(m.queue, item)
+			if !activate {
+				m.discardQueuedInputs()
+			}
+			tui.AppendAssistantText("more work to do")
+			tui.AppendToolStart([]messages.ChatMessageToolCall{readCall("b")})
+			tui.AppendToolEnd(readCall("b"), "ok", time.Second, nil)
+			m.turnStarted = time.Now().Add(-5 * time.Second)
+			r.endTurn(nil)
+
+			// timed maps each prompt row that carries a time to that time.
+			timed := func() map[string]string {
+				out := map[string]string{}
+				for _, row := range strings.Split(shown(m, 60), "\n") {
+					if match := regexp.MustCompile(`^▎ (\S+) +(\d+\.\ds)$`).FindStringSubmatch(row); match != nil {
+						out[match[1]] = match[2]
+					}
+				}
+				return out
+			}
+			if got := timed(); len(got) != 1 || got["first"] != "5.0s" {
+				t.Fatalf("the first turn's time landed on %v", got)
+			}
+			if activate {
+				m.queue = nil
+				m.activateQueuedInput(item)
+				m.beginManagedTurnState(queuedTurn)
+			} else {
+				m.beginTurn("third")
+			}
+			next := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+			next.AppendAssistantText("an answer")
+			m.turnStarted = time.Now().Add(-7 * time.Second)
+			r.endTurn(nil)
+			want := map[string]string{"first": "5.0s", "third": "7.0s"}
+			if activate {
+				want = map[string]string{"first": "5.0s", "second": "7.0s"}
+			}
+			if got := timed(); !maps.Equal(got, want) {
+				t.Fatalf("prompt rows with a time = %v, want %v", got, want)
+			}
+		})
 	}
 }

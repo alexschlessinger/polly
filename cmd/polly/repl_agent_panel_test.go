@@ -41,6 +41,10 @@ func TestToolAndThoughtDetailsCannotOpenPanel(t *testing.T) {
 				m = prepareChildDisplay(&sessions.SessionView{Metadata: &sessions.Metadata{Name: "replayed-agent"}, History: history}, r.config, 140)
 				r.model, r.visibleTab().model = m, m
 			}
+			// The rows in question are the details under the chunk header:
+			// the call's own row and the thought's text.
+			expandLines(m, nil)
+			openAllThoughts(m)
 			for _, width := range []int{140, 80, 180} {
 				screen.SetSize(width, 40)
 				r.render()

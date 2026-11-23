@@ -408,7 +408,7 @@ func (m *replModel) visibleToolOutputLinks(v transcriptViewport, x int) []toolOu
 	offset := 0
 	for _, block := range m.visual.blocks {
 		for _, link := range block.toolOutputLinks {
-			if link.key == "" || link.X >= v.width {
+			if link.X >= v.width {
 				continue
 			}
 			row := offset + link.Y
@@ -432,8 +432,11 @@ func (m *replModel) visibleToolOutputLinks(v transcriptViewport, x int) []toolOu
 }
 
 func (m *replModel) toolOutputRow(link toolOutputLink) (*toolDisclosureRecord, *toolDisclosureRow) {
+	// A link exists only for a row the last frame painted, so its chunk was
+	// open then; whether it still is does not change what the row's own
+	// control means.
 	record := m.toolDisclosures.get(link.recordID)
-	if record != nil && record.expanded {
+	if record != nil {
 		for i := range record.rows {
 			row := &record.rows[i]
 			if row.sectionKey == link.key && !row.isAgent() {
@@ -663,7 +666,7 @@ func (r *managedREPL) ensureInlineToolOutputs(m *replModel, target *viewTarget, 
 				continue
 			}
 			record := m.toolDisclosures.get(link.recordID)
-			if record == nil || !record.expanded {
+			if record == nil {
 				continue
 			}
 			rows, ok := rowsByRecord[record.id]

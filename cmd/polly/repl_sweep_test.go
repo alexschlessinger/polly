@@ -12,32 +12,32 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func TestInlineSweepTracksMembers(t *testing.T) {
+func TestInlineSweepTracksChunksAtWork(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("consider this")
 	calls := []messages.ChatMessageToolCall{{ID: "one", Name: "read_file"}, {ID: "two", Name: "read_file"}, agentCall("child", `{}`)}
-	tui.AppendToolStart(calls)
-	// Exercise simultaneous categories independently of the provider's sequential callbacks.
-	m.reasoningRecords.get(m.turnReasoningID).active = true
-	r.render()
-	check := func(thought, tools, agents bool) {
+	tui.ModelAttemptStarted(0, 0)
+	tui.AppendToolStart(calls[:2])
+	tui.ModelAttemptStarted(1, 0)
+	tui.AppendToolStart(calls[2:])
+	// Separate rounds leave a run of reads and an agent launch, both at
+	// work. The turn's newest chunk hands its header on from call to call;
+	// any other chunk still at work sweeps.
+	check := func(reads, agents bool, sweeps int) {
 		t.Helper()
 		r.render()
 		got := map[activityKind]bool{}
 		for _, block := range m.visual.blocks {
 			for _, label := range block.activityLabels {
-				got[label.kind] = m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs)
+				got[label.kind] = got[label.kind] || block.chunks[label.chunk-1].live
 			}
 		}
-		for kind, want := range map[activityKind]bool{activityThought: thought, activityRunning: tools, activityAgents: agents, activityImages: false} {
-			if got[kind] != want {
-				t.Fatalf("kind %v running=%v want %v", kind, got[kind], want)
-			}
+		if len(got) != 2 || got[activityTools] != reads || got[activityAgents] != agents {
+			t.Fatalf("chunks at work = %v, want reads=%v agents=%v", got, reads, agents)
 		}
 		count := 0
 		for _, span := range r.affordanceW.spans {
@@ -45,45 +45,39 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 				count++
 			}
 		}
-		want := 0
-		for _, active := range []bool{thought, tools, agents} {
-			if active {
-				want++
-			}
-		}
-		if count != want {
-			t.Fatalf("sweeps=%d want %d", count, want)
+		if count != sweeps {
+			t.Fatalf("sweeps=%d want %d", count, sweeps)
 		}
 	}
-	check(true, true, true)
-	line := m.disclosurePlacements[activityAll][0]
-	m.toggleDisclosureGroup(activityThought, line.thoughtIDs, 100)
-	// An open line leaves its running call to its rows: no label sweeps.
-	check(true, false, true)
+	check(true, true, 1)
+	// An open chunk keeps its live header, and the sweep, above its rows.
+	if !m.toggleAllDisclosures(100) || m.depth != depthExpanded {
+		t.Fatal("the view did not expand")
+	}
+	check(true, true, 1)
 	rows := make([][]ui.Cell, len(m.visual.rows))
 	for i := range rows {
 		rows[i] = slices.Clone(m.visual.rows[i])
 	}
-	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
+	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityAll]...)
 	at := m.affordances.sweepAt
 	r.affordanceW.tick(screen, at.Add(time.Second))
 	r.affordanceW.tick(screen, at.Add(1200*time.Millisecond))
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityTools]) {
+	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityAll]) {
 		t.Fatal("sweep changed cached layout")
 	}
-	// Folded again, the call row sweeps until the last call settles.
-	m.toggleDisclosureGroup(activityTools, line.recordIDs, 100)
-	check(true, true, true)
+	// The run sweeps until its last call settles.
 	tui.AppendToolEnd(calls[0], "done", time.Second, nil)
-	check(true, true, true)
+	check(true, true, 1)
 	tui.AppendToolEnd(calls[1], "done", time.Second, nil)
-	check(true, false, true)
-	m.reasoningRecords.get(m.turnReasoningID).active = false
-	m.busy = false // Background children keep sweeping after the parent becomes idle.
-	check(false, false, true)
+	check(false, true, 0)
+	// A background child keeps sweeping after the parent becomes idle.
+	m.busy = false
+	m.visual.invalidate() // the fixture ended the turn directly
+	check(false, true, 1)
 	r.affordanceW.tick(screen, at.Add(3*time.Second))
 	tui.AppendToolEnd(calls[2], "done", time.Second, nil)
-	check(false, false, false)
+	check(false, false, 0)
 	for _, hidden := range []func(){func() { m.hidden = true }, func() { m.quiet = true }, func() { m.affordances.enabled = false }, func() { m.focusKnown = true; m.focused = false }} {
 		m.hidden = false
 		m.quiet = false
@@ -123,11 +117,11 @@ func TestSweepLabelClipping(t *testing.T) {
 		blocks := activityBlocks(m, width)
 		for _, block := range blocks {
 			for _, label := range block.activityLabels {
-				if label.X < 2 || label.X+label.Cols > width {
-					t.Fatalf("width %d invalid paint bounds %+v", width, label)
+				lines := strings.Split(plainStyledText(block.text), "\n")
+				if label.Y < 0 || label.Y > 1 || label.Y >= len(lines) || label.X < 0 || (label.Y == 0 && label.X == 0) || label.X+label.Cols > width || label.X+label.Cols > len([]rune(lines[label.Y])) {
+					t.Fatalf("width %d invalid paint bounds %+v in %q", width, label, lines)
 				}
-				header, _, _ := strings.Cut(plainStyledText(block.text), "\n")
-				if painted := string([]rune(header)[label.X:min(label.X+label.Cols, len([]rune(header)))]); strings.Contains(painted, "…") {
+				if painted := string([]rune(lines[label.Y])[label.X : label.X+label.Cols]); strings.Contains(painted, "…") {
 					t.Fatalf("width %d sweep includes ellipsis: %q", width, painted)
 				}
 			}
@@ -173,7 +167,7 @@ func TestAgentSweepExcludesOutcomeTails(t *testing.T) {
 				row.agent.setLocal(id, id == "running")
 			}
 			for _, record := range m.toolDisclosures.all() {
-				record.expanded = expanded
+				m.setLineOpenOf(record, expanded)
 			}
 			blocks := activityBlocks(m, width)
 			found := false

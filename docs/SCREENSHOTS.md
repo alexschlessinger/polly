@@ -54,6 +54,11 @@ what `:wait` and `:settle` are for. `:shot` also waits (up to 10 seconds) for
 background code highlighting to catch up, so captures don't depend on machine
 speed.
 
+A running turn repaints its elapsed clock ten times a second, so two reads of
+the screen do not agree while one runs and `:settle` cannot be counted on
+there. Wait for a mark (`:at`) or for the text the capture shows (`:wait`). A
+turn that launched an agent stays running until the agent's result is in.
+
 ## Fixtures: seeded sessions and scripted turns
 
 `--shot-fixture <file>` gives a shot run its state, with no provider key

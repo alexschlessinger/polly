@@ -94,9 +94,11 @@ Run `polly` with no prompt and nothing piped in, and you get the full-screen
 TUI. Under `TERM=dumb` or a redirect, Polly falls back to a simpler line
 frontend.
 
-Click agents in the status bar to open the agent panel. Inline triangles expand
-or collapse thoughts, tools, agents, and images. Click an expanded tool row to
-show or hide its output inline. In the status bar, click the
+Click agents in the status bar to open the agent panel. A turn's work shows as
+one row per run of related calls, such as `Read 4 files` or `Tests failed`,
+and a long turn folds to one row that counts all of it.
+Click a row to list its calls and thoughts, then a call for its output or a
+thought for its text. In the status bar, click the
 session name to switch sessions or the model to change it.
 
 | Key | Action |
@@ -106,7 +108,7 @@ session name to switch sessions or the model to change it.
 | `Ctrl-C` | Interrupt; again, or while idle, quit |
 | `Esc` | Dismiss the popup or agent panel; otherwise interrupt |
 | `Ctrl-R` / `Ctrl-G` | Search history / pick a session |
-| `Ctrl-O` | Expand or collapse inline details |
+| `Ctrl-O` | Collapse or expand all activity |
 | `Ctrl-V` | Attach a clipboard image |
 | `Alt+1`…`9` | Switch between open sessions |
 

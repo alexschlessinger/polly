@@ -63,13 +63,14 @@ func TestRetryPauseLiveLineAndTUIAgreeWithHydration(t *testing.T) {
 	if r.model.lastOutcome != turnOutcomePaused || r.model.ed.text() != "" || r.model.restoreDraftNext {
 		t.Fatalf("pause restored unsent draft: outcome=%v draft=%q restore=%v", r.model.lastOutcome, r.model.ed.text(), r.model.restoreDraftNext)
 	}
-	live := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n"))
+	// The outcome rides on the prompt's row, live and reloaded alike.
+	live := shown(r.model, 100)
 	if !strings.Contains(live, retryPausedLabel) || strings.Contains(live, "failed") || strings.Contains(live, "incomplete") {
 		t.Fatalf("TUI contradicts pause: %q", live)
 	}
 	m := newReplModel()
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "question"}, interruptedTurnMarker(pause)}, "ctx")
-	hydrated := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+	hydrated := shown(m, 100)
 	if !strings.Contains(hydrated, retryPausedLabel) || strings.Contains(hydrated, "✓") || m.ed.text() != "" || m.restoreDraftNext {
 		t.Fatalf("hydration contradicts pause: %q draft=%q restore=%v", hydrated, m.ed.text(), m.restoreDraftNext)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -52,17 +53,14 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 									anchor := r.model.scrollAnchor
 									r.handleEvent(event)
 									r.render()
-									if r.model.depth != depthFull {
-										b.Fatalf("Ctrl-O depth = %d, want full", r.model.depth)
+									if r.model.depth != depthExpanded {
+										b.Fatalf("Ctrl-O state = %s, want expanded", r.model.depth.label())
 									}
 									expandedRows := len(r.transcriptW.Rows)
 									r.handleEvent(event)
 									r.render()
-									callsRows := len(r.transcriptW.Rows)
-									r.handleEvent(event)
-									r.render()
-									if r.model.depth != depthAbridged || expandedRows <= initialRows || callsRows >= initialRows || len(r.transcriptW.Rows) != initialRows {
-										b.Fatalf("cycle row counts: initial=%d full=%d calls=%d final=%d", initialRows, expandedRows, callsRows, len(r.transcriptW.Rows))
+									if r.model.depth != depthCollapsed || expandedRows <= initialRows || len(r.transcriptW.Rows) != initialRows {
+										b.Fatalf("cycle row counts: initial=%d expanded=%d final=%d", initialRows, expandedRows, len(r.transcriptW.Rows))
 									}
 									if viewport == "held" && (r.model.followBottom || r.model.scrollAnchor != anchor) {
 										b.Fatalf("held viewport moved: follow=%v anchor=%d, want %d", r.model.followBottom, r.model.scrollAnchor, anchor)
@@ -70,20 +68,58 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 									paint := mode == "toggle-render"
 									b.ReportAllocs()
 									for b.Loop() {
-										for range 3 {
+										for range 2 {
 											r.handleEvent(event)
 											if paint {
 												r.render()
 											}
 										}
 									}
-									b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(3*b.N), "ns/toggle")
-									b.ReportMetric(float64(expandedRows), "full-rows")
+									b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(2*b.N), "ns/toggle")
+									b.ReportMetric(float64(expandedRows), "expanded-rows")
 								})
 							}
 						})
 					}
 				})
+			}
+		})
+	}
+}
+
+// BenchmarkExpandedChunkMediaLayout measures an expanded activity line with
+// many alternating image and agent batches, after an invalidate at the same
+// width. This used to rescan the line's whole tool record for every header
+// and rewrap all the text before each agent section to place its links.
+func BenchmarkExpandedChunkMediaLayout(b *testing.B) {
+	const width = 100
+	for _, pairs := range []int{64, 256} {
+		b.Run(fmt.Sprintf("%d-chunks", 2*pairs), func(b *testing.B) {
+			m := newReplModel()
+			m.depth = depthExpanded
+			m.appendUserPrompt("Review the images and agents")
+			rows := make([]toolDisclosureRow, 0, 2*pairs)
+			for i := range pairs {
+				rows = append(rows,
+					toolDisclosureRow{
+						callID: fmt.Sprintf("image-%d", i), toolName: "view_image", label: "view image", step: 2 * i, settled: true,
+						inspectionImages: []style.Image{{Path: "frame.png", Width: 640, Height: 480, Inspection: true}},
+					},
+					toolDisclosureRow{
+						callID: fmt.Sprintf("agent-%d", i), step: 2*i + 1, settled: true,
+						agent: &agentActivity{label: "review task", session: fmt.Sprintf("worker-%d", i)},
+					},
+				)
+			}
+			m.appendCompletedToolDisclosure(rows)
+			laidOut := m.transcriptRows(width)
+			if links := m.visibleAgentLinks(fullViewport(len(laidOut), width)); len(links) != pairs {
+				b.Fatalf("agent links = %d, want %d", len(links), pairs)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				m.visual.invalidate()
+				m.transcriptRows(width)
 			}
 		})
 	}

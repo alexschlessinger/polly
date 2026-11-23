@@ -45,7 +45,8 @@ func TestInlineToolBodyClickClosesOnlyItsRow(t *testing.T) {
 						watchTestAgent(r, m)
 						m = waitInspector(t, r, width).model
 					}
-					// Both panes open the line; the outputs open as clicks would.
+					// Both panes show every call row; the outputs open as clicks would.
+					expandLines(m, nil)
 					openAllOutputs(m)
 					if pane == "watch" {
 						rememberViewSections(m, r.workspace().viewState(r.workspace().inspector.target))
@@ -72,7 +73,7 @@ func TestInlineToolBodyClickClosesOnlyItsRow(t *testing.T) {
 						}
 					}
 					record, row := m.toolOutputRow(link)
-					if record == nil || row == nil || !record.expanded || row.outputExpanded {
+					if record == nil || row == nil || !m.lineOpenOf(record) || row.outputExpanded {
 						t.Fatalf("body click did not collapse only the tool output: record=%+v row=%+v", record, row)
 					}
 					if !record.rows[1].outputExpanded {
@@ -95,8 +96,12 @@ func TestInlineToolBodyClickDoesNotReopenStaleTarget(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "one", Name: "lookup"}}},
 		{Role: messages.MessageRoleTool, ToolCallID: "one", ToolName: "lookup", Content: "output"},
 	}, "ctx")
+	expandLines(m, nil)
 	openAllOutputs(m)
 	r.render()
+	if len(m.toolOutputLinks) != 1 {
+		t.Fatalf("tool links = %+v, want one", m.toolOutputLinks)
+	}
 	link := m.toolOutputLinks[0]
 	if link.body.Empty() {
 		t.Fatal("expanded row has no clickable body")

@@ -20,29 +20,34 @@ const maxLocalImageBytes = images.MaxSourceBytes
 // adjacent activity entries merge into one block, so both lists may hold
 // several IDs.
 type transcriptDisplayBlock struct {
-	key                     string
-	text                    string
-	cells                   []ui.Cell // optional formatted streaming prefix
-	images                  []style.Image
-	reasoningIDs            []int64
-	toolDisclosureIDs       []int64
-	turnTrailerID           int64
-	activityFields          []turnDockPlacement
-	activityLabels          []turnDockPlacement // label paint bounds, independent of hitboxes
-	activityReasoningDetail string
-	activityToolDetail      string
-	activityToolTargets     []toolOutputTarget
-	toolFirstLine           int
-	toolEndLine             int
-	activityThoughtTargets  []toolOutputTarget
-	thoughtFirstLine        int
-	thoughtEndLine          int
-	activityImageDetail     string
-	// activitySections counts the open sections under the line; a folded
-	// line's text may still hold a second row, its latest call.
-	activitySections int
+	key               string
+	text              string
+	cells             []ui.Cell // optional formatted streaming prefix
+	images            []style.Image
+	reasoningIDs      []int64
+	toolDisclosureIDs []int64
+	turnTrailerID     int64
+	activityTurn      uint64
+	chunks            []activityChunk
+	currentActivity   bool // the running turn's newest activity line
+	// activityFields are the chunk headers and activityLabels the words on
+	// them. Both count logical lines of text until the wrap pass turns them
+	// into display rows.
+	activityFields []turnDockPlacement
+	activityLabels []turnDockPlacement // label paint bounds, independent of hitboxes
+	// activityTargets are the line's thought rows, call rows and page
+	// controls, at logical lines of text; a target without a key is a
+	// chunk header, which ends the detail above it. activityLines is how
+	// many lines the layout wrote and activityShift how many the spacing
+	// pass put above them.
+	activityTargets []toolOutputTarget
+	activityLines   int
+	activityShift   int
+	// openFirst and openLast say the line's first and last chunk show rows
+	// under their header, which is what separates the line from prose.
+	openFirst, openLast bool
 
-	agentLinks []agentLink
+	agentSections []agentSection
 }
 
 // isActivity reports whether the block projects reasoning or tool records.
@@ -124,8 +129,9 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 // may hold several markers side by side, as an image strip does; it collapses
 // once every thumbnail on it has used up its fitted rows. With no native
 // backend the marker rows collapse completely, leaving the caption/path as a
-// compact fallback.
-func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool, width, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+// compact fallback. Update any logical-line offsets in place to account for
+// the rows removed, so controls after an image still point at their text.
+func locateTranscriptImages(rows [][]ui.Cell, lineStarts []int, images []style.Image, native bool, width, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if len(images) == 0 {
 		return rows, nil
 	}
@@ -148,7 +154,12 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 	markerRows := make(map[int]int)
 	out := make([][]ui.Cell, 0, len(rows))
 	var markers []marker
-	for _, row := range rows {
+	nextLine := 0
+	for i, row := range rows {
+		for nextLine < len(lineStarts) && lineStarts[nextLine] == i {
+			lineStarts[nextLine] = len(out)
+			nextLine++
+		}
 		markers = markers[:0]
 		x := 0
 		for i, cell := range row {
@@ -189,6 +200,10 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 		if live {
 			out = append(out, row)
 		}
+	}
+	// The last offset may be the end of the block instead of a row.
+	for i := nextLine; i < len(lineStarts); i++ {
+		lineStarts[i] = len(out)
 	}
 
 	var spans []transcriptImageSpan

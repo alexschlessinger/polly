@@ -46,34 +46,33 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want the prose below both thoughts", beforeTop)
 	}
 
-	// Both lines are open; the depth changes change what they list, and
-	// collapsed folds them both. No depth opens an output.
-	initialCount := len(rows) // the default full depth's rows
+	// Every chunk starts folded. Expanding opens them all and collapsing
+	// folds them all; neither press opens a thought's text or an output.
+	initialCount := len(rows)
 	for _, step := range []struct {
 		name  string
 		depth disclosureDepth
 	}{
-		{"calls", depthCalls},
+		{"expanded", depthExpanded},
 		{"collapsed", depthCollapsed},
-		{"abridged", depthAbridged},
-		{"full", depthFull},
+		{"expanded again", depthExpanded},
 	} {
-		open := step.depth != depthCollapsed
+		open := step.depth == depthExpanded
 		beforeCount, beforeAnchor := len(rows), m.scrollAnchor
 		if !m.toggleAllDisclosures(width) {
 			t.Fatalf("%s: view held nothing to toggle", step.name)
 		}
 		if m.depth != step.depth {
-			t.Fatalf("%s: depth = %v, want %v", step.name, m.depth, step.depth)
+			t.Fatalf("%s: state = %v, want %v", step.name, m.depth.label(), step.depth.label())
 		}
 		for _, record := range m.reasoningRecords.all() {
-			if record.expanded != open {
-				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, open)
+			if record.anyOpen() {
+				t.Fatalf("%s: thought %d opened without a click", step.name, record.id)
 			}
 		}
 		for _, record := range m.toolDisclosures.all() {
-			if record.expanded != open {
-				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, open)
+			if m.lineOpenOf(record) != open {
+				t.Fatalf("%s: chunk of record %d open = %v, want %v", step.name, record.id, m.lineOpenOf(record), open)
 			}
 			for _, row := range record.rows {
 				if row.outputExpanded {
@@ -83,28 +82,15 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		}
 		rows = transcriptRowsText((conversationView{}).Rows(m, width))
 		text := strings.Join(rows, "\n")
-		if strings.Contains(text, "output detail") {
-			t.Fatalf("%s: an output showed without a click", step.name)
+		if strings.Contains(text, "output detail") || strings.Contains(text, "deliberation") {
+			t.Fatalf("%s: an output or a thought's text showed without a click", step.name)
 		}
-		switch step.name {
-		case "calls":
-			if len(rows) >= initialCount {
-				t.Fatalf("the calls depth did not shrink the transcript below full: %d, full %d", len(rows), initialCount)
-			}
-		case "collapsed":
-			// A folded line is its header and latest call: no taller than
-			// the calls depth's one call.
-			if len(rows) > beforeCount {
-				t.Fatalf("the collapsed depth grew the transcript: %d, calls %d", len(rows), beforeCount)
-			}
-		case "abridged":
-			if len(rows) <= beforeCount || len(rows) >= initialCount {
-				t.Fatalf("abridging did not sit between calls and full: %d, calls %d, full %d", len(rows), beforeCount, initialCount)
-			}
-		case "full":
-			if len(rows) != initialCount {
-				t.Fatalf("full did not restore the original row count: got %d, want %d", len(rows), initialCount)
-			}
+		// An open chunk adds its thought row and its call row.
+		if want := initialCount + 4; open && len(rows) != want {
+			t.Fatalf("%s: rows = %d, want %d", step.name, len(rows), want)
+		}
+		if !open && len(rows) != initialCount {
+			t.Fatalf("%s: collapsing did not restore the original row count: got %d, want %d", step.name, len(rows), initialCount)
 		}
 		if want := beforeAnchor + len(rows) - beforeCount; m.scrollAnchor != want {
 			t.Fatalf("%s: anchor = %d, want %d after all blocks resized", step.name, m.scrollAnchor, want)

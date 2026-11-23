@@ -85,7 +85,6 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.imageBaseDir = dir
 	m.beginTurn("inspect image")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -102,7 +101,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	tui.AppendToolEnd(call, "wrote shot.png", time.Millisecond, nil)
 	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil))
 	tool := m.currentToolDisclosure()
-	if tool == nil || !tool.expanded {
+	if tool == nil || !m.lineOpenOf(tool) {
 		t.Fatal("the tool record did not open with its line")
 	}
 
@@ -188,7 +187,6 @@ func TestToolOutputPathDoesNotAttachImageSidecar(t *testing.T) {
 	writeImageFixture(t, path, 4, 4)
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.imageBaseDir = dir
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -196,7 +194,7 @@ func TestToolOutputPathDoesNotAttachImageSidecar(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "![result](result.png)\n"+path, time.Millisecond, nil)
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 {
+	if record == nil || r.model.lineOpenOf(record) || len(record.rows) != 1 {
 		t.Fatalf("tool record = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
@@ -226,7 +224,6 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "view-call", Name: "view_image", Arguments: `{"source":"inspected.png"}`}
@@ -235,7 +232,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	tui.AppendToolMedia(call, images)
 
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 || len(record.rows[0].inspectionImages) != 1 {
+	if record == nil || r.model.lineOpenOf(record) || len(record.rows) != 1 || len(record.rows[0].inspectionImages) != 1 {
 		t.Fatalf("collapsed typed-image disclosure = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
@@ -253,7 +250,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool call · 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ Viewed inspected.png") || strings.Contains(plain, "viewed · inspected.png") {
 		t.Fatalf("collapsed activity row = %q", plain)
 	}
 	if len(collapsed.images) != 0 {
@@ -262,14 +259,14 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	rows := r.model.transcriptRows(100)
 	r.model.disclosurePlacements[activityAll] = r.model.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityAll)
-	if len(r.model.disclosurePlacements[activityAll]) != 1 {
-		t.Fatalf("activity hitboxes = %#v", r.model.disclosurePlacements[activityAll])
+	if hits := r.model.disclosurePlacements[activityAll]; len(hits) != 1 || hits[0].X != 0 || hits[0].Cols != len("> Viewed inspected.png") {
+		t.Fatalf("activity hitboxes = %#v, want one header over its triangle and label", r.model.disclosurePlacements[activityAll])
 	}
 	p := r.model.disclosurePlacements[activityAll][0]
 	if !r.model.toggleDisclosureAt(p.X, p.Y, 0) {
 		t.Fatal("activity line did not expand")
 	}
-	if !record.expanded {
+	if !r.model.lineOpenOf(record) {
 		t.Fatalf("line toggle left the line closed: %#v", record)
 	}
 
@@ -281,7 +278,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		}
 	}
 	plain := plainStyledText(style.StripImageMarkers(expanded.text))
-	if !strings.Contains(plain, "▾ 1 tool call · 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") {
+	if !strings.Contains(plain, "▾ Viewed inspected.png") || !strings.Contains(plain, "viewed · inspected.png · 8×4") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
 	if len(expanded.images) != 1 || strings.Count(expanded.text, string(style.ImageMarker(0))) != style.InspectionThumbnailRows {
@@ -292,7 +289,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		t.Fatalf("compact inspection geometry rows/spans = %d/%#v", len(imageRows), spans)
 	}
 	// The images fold with the line.
-	if !r.model.toggleToolDisclosure(record.id) || record.expanded {
+	if !r.model.toggleToolDisclosure(record.id) || r.model.lineOpenOf(record) {
 		t.Fatalf("folding the line left it open: %#v", record)
 	}
 }
@@ -469,7 +466,6 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	toolResult.SetToolSucceeded(true)
 
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.artifactStore = store
 	m.hydrateHistory([]messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "inspect it"},
@@ -485,7 +481,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if record == nil || record.expanded || len(record.rows[0].inspectionImages) != 1 {
+	if record == nil || m.lineOpenOf(record) || len(record.rows[0].inspectionImages) != 1 {
 		t.Fatalf("hydrated inspection disclosure = %#v", record)
 	}
 	if got := len(m.transcript[record.transcriptIndex].images); got != 0 {
@@ -501,7 +497,8 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 		return transcriptDisplayBlock{}
 	}
 	header := plainStyledText(strings.SplitN(activity().text, "\n", 2)[0])
-	if !strings.Contains(header, "1 tool call · 1 image viewed") {
+	// A saved turn names its one call as the live turn did.
+	if header != "▸ Viewed durable.png" {
 		t.Fatalf("hydrated image activity row = %q", header)
 	}
 	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {

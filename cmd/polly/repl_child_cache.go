@@ -116,6 +116,7 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
 	m.transcript = slices.Clone(src.transcript)
 	m.activityTurn = src.activityTurn
+	m.turnSteps = src.turnSteps
 	m.userPromptSeen = src.userPromptSeen
 	m.assignment, m.showCommentary = src.assignment, src.showCommentary
 	for i := range m.transcript {
@@ -160,6 +161,7 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.turnToolDisclosureIDs = slices.Clone(src.turnToolDisclosureIDs)
 	m.toolDisclosures = src.toolDisclosures.clone(cloneToolDisclosure)
 	m.depth = src.depth
+	m.chunkFolds = maps.Clone(src.chunkFolds)
 	m.reasoningRecords = src.reasoningRecords.clone(cloneReasoningRecord)
 	m.reasoningOrder = slices.Clone(src.reasoningOrder)
 	m.reasoningWidth = src.reasoningWidth

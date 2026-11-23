@@ -33,7 +33,6 @@ type managedREPL struct {
 	transcriptW                        *transcriptParagraph
 	dividerW                           *style.LiteralParagraph
 	inputW                             *style.LiteralParagraph
-	turnDockW                          *style.LiteralParagraph
 	statusW                            *style.LiteralParagraph
 	modalW                             *modalParagraph
 	dockW                              *modalParagraph

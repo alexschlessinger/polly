@@ -40,7 +40,6 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			t.Cleanup(func() { _ = r.work.close() })
 			screen.SetSize(90, 45)
 			m := r.model
-			m.depth = depthAbridged // the window below the default depth
 			m.ed.setText("keep draft")
 			var calls []messages.ChatMessageToolCall
 			var results []messages.ChatMessage
@@ -73,11 +72,11 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 				}
 			}
 			r.render()
-			// The abridged line windows its rows; the expanded depth shows
-			// the rest, each a keyboard target like any other output control.
+			// The collapsed view lists no call; the expanded one lists every
+			// recorded call, each a keyboard target like any other control.
 			links := append([]toolOutputLink(nil), m.toolOutputLinks...)
-			if len(links) != activityRowWindow {
-				t.Fatalf("%d recorded calls want a window of %d links, got %+v", len(calls), activityRowWindow, links)
+			if len(links) != 0 {
+				t.Fatalf("a collapsed view listed calls: %+v", links)
 			}
 			expandLines(m, nil)
 			r.render()
@@ -85,7 +84,7 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			if len(links) != len(calls) {
 				t.Fatalf("%d recorded calls only produced %d links once expanded", len(calls), len(links))
 			}
-			// The formerly hidden first row opens by keyboard and remains
+			// The oldest call, however far back, opens by keyboard and remains
 			// selectable by stable identity after a width change.
 			chooseInlineTestAction(t, r, links[0].keyboardKey())
 			screen.SetSize(48, 45)
@@ -130,14 +129,14 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			if record == nil || row == nil || !row.outputExpanded {
 				t.Fatal("fixture did not retain the manually expanded diff")
 			}
-			if !m.toggleToolDisclosure(record.id) || record.expanded || !row.outputExpanded || m.depth != depthFull {
+			if !m.toggleToolDisclosure(record.id) || m.lineOpenOf(record) || !row.outputExpanded || m.depth != depthExpanded {
 				t.Fatal("local enclosure close changed the row choice or global mode")
 			}
 			r.render()
 			if strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(48)), "\n"), "+recorded-") {
 				t.Fatal("collapsed enclosure leaked diff")
 			}
-			if !m.toggleToolDisclosure(record.id) || !record.expanded || !row.outputExpanded || len(record.rows) != len(calls) || m.depth != depthFull {
+			if !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) || !row.outputExpanded || len(record.rows) != len(calls) || m.depth != depthExpanded {
 				t.Fatal("local enclosure reopen lost calls, row choice, or global mode")
 			}
 			r.render()
@@ -286,6 +285,7 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: strings.Repeat("page one\n", inlineOutputLines) + "last page"},
 	}, "ctx")
 	m.ed.setText("draft")
+	expandLines(m, nil)
 	r.render()
 	link := m.toolOutputLinks[0]
 	chooseInlineTestAction(t, r, link.keyboardKey())
@@ -308,24 +308,22 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	if row.output.offset != 0 || !row.output.more || m.ed.text() != "draft" {
 		t.Fatal("keyboard Previous lost the first page or submitted draft")
 	}
-	// No depth touches an open output: the selected page action survives
-	// every press, and the output is still open when the collapsed depth
-	// folds the line and the next press opens it again.
+	// No press touches an open output: it is still open when collapsing
+	// folds its chunk and the next press opens the chunk again, and its page
+	// control is there to choose.
 	nextKey := toolOutputLink{key: link.key, action: "next"}.keyboardKey()
 	chooseInlineTestAction(t, r, nextKey)
-	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged, depthFull} {
-		if !m.toggleAllDisclosures(80) || m.depth != depth || record.expanded != (depth != depthCollapsed) || !row.outputExpanded {
-			t.Fatalf("Ctrl-O to depth %v changed the open output or left the line wrong", depth)
+	for _, depth := range []disclosureDepth{depthCollapsed, depthExpanded} {
+		if !m.toggleAllDisclosures(80) || m.depth != depth || m.lineOpenOf(record) != (depth == depthExpanded) || !row.outputExpanded {
+			t.Fatalf("Ctrl-O to %v changed the open output or left the chunk wrong", depth.label())
 		}
 		if depth == depthCollapsed {
 			continue
 		}
-		if depth == depthAbridged {
-			chooseInlineTestAction(t, r, nextKey)
-		}
+		chooseInlineTestAction(t, r, nextKey)
 		r.render()
 		if action, ok := r.selectedInlineAction(); !ok || action.key != nextKey {
-			t.Fatalf("depth %v lost the selected page action", depth)
+			t.Fatalf("%v lost the page action", depth.label())
 		}
 	}
 }

@@ -61,7 +61,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			}
 		}
 	}
-	add := func(memberID, workflowID, name string, record *toolDisclosureRecord) *toolDisclosureRecord {
+	add := func(memberID, workflowID, name, launch string, record *toolDisclosureRecord) *toolDisclosureRecord {
 		member := s.Members[memberID]
 		if member == nil {
 			return record
@@ -71,11 +71,15 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 				return nil
 			}
 			// A background launch must not flush or split a streaming reply.
-			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true, expanded: m.newRecordOpen()}, m.appendTranscriptEntry(""))
+			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
 		}
-		record.rows = append(record.rows, toolDisclosureRow{settled: true, agent: &agentActivity{
+		step := m.turnStep
+		if n := len(record.rows); n > 0 {
+			step = record.rows[n-1].step // projected workflow members belong with their launch
+		}
+		record.rows = append(record.rows, toolDisclosureRow{settled: true, step: step, agent: &agentActivity{
 			viewID: memberID, label: style.SanitizeImageText(swarmMemberLabel(s, member)),
-			workflowID: workflowID, workflowName: name,
+			workflowID: workflowID, workflowName: name, launch: launch,
 		}})
 		members[memberID] = true
 		m.refreshAgentRecord(record)
@@ -107,7 +111,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			sort.Strings(ids)
 			for _, memberID := range ids {
 				if !seen[memberID] {
-					record = add(memberID, workflowID, name, record)
+					record = add(memberID, workflowID, name, w.CallID, record)
 					seen[memberID] = true
 				}
 			}
@@ -124,7 +128,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 	}
 	for _, memberID := range swarmRecordIDs(s.Members) {
 		if !members[memberID] {
-			add(memberID, "", "", nil)
+			add(memberID, "", "", "", nil)
 		}
 	}
 }

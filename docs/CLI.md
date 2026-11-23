@@ -326,7 +326,7 @@ parent conversation.
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
-| `Ctrl-O` | Cycle what activity lines list: abridged → full → calls only → collapsed |
+| `Ctrl-O` | Collapse or expand all activity |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
@@ -339,10 +339,10 @@ that fails to send comes back as a draft.
 #### Agent panel navigation
 
 The agent list shows each agent's status and, under it, the activity summary of
-its latest turn, such as `thought 4s · 4 tool calls`. As in the main transcript's
-folded expanders, the latest command or tool call gets its own line beneath the
-counts, such as `✓ $ go test ./llm/...`, fitted to the panel's width. A turn that
-ran nothing shows the first line of its answer instead.
+its latest turn, such as `thought 4s · 4 tool calls`. The latest command or tool
+call gets its own line beneath the counts, such as `✓ $ go test ./llm/...`,
+fitted to the panel's width. A turn that ran nothing shows the first line of its
+answer instead.
 These rows are projected from saved checkpoints in the background, a few agents
 at a time, and follow running agents the way the view does. A blank line separates
 agent groups; navigation skips that spacing. Finished and idle agents stay visible
@@ -373,9 +373,10 @@ request, not total assignment duration; during retry backoff it counts down to
 the next attempt. A highlighted clock flags retry or timeout details shown
 below it, and a paused or failed execution shows its reason there.
 
-The view opens following new output, every activity line open. `Ctrl-O`
-cycles the view's depth: abridged, full, calls only, collapsed. Manual folds, opens
-and output choices are preserved across updates and reopening the agent. For agents
+The view opens following new output and expanded, so every run lists its calls
+(the main conversation opens collapsed). `Ctrl-O` collapses or expands the view
+that has the keys and leaves the other as it is. Folds made by hand, opened
+thoughts and opened outputs are kept across updates and reopening the agent. For agents
 running in this Polly process, the view includes live assistant text,
 reasoning, and completed tool results before the next saved checkpoint. Updates
 are coalesced about every 100 ms, not rendered per token; this is not a
@@ -606,43 +607,105 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 
 ## Transcript
 
-A turn's thoughts, tool calls, agents, and viewed images share one activity
-line, such as `▸ thought 2s · 5 tool calls · edited 2 files +12 −3`, with the
-turn's time at the right edge once it settles. A folded line names its latest
-call on the row under it (swept while it runs, then behind its ✓ or ✗ until
-the next call replaces it); an open line leaves the call to its rows. The
-tool-call total counts every row in the tool list, including hidden, running,
-unsuccessful, and image-viewing calls, shell commands among them; agents have
-separate rows and counts. The edited-file count describes distinct paths
-rather than calls. The latest call is one of those calls, not an additional
-one.
+A turn's work shows as one row per run of related calls: a triangle, then what
+the run did. A transcript opens collapsed.
 
-Two controls disclose a line. A **click** on the line opens or folds it: a
-folded line is one row with its latest call under it; an open line lays the
-turn out step by step, one step per model response, in the order they ran,
-the step's thought above the calls it made, with its agents and viewed images
-after the steps. Every turn's line is open unless you fold it or the view is
-collapsed; a line you open or fold by hand stays as you put it until Ctrl-O
-enters or leaves the collapsed depth.
+```text
+▎ check the release                                                    5.3s
+▸ Read 4 files
+▸ Tests passed
+▸ Viewed logo.png
+I checked the release materials.
+```
 
-**Ctrl-O** sets what the view's lines list and cycles through four depths.
-**Full**, the default, shows every retained thought row and every call.
-**Abridged** shows each step's thought as its newest three rows of text, a `…`
-in the margin marking a cut one, and only the newest three calls of the line,
-the steps above them left out whole. **Calls only** shows the calls and no
-thinking at all. **Collapsed** folds every line; the next press opens every
-line again, abridged. A call's output and recorded diff open only by a click
-on the call, at any depth, and stay as you put them when the depth changes. A
-click on a cut thought shows the whole of it or abridges it again; the next
-Ctrl-O press puts every thought back to the depth's default. The status bar
-names the depth at its left for a moment after each press.
+[Collapsed](../.assets/activity-story.png) · [One run open](../.assets/activity-read-evidence.png)
 
-At every depth a blank row precedes a step that opens with a thought, the
-right column gives each step's start as time since the prompt (`1:13`), live
-and after a reload, where it comes from the saved turn audit, and a call's
-own duration appears inline only from one second up, so quick calls carry no
-time; a running call shows its clock. A turn with no activity line leaves
-its outcome and time as a row of its own.
+Adjacent calls share a row until the kind of work changes. An edit, a test run
+and an agent launch each end a run. Reads, commands, viewed images and other
+tools share one, counted by kind in a fixed order: `Read 4 files, ran 3
+commands and used a tool`. A run of one call names it: `Ran go build ./...`.
+Edit rows keep their change counts (`Edited 2 files +2 −6`). Assistant prose
+between calls starts a new row.
+
+Calls requested together stay in one row, which counts all of them. A search
+asked beside an edit joins the edit run (`Edited 3 files +9 −2 and ran a
+command`). A call asked beside an agent launch is counted after the agents
+(`1 agent and read picker.go`). A test run asked beside other commands is one
+of the commands (`Ran 4 commands`).
+
+A command is named without its setup: a leading `cd <dir> &&` and leading
+shell options such as `set -euo pipefail` are left out. A script too long for
+its row shows its first commands, each with room to be read, and `…` for the
+rest: `Ran git diff --check ; git ls-files -z | xargs -0 gofmt -l ; …`. Open
+the call to see the whole command.
+
+A call that failed, was denied or was canceled marks its row and stays in it:
+`Read 6 files · 1 failed`. A lone call that did not succeed is named as it was
+asked (`Edit main.go · denied`), and a failed test run is the whole label
+(`Tests failed`). A saved call with no recorded outcome is counted and not
+called passed. While a call runs its row names it, such as `Running go test
+./...`. While the model thinks between calls, the newest row says so
+(`Thinking… 4s`) once the thought is half a second old; a shorter one never
+shows there, and no row is added or removed for it. On a folded run, an
+in-flight label stays readable for half a second before the same row changes,
+without slowing down the work. Failures and the final summary are not held
+back. A row too narrow for its label shortens the label and keeps the mark; no
+row wraps.
+
+A collapsed view gives a turn's activity five rows. While the turn is still
+adding to it, the newest four runs keep their rows and one row above them
+stands for everything earlier, counted the way a run is with what changed
+first: `24 earlier runs · 4 agents, edited 11 files +377 −141, read 29 files,
+ran 23 commands and used 24 tools`. Once the answer or a notice follows the
+activity, or the turn ends, all of it is that one row, without the count of
+runs. Its mark counts every call under it that did not succeed. Activity of
+five runs or fewer is left as it is, and an expanded view has no limit.
+
+```text
+▎ fix the review findings                                            12m59s
+▸ 4 agents, edited 11 files +382 −142, read 29 files and ran 38 commands
+Fixed the findings. Nothing is committed.
+```
+
+Click that row to list the runs it stands for beneath it. It then says how
+many they are (`28 runs · 4 agents, …`), and each run opens as usual. Click it
+again to fold them away; the folds made under it are kept.
+
+Click a row to open that run: one row per call in the order asked, each step's
+thought above the calls it made. Click it again to fold it; several runs can be
+open at once. **Ctrl-O** puts every run in the view in one state. Collapsed
+shows the rows above; expanded lists every call and thought row. A press
+applies the state opposite the last one set and forgets folds made by hand,
+unless that would change nothing on screen, in which case it applies the
+other. Runs that begin later follow the last press, and a call that joins a
+run takes that run's fold. The status bar names the state at its left for a
+moment after each press.
+
+A thought is a row among its step's calls (`∴ thought · 4s`). One that led to
+no call is the last row of the run before it, so no thought stands among a
+turn's run rows. A thought has a row of its own only where there is no run for
+it to join, as in a turn that made no call (`∴ Thought for 4s`, and
+`∴ Thinking… 2s` while it streams), and while it streams after a run whose
+agents are still at work, where the next call's row takes its place. Click the
+row to show that step's thinking under it, and
+again to hide it. Opening the thought that is streaming follows the turn's
+thinking: the run that takes the thought in opens so the text stays in view,
+and each later thought of the turn opens as it starts, until you close one or
+the turn ends. A call's output and recorded diff open by a click on the call.
+No Ctrl-O press opens a thought's text, an output or a diff, and what you
+opened stays open through every fold.
+
+Shift-Tab selects a visible control; use Left/Right to move between them and
+Enter to activate the focused one.
+
+In an open run the right column gives each step's start as time since the
+prompt (`1:13`), live and after a reload, where it comes from the saved turn
+audit. A call's own duration appears inline only from one second up, so quick
+calls carry no time; a running call shows its clock. A settled turn's elapsed
+time sits at the right edge of its prompt's row, after its outcome when it did
+not finish (`✗ failed · 34.0s`). A prompt row without room for both keeps the
+time alone, and one without room for that is left as you typed it. A turn that
+echoed no prompt leaves its outcome and time as a row of its own.
 
 Thought text is what the provider exposes; OpenAI supplies reasoning summaries,
 not its raw internal reasoning. Summary updates may arrive after the work they
@@ -653,12 +716,10 @@ Failed or canceled attempts are separated and marked **not saved**, even when
 earlier rounds of the same turn were saved.
 
 Reasoning uses the same Markdown layout as responses, including paragraphs,
-lists, code, links, and tables, with muted colors. An abridged line shows the
-newest three rows of text of each step's thought, paragraph breaks left out;
-an expanded line shows the retained tail inline.
-Expanded details note when earlier text has been trimmed. The line frontend's
-`--activity-details` prints a short thought tail at settlement rather than
-streaming a live thought preview.
+lists, code, links, and tables, with muted colors. An opened thought shows the
+retained tail of its step's text and notes when earlier text has been trimmed.
+The line frontend's `--activity-details` prints a short thought tail at
+settlement rather than streaming a live thought preview.
 
 ### Tools and changes
 
@@ -666,8 +727,8 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 `$` marks a Bash command, and `…` marks folded setup (such as a leading `cd`) or
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
-An open line lists every recorded call, each with its duration at the right
-edge, one blank row between its thought, its calls and its agents. Click a
+An open run lists every recorded call, with a blank row after an opened
+detail and between its calls, its agents and its viewed images. Click a
 tool row to show its recorded output beneath it, two columns in, under one
 label row (`output · bytes 1–19,498`) and above the page controls. Click the
 row again or anywhere in its expanded command, output, or diff body to hide

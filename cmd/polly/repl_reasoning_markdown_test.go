@@ -32,11 +32,9 @@ func TestReasoningMarkdownLiveRestoredAndResized(t *testing.T) {
 			model  *replModel
 			record *reasoningRecord
 		}{{m, record}, {restored, reloaded}} {
-			tc.record.expanded = true
-			tc.record.ensureSegments()
-			tc.record.segments[0].full = true
+			openThoughts(tc.model, tc.record.id)
 			tc.model.refreshReasoningRecords(width)
-			want := markdown.RenderMutedRows(source, width-style.TextWidth(reasoningBlockIndent)-stepColumn(width), nil)
+			want := markdown.RenderMutedRows(source, width-style.TextWidth(reasoningBlockIndent)-toolBodyCols, nil)
 			if got := tc.record.previewLines; strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Fatalf("width %d: live/restored preview differs from shared renderer", width)
 			}
@@ -66,8 +64,9 @@ func TestReasoningMarkdownTruncationKeepsLaterProse(t *testing.T) {
 			m.appendThinking(source[start:min(len(source), start+chunkSize)])
 		}
 		m.completeThinkingTurn(false)
-		m.refreshReasoningRecords(80)
 		record := m.reasoningRecords.get(m.reasoningOrder[0])
+		openThoughts(m, record.id) // a closed thought renders no text
+		m.refreshReasoningRecords(80)
 		if !record.tailCut || len(record.tail) > reasoningTailLimitRunes || record.tailPrefix == "" {
 			t.Fatalf("chunk size %d lost bounded Markdown context", chunkSize)
 		}
@@ -87,8 +86,9 @@ func TestReasoningMarkdownSettlementFlushesHeldMarkup(t *testing.T) {
 	m.beginTurn("explain")
 	m.appendThinking("visible **unfinished")
 	record := m.currentReasoningRecord()
+	openThoughts(m, record.id) // a closed thought renders no text
 	m.refreshReasoningRecords(80)
-	if got := plainStyledText(strings.Join(record.previewLines, "\n")); strings.Contains(got, "unfinished") {
+	if got := plainStyledText(strings.Join(record.previewLines, "\n")); !strings.Contains(got, "visible") || strings.Contains(got, "unfinished") {
 		t.Fatalf("live reasoning leaked incomplete Markdown: %q", got)
 	}
 	version := record.tailVersion
@@ -102,25 +102,19 @@ func TestReasoningMarkdownSettlementFlushesHeldMarkup(t *testing.T) {
 	}
 }
 
-func TestReasoningMarkdownWindowsRenderedRows(t *testing.T) {
+func TestOpenedReasoningKeepsMarkdownSpacing(t *testing.T) {
 	const source = "# Heading\n\nParagraph.\n\n- first\n- second\n\n```text\n    code\n    final\n```"
 	m := newReplModel()
-	m.depth = depthAbridged // the preview below the default depth
 	m.beginTurn("explain")
 	m.appendThinking(source)
 	m.completeThinkingTurn(false)
 	record := m.reasoningRecords.get(m.reasoningOrder[0])
-	record.expanded = true
-	m.refreshReasoningRecords(80)
-	block := activityBlocks(m, 80)[0]
-	preview := strings.Split(block.activityReasoningDetail, "\n")
-	if len(preview) != reasoningPreviewLines || strings.Contains(plainStyledText(preview[0]), "earlier lines") {
-		t.Fatalf("abridged preview must keep %d rows of text and no mark: %q", reasoningPreviewLines, preview)
+	// A closed thought is one row; nothing of it shows.
+	if closed := activityText(t, m, 80, 0); closed != thoughtGlyph+" Thought" {
+		t.Fatalf("closed thought = %q", closed)
 	}
-	record.ensureSegments()
-	record.segments[0].full = true
-	m.visual.invalidate()
-	expanded := plainStyledText(activityBlocks(m, 80)[0].activityReasoningDetail)
+	openThoughts(m, record.id)
+	expanded := activityText(t, m, 80, 0)
 	// One-row paragraphs stack; the two-row list keeps its break before the code.
 	if !strings.Contains(expanded, "Heading\n  Paragraph.\n  • first") || !strings.Contains(expanded, "• second\n  \n  ╭─ text") || !strings.Contains(expanded, "│     code") {
 		t.Fatalf("expanded reasoning lost list or code spacing: %q", expanded)

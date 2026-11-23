@@ -31,8 +31,8 @@ func clickToolDisclosure(t *testing.T, m *replModel, recordID int64, width int) 
 	placements := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
 	m.disclosurePlacements[activityAll] = placements
 	for _, placement := range placements {
-		if placement.recordID == recordID {
-			if !m.toggleDisclosureAt(placement.X+1, placement.Y, 0) {
+		if slices.Contains(placement.recordIDs, recordID) {
+			if !m.toggleDisclosureAt(placement.X, placement.Y, 0) {
 				t.Fatalf("clicking tool disclosure %d did not toggle it", recordID)
 			}
 			return
@@ -41,63 +41,62 @@ func clickToolDisclosure(t *testing.T, m *replModel, recordID int64, width int) 
 	t.Fatalf("tool disclosure %d had no visible click target: %#v", recordID, placements)
 }
 
-func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
+// A live chunk starts folded, its header naming the call in flight. A click
+// on the header shows every call's row and another hides them all; calls
+// that start meanwhile join the chunk as it stands.
+func TestLiveToolChunkStartsFoldedAndClickTogglesAllRows(t *testing.T) {
 	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	first := messages.ChatMessageToolCall{ID: "a", Name: "alpha"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{first})
 	record := m.currentToolDisclosure()
-	if record == nil || record.complete || record.expanded || len(record.rows) != 1 {
-		t.Fatalf("first live disclosure = %#v, want one active collapsed row", record)
+	if record == nil || record.complete || m.lineOpenOf(record) || len(record.rows) != 1 {
+		t.Fatalf("first live disclosure = %#v, want one active folded row", record)
 	}
 	if rows := toolRows(m); len(rows) != 1 {
 		t.Fatalf("first live call rendered %d tool entries, want one: %#v", len(rows), m.transcript)
 	}
-	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "alpha") {
-		t.Fatalf("first live call was not private behind its header: %q", collapsed)
+	if folded := shown(m, width); folded != "▎ run tools\n▸ Using alpha" {
+		t.Fatalf("first live call wants its header alone: %q", folded)
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !record.expanded || !strings.Contains(expanded, "alpha") {
-		t.Fatalf("first live expansion = %q record=%#v", expanded, record)
+	if open := shown(m, width); !m.lineOpenOf(record) || !strings.HasPrefix(open, "▎ run tools\n▾ Using alpha\n  → alpha") {
+		t.Fatalf("first live chunk did not open to its call's row: %q", open)
 	}
 
 	second := messages.ChatMessageToolCall{ID: "b", Name: "beta"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{second})
-	expanded = plainStyledText(m.transcript[record.transcriptIndex].text)
-	if strings.Count(expanded, "alpha") != 1 || strings.Count(expanded, "beta") != 1 {
-		t.Fatalf("expanded live disclosure did not add the second call once: %q", expanded)
+	open := strings.Split(shown(m, width), "\n")
+	if len(open) != 4 || open[1] != "▾ Using 2 tools" || !strings.Contains(open[2], "→ alpha") || !strings.Contains(open[3], "→ beta") {
+		t.Fatalf("open live chunk did not add the second call once: %q", open)
 	}
 	if rows := toolRows(m); len(rows) != 1 {
-		t.Fatalf("expanded live calls escaped into %d transcript entries: %#v", len(rows), m.transcript)
+		t.Fatalf("open live calls escaped into %d transcript entries: %#v", len(rows), m.transcript)
 	}
 
 	tui.AppendToolEnd(first, "RAW ALPHA RESULT", time.Second, nil)
-	expanded = plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "✓") || !strings.Contains(expanded, "alpha") || !strings.Contains(expanded, "beta") || strings.Contains(expanded, "RAW ALPHA RESULT") {
-		t.Fatalf("expanded live completion did not update safely: %q", expanded)
+	open = strings.Split(shown(m, width), "\n")
+	if len(open) != 4 || open[1] != "▾ Using beta" || !strings.Contains(open[2], "✓ alpha") || !strings.Contains(open[3], "→ beta") {
+		t.Fatalf("open live completion did not update safely: %q", open)
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	collapsedAgain := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if record.expanded || strings.Contains(collapsedAgain, "alpha") {
-		t.Fatalf("tool disclosure did not hide every row: %q record=%#v", collapsedAgain, record)
+	if folded := shown(m, width); m.lineOpenOf(record) || folded != "▎ run tools\n▸ Using beta" {
+		t.Fatalf("the header did not hide every row: %q record=%#v", folded, record)
 	}
 }
 
 func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("work")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -119,7 +118,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	// Interleaved prose splits the turn's tool activity into two disclosures,
 	// each holding its own position in the transcript.
 	record := m.currentToolDisclosure()
-	if record == nil || record.transcriptIndex < 0 || record.expanded || len(record.rows) != 3 {
+	if record == nil || record.transcriptIndex < 0 || m.lineOpenOf(record) || len(record.rows) != 3 {
 		t.Fatalf("post-prose disclosure = %#v", record)
 	}
 	if firstRecord == nil || firstRecord.id == record.id || len(firstRecord.rows) != 1 {
@@ -128,64 +127,58 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	if rows := toolRows(m); len(rows) != 2 {
 		t.Fatalf("interleaved activity rendered %d tool entries, want 2: %#v", len(rows), m.transcript)
 	}
-	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	firstAt := strings.Index(collapsed, "▸ 1 tool")
-	proseAt := strings.Index(collapsed, "thinking about it")
-	secondAt := strings.Index(collapsed, "▸ 3 tools")
-	if firstAt < 0 || proseAt <= firstAt || secondAt <= proseAt {
-		t.Fatalf("interleaved order failed: %q", collapsed)
-	}
-	for _, hidden := range []string{"alpha", "tool_b", "tool_c", "tool_d"} {
-		if strings.Contains(collapsed, hidden) {
-			t.Fatalf("collapsed interleaved disclosure leaked %q: %q", hidden, collapsed)
-		}
+	// Folded, each side of the prose is one header: a run of one call names
+	// it, a longer one counts.
+	if folded := shown(m, width); folded != "▎ work\n▸ Used alpha\nthinking about it\n▸ Used 3 tools" {
+		t.Fatalf("interleaved order failed: %q", folded)
 	}
 
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("post-prose disclosure did not expand")
 	}
-	expanded := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	previous := strings.Index(expanded, "▾ 3 tools")
+	expanded := shown(m, width)
+	previous := strings.Index(expanded, "▾ Used 3 tools")
 	for _, want := range []string{"tool_b", "tool_c", "tool_d"} {
 		at := strings.Index(expanded, want)
-		if at <= previous || strings.Count(expanded, want) != 1 {
+		if previous < 0 || at <= previous || strings.Count(expanded, want) != 1 {
 			t.Fatalf("expanded post-prose order failed at %q: %q", want, expanded)
 		}
 		previous = at
 	}
+	if !strings.Contains(expanded, "▸ Used alpha") {
+		t.Fatalf("opening one chunk opened the other: %q", expanded)
+	}
 	if !m.toggleToolDisclosure(firstRecord.id) {
 		t.Fatal("pre-prose disclosure did not expand")
 	}
-	expanded = plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if alpha := strings.Index(expanded, "alpha"); alpha < 0 || alpha > strings.Index(expanded, "thinking about it") {
+	expanded = shown(m, width)
+	if row := strings.Index(expanded, "✓ alpha"); row < 0 || row > strings.Index(expanded, "thinking about it") {
 		t.Fatalf("pre-prose detail escaped its position: %q", expanded)
 	}
 }
 
 func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run parallel")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
-	// Five calls: the largest batch that stays fully visible under the
-	// expanded-row cap, so every row's position is assertable.
 	calls := make([]messages.ChatMessageToolCall, 5)
 	for i := range calls {
 		calls[i] = messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: fmt.Sprintf("tool%d", i)}
 	}
 	tui.AppendToolStart(calls)
 	record := m.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != len(calls) {
+	if record == nil || m.lineOpenOf(record) || len(record.rows) != len(calls) {
 		t.Fatalf("parallel live disclosure = %#v", record)
 	}
 	if rows := toolRows(m); len(rows) != 1 {
-		t.Fatalf("collapsed parallel batch rendered %d tool entries: %#v", len(rows), m.transcript)
+		t.Fatalf("folded parallel batch rendered %d tool entries: %#v", len(rows), m.transcript)
 	}
-	if collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(collapsed, "▸ 5 tools") || strings.Contains(collapsed, "tool0") {
-		t.Fatalf("parallel batch did not start collapsed: %q", collapsed)
+	if folded := shown(m, width); folded != "▎ run parallel\n▸ Using 5 tools" {
+		t.Fatalf("parallel batch did not start folded: %q", folded)
 	}
 
 	if !m.toggleToolDisclosure(record.id) {
@@ -194,22 +187,27 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 	order := []int{4, 1, 3, 0, 2}
 	for settled, i := range order {
 		tui.AppendToolEnd(calls[i], "ok", time.Duration(i+1)*time.Second, nil)
-		expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-		if !strings.Contains(expanded, "▾ 5 tools") || strings.Count(expanded, "✓") != settled+1 {
-			t.Fatalf("after %d parallel completions, disclosure = %q", settled+1, expanded)
+		rows := strings.Split(shown(m, width), "\n")
+		if len(rows) != 2+len(calls) || !strings.HasPrefix(rows[1], "▾ ") {
+			t.Fatalf("after %d parallel completions, chunk = %q", settled+1, rows)
 		}
-		previous := strings.Index(expanded, "▾ 5 tools")
+		// The rows keep the order the calls were requested in, whatever
+		// order their results arrive in.
+		body := rows[2:]
+		if got := strings.Count(strings.Join(body, "\n"), "✓"); got != settled+1 {
+			t.Fatalf("after %d parallel completions, %d rows read done: %q", settled+1, got, body)
+		}
 		for callIndex := range calls {
-			name := fmt.Sprintf("tool%d", callIndex)
-			at := strings.Index(expanded, name)
-			if at <= previous || strings.Count(expanded, name) != 1 {
-				t.Fatalf("parallel start order changed at %s after completion order %v: %q", name, order[:settled+1], expanded)
+			if name := fmt.Sprintf("tool%d", callIndex); !strings.Contains(body[callIndex], name) {
+				t.Fatalf("parallel start order changed at %s after completion order %v: %q", name, order[:settled+1], body)
 			}
-			previous = at
 		}
 		if rows := toolRows(m); len(rows) != 1 {
 			t.Fatalf("parallel updates escaped into %d transcript entries: %#v", len(rows), m.transcript)
 		}
+	}
+	if header := strings.Split(shown(m, width), "\n")[1]; header != "▾ Used 5 tools" {
+		t.Fatalf("settled parallel header = %q", header)
 	}
 	if m.runningTools != 0 {
 		t.Fatalf("runningTools = %d, want 0", m.runningTools)
@@ -217,15 +215,15 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 }
 
 func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run batches")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// Three batches with no prose between them are one unbroken run: every
-	// batch folds into the same disclosure and the header counts them all.
+	// batch folds into the same chunk and the header counts them all.
 	for batch := 0; batch < 3; batch++ {
 		calls := make([]messages.ChatMessageToolCall, 5)
 		for i := range calls {
@@ -245,42 +243,33 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 		if record == nil || len(record.rows) != (batch+1)*5 || record.complete {
 			t.Fatalf("batch %d disclosure = %#v", batch, record)
 		}
-		plain := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-		if want := fmt.Sprintf("▸ %d tools", (batch+1)*5); !strings.Contains(plain, want) {
-			t.Fatalf("after batch %d collapsed transcript = %q, want header %q", batch, plain, want)
-		}
-		if strings.Contains(plain, "tool_0_0") {
-			t.Fatalf("after batch %d collapsed transcript leaked detail: %q", batch, plain)
+		if got, want := shown(m, width), fmt.Sprintf("▎ run batches\n▸ Used %d tools", (batch+1)*5); got != want {
+			t.Fatalf("after batch %d folded transcript = %q, want %q", batch, got, want)
 		}
 	}
 
-	// Expansion reveals every recorded row, in start order.
+	// Opening the chunk shows every recorded row, in start order.
 	record := m.currentToolDisclosure()
 	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("aggregated disclosure did not expand")
+		t.Fatal("aggregated chunk did not open")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "▾ 15 tools") || strings.Contains(expanded, " earlier") {
-		t.Fatalf("aggregated expansion missing header or hid rows: %q", expanded)
+	rows := strings.Split(shown(m, width), "\n")
+	if len(rows) != 2+15 || rows[1] != "▾ Used 15 tools" {
+		t.Fatalf("aggregated chunk missing its header or hid rows: %q", rows)
 	}
-	previous := -1
 	for i := 0; i < 15; i++ {
-		name := fmt.Sprintf("tool_%d_%d", i/5, i%5)
-		at := strings.Index(expanded, name)
-		if at <= previous || strings.Count(expanded, name) != 1 {
-			t.Fatalf("aggregated order failed at %s: %q", name, expanded)
+		if name := fmt.Sprintf("tool_%d_%d", i/5, i%5); !strings.Contains(rows[2+i], name) {
+			t.Fatalf("aggregated order failed at %s: %q", name, rows)
 		}
-		previous = at
 	}
 }
 
-// Completion auto-collapses every disclosure of the turn, even ones the user
-// opened live.
+// Completion leaves a chunk as the reader left it, open or folded.
 func TestCompletedTurnKeepsItsRollupAsLeft(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -290,8 +279,8 @@ func TestCompletedTurnKeepsItsRollupAsLeft(t *testing.T) {
 		tui.AppendToolEnd(call, "ok", time.Second, nil)
 	}
 	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) || !record.expanded {
-		t.Fatalf("live disclosure did not open before completion: %#v", record)
+	if record == nil || !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) {
+		t.Fatalf("live chunk did not open before completion: %#v", record)
 	}
 	tui.AppendAssistantText("Done.")
 	if got := len(toolRows(m)); got != 1 {
@@ -299,137 +288,122 @@ func TestCompletedTurnKeepsItsRollupAsLeft(t *testing.T) {
 	}
 
 	r.endTurn(nil)
-	rows := toolRows(m)
-	if len(rows) != 1 || !strings.Contains(rows[0], "7 tools") {
-		t.Fatalf("a completed turn should keep one aggregate rollup, got %#v", rows)
+	if rows := toolRows(m); len(rows) != 1 || len(record.rows) != 7 {
+		t.Fatalf("a completed turn should keep one aggregate record, got %#v", rows)
 	}
-	// Settlement leaves the line as the user left it; folding it by hand
+	// Settlement leaves the chunk as the user left it; folding it by hand
 	// hides every row again.
-	if record == nil || !record.complete || !record.expanded {
+	if !record.complete || !m.lineOpenOf(record) {
 		t.Fatalf("completed disclosure = %#v, want complete and still open", record)
 	}
-	if !m.toggleToolDisclosure(record.id) || record.expanded {
-		t.Fatal("completed disclosure did not fold by hand")
+	if !m.toggleToolDisclosure(record.id) || m.lineOpenOf(record) {
+		t.Fatal("completed chunk did not fold by hand")
 	}
-	collapsed := strings.Join(transcriptTexts(m), "\n")
-	collapsedPlain := plainStyledText(collapsed)
-	for i := 0; i < 7; i++ {
-		if name := fmt.Sprintf("tool%d", i); strings.Contains(collapsedPlain, name) {
-			t.Fatalf("collapsed disclosure leaked %s: %q", name, collapsedPlain)
-		}
+	folded := shown(m, width)
+	if !strings.HasPrefix(folded, "▎ explain") || !strings.HasSuffix(folded, "\n▸ Used 7 tools\nDone.") || strings.Contains(folded, "tool0") {
+		t.Fatalf("folded chunk = %q", folded)
 	}
 
-	if !m.toggleToolDisclosure(record.id) || !record.expanded {
-		t.Fatal("completed disclosure did not expand")
+	if !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) {
+		t.Fatal("completed chunk did not open")
 	}
-	expanded := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(expanded, "▾ 7 tools") || strings.Contains(expanded, " earlier") ||
-		!strings.Contains(expanded, "tool6") || !strings.Contains(expanded, "tool0") {
-		t.Fatalf("expanded disclosure = %q", expanded)
+	open := shown(m, width)
+	if !strings.Contains(open, "▾ Used 7 tools") || strings.Contains(open, " earlier") ||
+		!strings.Contains(open, "tool6") || !strings.Contains(open, "tool0") || strings.Count(open, "Done.") != 1 {
+		t.Fatalf("open chunk = %q", open)
 	}
-	if !m.toggleToolDisclosure(record.id) || record.expanded {
-		t.Fatal("completed disclosure did not re-collapse")
+	if !m.toggleToolDisclosure(record.id) || m.lineOpenOf(record) {
+		t.Fatal("completed chunk did not fold again")
 	}
-	if got := strings.Join(transcriptTexts(m), "\n"); got != collapsed {
-		t.Fatalf("re-collapse did not restore transcript:\n got %q\nwant %q", got, collapsed)
-	}
-	// The prose either side of the activity is untouched.
-	if !strings.Contains(strings.Join(transcriptTexts(m), "\n"), "Done.") {
-		t.Fatalf("collapse ate the answer: %#v", m.transcript)
+	if got := shown(m, width); got != folded {
+		t.Fatalf("folding again did not restore the transcript:\n got %q\nwant %q", got, folded)
 	}
 }
 
-// A single call collapses too, and reads as one rather than "1 tools".
-func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
+// A run of one call folds too, and its header says what the call was rather
+// than counting one of something.
+func TestSingleCallTurnFoldsUnderItsCall(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run the tests")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
-	call := messages.ChatMessageToolCall{ID: "only", Name: "bash"}
+	call := messages.ChatMessageToolCall{ID: "only", Name: "bash", Arguments: `{"command":"make lint"}`}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	live := m.currentToolDisclosure()
-	if live == nil || live.expanded || live.complete || len(live.rows) != 1 {
+	if live == nil || m.lineOpenOf(live) || live.complete || len(live.rows) != 1 {
 		t.Fatalf("single live disclosure = %#v", live)
 	}
-	if plain := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(plain, "▸ 1 tool") || strings.Contains(plain, "bash") {
-		t.Fatalf("single live call did not start collapsed: %q", plain)
+	if got := shown(m, width); got != "▎ run the tests\n▸ Running make lint" {
+		t.Fatalf("single live call did not start folded under its command: %q", got)
 	}
 	tui.AppendToolEnd(call, "ok", time.Second, nil)
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 
-	rows := toolRows(m)
-	if len(rows) != 1 || !strings.Contains(rows[0], "1 tool") {
-		t.Fatalf("want a singular one-line rollup, got %#v", rows)
-	}
-	if strings.Contains(rows[0], "1 tools") {
-		t.Fatalf("plural wording for a single call: %q", rows[0])
-	}
 	record := m.currentToolDisclosure()
-	if record == nil || !record.complete || record.expanded {
-		t.Fatalf("single-call disclosure = %#v, want complete and collapsed", record)
+	if rows := toolRows(m); len(rows) != 1 || record == nil || !record.complete || m.lineOpenOf(record) {
+		t.Fatalf("single-call disclosure = %#v, want one complete folded record", record)
 	}
-	collapsed := strings.Join(transcriptTexts(m), "\n")
-	if plain := plainStyledText(collapsed); !strings.Contains(plain, "▸ 1 tool") || strings.Contains(plain, "bash") {
-		t.Fatalf("single-call collapsed transcript = %q", plain)
+	folded := shown(m, width)
+	if !strings.HasSuffix(folded, "\n▸ Ran make lint\nDone.") {
+		t.Fatalf("single-call folded transcript = %q", folded)
 	}
-	if !m.toggleToolDisclosure(record.id) || !record.expanded {
-		t.Fatal("single-call disclosure did not expand")
+	if !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) {
+		t.Fatal("single-call chunk did not open")
 	}
-	if plain := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(plain, "▾ 1 tool") ||
-		!strings.Contains(plain, "✓") || !strings.Contains(plain, "bash") || strings.Count(plain, "Done.") != 1 {
-		t.Fatalf("single-call expanded transcript = %q", plain)
+	if open := shown(m, width); !strings.Contains(open, "▾ Ran make lint\n  ✓ $ make lint") || strings.Count(open, "Done.") != 1 {
+		t.Fatalf("single-call open transcript = %q", open)
 	}
-	if !m.toggleToolDisclosure(record.id) || record.expanded {
-		t.Fatal("single-call disclosure did not re-collapse")
+	if !m.toggleToolDisclosure(record.id) || m.lineOpenOf(record) {
+		t.Fatal("single-call chunk did not fold again")
 	}
-	if got := strings.Join(transcriptTexts(m), "\n"); got != collapsed {
-		t.Fatalf("single-call re-collapse did not restore transcript:\n got %q\nwant %q", got, collapsed)
+	if got := shown(m, width); got != folded {
+		t.Fatalf("single-call fold did not restore transcript:\n got %q\nwant %q", got, folded)
 	}
 }
 
 func TestInterruptedTurnKeepsItsLineOpenAndFoldable(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "slow", Name: "slow_tool"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) || !record.expanded {
+	if record == nil || !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) {
 		t.Fatalf("interrupted fixture did not open live disclosure: %#v", record)
 	}
 
 	r.endTurn(errors.New("provider unavailable"))
-	if !record.expanded || !record.complete {
+	if !m.lineOpenOf(record) || !record.complete {
 		t.Fatalf("interrupted turn changed the line's state: record=%#v", record)
 	}
 	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("interrupted disclosure did not fold by hand")
+		t.Fatal("interrupted chunk did not fold by hand")
 	}
-	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if record.expanded || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "slow_tool") {
-		t.Fatalf("folded interrupted line still shows its row: record=%#v transcript=%q", record, collapsed)
+	// Folded, the header still says the call failed; its row is gone.
+	folded := shown(m, width)
+	if m.lineOpenOf(record) || !strings.Contains(folded, "\n▸ Used slow_tool · failed\n") || strings.Contains(folded, "✗ slow_tool") {
+		t.Fatalf("folded interrupted chunk: record=%#v transcript=%q", record, folded)
 	}
 	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("interrupted disclosure did not reopen")
+		t.Fatal("interrupted chunk did not reopen")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "slow_tool · failed") {
-		t.Fatalf("interrupted expansion lost failure status: %q", expanded)
+	if open := shown(m, width); !strings.Contains(open, "✗ slow_tool · failed") {
+		t.Fatalf("interrupted chunk lost its call's failure: %q", open)
 	}
 }
 
-func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
+func TestInterruptedParallelBatchStaysFoldedInStartOrder(t *testing.T) {
+	const width = 80
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("parallel")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	var calls []messages.ChatMessageToolCall
@@ -438,33 +412,35 @@ func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
 	}
 	tui.AppendToolStart(calls)
 	record := m.currentToolDisclosure()
-	if record == nil || len(record.rows) != 5 || record.expanded {
+	if record == nil || len(record.rows) != 5 || m.lineOpenOf(record) {
 		t.Fatalf("interrupted parallel fixture = %#v", record)
 	}
 	r.endTurn(errors.New("provider unavailable"))
-	if !record.complete || record.expanded {
-		t.Fatalf("interrupted parallel disclosure = %#v, want completed and collapsed", record)
+	if !record.complete || m.lineOpenOf(record) {
+		t.Fatalf("interrupted parallel disclosure = %#v, want completed and folded", record)
 	}
-	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(collapsed, "▸ 5 tools") || strings.Contains(collapsed, "tool0") {
-		t.Fatalf("interrupted parallel collapse = %q", collapsed)
+	// The folded header counts the failures; no call's row shows.
+	if folded := shown(m, width); !strings.Contains(folded, "\n▸ Used 5 tools · 5 failed\n") || strings.Contains(folded, "tool0") {
+		t.Fatalf("interrupted parallel fold = %q", folded)
 	}
 	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("interrupted parallel disclosure did not expand")
+		t.Fatal("interrupted parallel chunk did not open")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	previous := strings.Index(expanded, "▾ 5 tools")
+	open := shown(m, width)
+	previous := strings.Index(open, "▾ Used 5 tools · 5 failed")
 	for i := 0; i < 5; i++ {
 		name := fmt.Sprintf("tool%d", i)
-		at := strings.Index(expanded, name+" · failed")
-		if at <= previous || strings.Count(expanded, name) != 1 {
-			t.Fatalf("interrupted expansion lost order/status at %s: %q", name, expanded)
+		at := strings.Index(open, name+" · failed")
+		if previous < 0 || at <= previous || strings.Count(open, name) != 1 {
+			t.Fatalf("interrupted chunk lost order/status at %s: %q", name, open)
 		}
 		previous = at
 	}
 }
 
-func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
+// A turn detached after its cancellation timed out settles like any other:
+// its chunk stays as the reader left it.
+func TestDetachedCancellationKeepsToolChunkAsLeft(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -473,21 +449,18 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "slow", Name: "slow_tool"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) {
-		t.Fatalf("detached fixture did not expand: %#v", record)
+	if record == nil || !m.toggleToolDisclosure(record.id) || !m.lineOpenOf(record) {
+		t.Fatalf("detached fixture did not open its chunk: %#v", record)
 	}
 	tui.ShowThinking("pondering")
 	m.canceling = true
 
 	r.abandonCanceledTurn(r.visibleTab())
-	if !record.complete || record.expanded {
-		t.Fatalf("detached disclosure = %#v, want completed and collapsed", record)
+	if !record.complete || !m.lineOpenOf(record) {
+		t.Fatalf("detached disclosure = %#v, want completed and still open", record)
 	}
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("detached disclosure did not reopen")
-	}
-	if expanded := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(expanded, "slow_tool · canceled") {
-		t.Fatalf("detached disclosure lost canceled row: %q", expanded)
+	if open := shown(m, 80); !strings.Contains(open, "▾ Use slow_tool · canceled\n  "+thoughtGlyph+" thought · not saved\n  ✗ slow_tool · canceled") {
+		t.Fatalf("detached chunk lost its canceled call: %q", open)
 	}
 
 	// The canceled turn rides on its last activity record, with a dock
@@ -502,8 +475,8 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	if len(dock.reasoningIDs) != 1 {
 		t.Fatalf("canceled dock reasoningIDs = %v, want one record", dock.reasoningIDs)
 	}
-	if got := m.activityTrailerField(dock.reasoningIDs, dock.toolIDs).raw; !strings.HasPrefix(got, "canceled") {
-		t.Fatalf("canceled line right field = %q", got)
+	if got := m.promptTrailerField(dock).raw; !strings.HasPrefix(got, "canceled") {
+		t.Fatalf("canceled prompt right field = %q", got)
 	}
 }
 
@@ -513,7 +486,6 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "private-rune", Name: "screen" + marker + "shot"}
@@ -541,7 +513,6 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.reasoningWidth = width
 	m.beginTurn("wrap")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -556,7 +527,7 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 	record := m.currentToolDisclosure()
-	if record == nil || !record.complete || record.expanded {
+	if record == nil || !record.complete || m.lineOpenOf(record) {
 		t.Fatalf("wrapped disclosure fixture = %#v", record)
 	}
 	var prose []string
@@ -601,7 +572,6 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	for i := 0; i < 2; i++ {
@@ -612,7 +582,7 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 	record := m.currentToolDisclosure()
-	if record == nil || !record.complete || record.expanded {
+	if record == nil || !record.complete || m.lineOpenOf(record) {
 		t.Fatalf("completed disclosure = %#v, want complete and collapsed", record)
 	}
 	for i := 0; i < 6; i++ {
@@ -623,8 +593,8 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	// unbroken run share one aggregated record.
 	rows := m.transcriptRows(width)
 	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
-	if len(visible) != 2 {
-		t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
+	if len(visible) != 1 || visible[0].Cols < 3 {
+		t.Fatalf("completed tools lost their recap hitbox: %#v", visible)
 	}
 	for _, hit := range visible {
 		if len(hit.recordIDs) != 1 || hit.recordIDs[0] != record.id {
@@ -633,7 +603,7 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	}
 
 	m.disclosurePlacements[activityAll] = visible
-	if !m.toggleDisclosureAt(visible[0].X+1, visible[0].Y, 0) || !record.expanded {
+	if !m.toggleDisclosureAt(visible[0].X, visible[0].Y, 0) || !m.lineOpenOf(record) {
 		t.Fatal("clicking the completed tool control did not open it")
 	}
 }
@@ -642,7 +612,6 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	runTurn := func(prompt, prefix string) *toolDisclosureRecord {
 		m.beginTurn(prompt)
 		tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -663,7 +632,7 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 
 	first := runTurn("first", "a")
 	second := runTurn("second", "b")
-	if first == nil || second == nil || first.id == second.id || !first.complete || !second.complete || first.expanded || second.expanded {
+	if first == nil || second == nil || first.id == second.id || !first.complete || !second.complete || m.lineOpenOf(first) || m.lineOpenOf(second) {
 		t.Fatalf("per-turn disclosures: first=%#v second=%#v", first, second)
 	}
 	if len(first.rows) != 4 || len(second.rows) != 4 || m.toolDisclosures.count() != 2 {
@@ -673,13 +642,13 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 		t.Fatalf("completed turns rendered %d disclosure entries, want 2: %#v", len(rows), m.transcript)
 	}
 
-	if !m.toggleToolDisclosure(first.id) || !first.expanded || second.expanded {
+	if !m.toggleToolDisclosure(first.id) || !m.lineOpenOf(first) || m.lineOpenOf(second) {
 		t.Fatalf("opening first turn affected second: first=%#v second=%#v", first, second)
 	}
-	if !m.toggleToolDisclosure(second.id) || !first.expanded || !second.expanded {
+	if !m.toggleToolDisclosure(second.id) || !m.lineOpenOf(first) || !m.lineOpenOf(second) {
 		t.Fatalf("opening second turn affected first: first=%#v second=%#v", first, second)
 	}
-	if !m.toggleToolDisclosure(first.id) || first.expanded || !second.expanded {
+	if !m.toggleToolDisclosure(first.id) || m.lineOpenOf(first) || !m.lineOpenOf(second) {
 		t.Fatalf("re-collapsing first turn affected second: first=%#v second=%#v", first, second)
 	}
 }
@@ -687,11 +656,9 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 func TestDraggedMouseSampleDoesNotRetoggleDisclosure(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
-	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	t.Cleanup(func() { _ = r.work.close() })
 	screen.SetSize(80, 24)
 	m := r.model
-	m.depth = depthCollapsed
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "a", Name: "alpha"}})
@@ -701,14 +668,14 @@ func TestDraggedMouseSampleDoesNotRetoggleDisclosure(t *testing.T) {
 		t.Fatal("no disclosure placement after render")
 	}
 	p := m.disclosurePlacements[activityAll][0]
-	press := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X + 1, Y: p.Y}}
+	press := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X, Y: p.Y}}
 	r.handleEvent(press)
-	if !record.expanded {
+	if !m.lineOpenOf(record) {
 		t.Fatal("press did not toggle the disclosure")
 	}
 	drag := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X + 2, Y: p.Y, Drag: true}}
 	r.handleEvent(drag)
-	if !record.expanded {
+	if !m.lineOpenOf(record) {
 		t.Fatal("held-button motion toggled the disclosure again")
 	}
 	if r.wantsRenderForEvent(drag) {

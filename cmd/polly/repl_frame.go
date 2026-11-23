@@ -117,16 +117,13 @@ func (r *managedREPL) transcriptHeight() int {
 	return max(1, r.frameLayoutFor(ui.TerminalDimensions()).transcriptHeight)
 }
 
-// frameLayout is the geometry of one frame: how the terminal height splits,
-// top to bottom, between the logo band, the transcript region, the turn dock,
-// the divider, the composer, and the status bar, and how the transcript
-// region splits sideways between the conversation and the inspector chrome.
-// render and the scroll handlers derive it the same way, so scroll deltas
-// match the pane the user actually sees.
+// frameLayout is the geometry of one frame: how the terminal height splits
+// between the transcript, divider, composer, and status bar, and how the
+// transcript splits sideways between the conversation and inspector chrome.
+// Rendering and scroll handlers derive it the same way.
 type frameLayout struct {
 	width, height    int
 	transcriptHeight int
-	dockRows         int
 	dividerRows      int
 	inputRows        int
 	statusRows       int
@@ -156,26 +153,23 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	if rows := m.dockedFormRows(w, h, l.statusRows); rows > 0 {
 		l.inputRows = rows
 	}
-	// A running turn's clock is in the status row and a settled one rides
-	// on its activity line, so no row is held for a dock.
-	l.dockRows = turnDockRowCount(h, l.inputRows, l.statusRows, false)
-	if room := h - l.statusRows - l.dockRows; room > 1 {
+	if room := h - l.statusRows; room > 1 {
 		l.inputRows = min(l.inputRows, room-1)
 	} else {
 		l.inputRows = 1
 	}
 	// The rule above the composer separates history from the input in every
 	// session; in agent tabs it also carries the link back to the caller.
-	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
-	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
+	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, m.quiet)
+	content := h - l.inputRows - l.statusRows - l.dividerRows
 	l.transcriptHeight = max(0, content)
-	l.chrome = r.chromeGeometryFor(w, 0, l.transcriptHeight, l.dividerRows > 0 && l.dockRows == 0)
+	l.chrome = r.chromeGeometryFor(w, 0, l.transcriptHeight, l.dividerRows > 0)
 	return l
 }
 
 // composerRow maps a row inside the composer to its screen row.
 func (l frameLayout) composerRow(row int) int {
-	return l.transcriptHeight + l.dockRows + l.dividerRows + row
+	return l.transcriptHeight + l.dividerRows + row
 }
 
 // transcriptViewport resolves which transcript display rows land on screen
@@ -199,15 +193,8 @@ func (l frameLayout) transcriptViewport(totalRows, topRow int, pinBottom bool, o
 
 // dividerRowCount reserves the rule above the composer, dropped entirely in
 // quiet mode or when the terminal is too short to spare it.
-func dividerRowCount(h, inputRows, statusRows, dockRows int, quiet bool) int {
-	if quiet || h-inputRows-statusRows-dockRows < 2 {
-		return 0
-	}
-	return 1
-}
-
-func turnDockRowCount(h, inputRows, statusRows int, visible bool) int {
-	if !visible || h-inputRows-statusRows < 2 {
+func dividerRowCount(h, inputRows, statusRows int, quiet bool) int {
+	if quiet || h-inputRows-statusRows < 2 {
 		return 0
 	}
 	return 1
@@ -233,10 +220,6 @@ func (r *managedREPL) setupWidgets() {
 	r.inputW.WrapText = false
 	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.turnDockW = style.NewLiteralParagraph()
-	noBorder(&r.turnDockW.Block)
-	r.turnDockW.WrapText = false
-
 	r.statusW = style.NewLiteralParagraph()
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
@@ -250,9 +233,7 @@ func (r *managedREPL) setupWidgets() {
 // refreshWidgetRoles re-resolves the widget default styles that name theme
 // roles; render calls it every frame, like modalParagraph.refreshRoles.
 func (r *managedREPL) refreshWidgetRoles() {
-	muted := ui.NewStyle(chromeColor("muted"))
-	r.turnDockW.TextStyle = muted
-	r.statusW.TextStyle = muted
+	r.statusW.TextStyle = ui.NewStyle(chromeColor("muted"))
 	r.modalW.refreshRoles()
 }
 
@@ -278,12 +259,8 @@ func (r *managedREPL) layout(l frameLayout) {
 		add(r.inspectorHeaderW, header)
 		add(r.inspectorW, body)
 	}
-	y := l.transcriptHeight
-	if l.dockRows > 0 {
-		add(r.turnDockW, image.Rect(0, y, l.width, y+1))
-		y++
-	}
 	if l.dividerRows > 0 {
+		y := l.transcriptHeight
 		add(r.dividerW, image.Rect(0, y, l.width, y+1))
 	}
 	add(r.inputW, image.Rect(0, l.composerRow(0), l.width, l.composerRow(l.inputRows)))
@@ -438,10 +415,6 @@ func (r *managedREPL) render() {
 		modalTitle = r.model.modal.title
 		modalHeight = min(h, max(3, strings.Count(modalText, "\n")+3))
 	}
-	var dock string
-	if l.dockRows > 0 {
-		dock, _ = r.model.turnDockRow(w)
-	}
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
@@ -530,7 +503,6 @@ func (r *managedREPL) render() {
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
 	r.inputW.Text = input
-	r.turnDockW.Text = dock
 	r.statusW.Text = status
 	if docked {
 		r.dockW.Text = modalText

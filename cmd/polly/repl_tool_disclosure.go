@@ -39,8 +39,7 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 		return record
 	}
 	m.appendLine("")
-	open := m.newRecordOpen()
-	record := m.toolDisclosures.add(&toolDisclosureRecord{expanded: open}, len(m.transcript)-1)
+	record := m.toolDisclosures.add(&toolDisclosureRecord{}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
 	return record
@@ -100,29 +99,23 @@ func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *tool
 	return record
 }
 
-func toolDisclosureHeader(total int, expanded bool) string {
-	glyph := "▸"
-	if expanded {
-		glyph = "▾"
-	}
-	return activityRowHeader(glyph, turnToolLabel(total))
+func toolDisclosureHeader(total int) string {
+	return activityRowHeader("▾", turnToolLabel(total))
 }
 
-func toolDisclosureText(record *toolDisclosureRecord) string {
-	return toolDisclosureTextAtWidth(record, 0)
-}
-
-func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) string {
+// toolRecordText is a tool record's transcript entry. It lists every
+// ordinary row: which of them a view shows is its chunks' folds, decided at
+// layout. clocks says whether a call in flight is written with its running
+// clock. Behind a fold it is not, so a tick there leaves the entry, and the
+// layout built on it, as they were.
+func toolRecordText(record *toolDisclosureRecord, width int, clocks bool) string {
 	if record == nil {
 		return ""
 	}
 	rows := ordinaryToolRows(record.rows)
-	header := toolDisclosureHeader(len(rows), record.expanded)
+	header := toolDisclosureHeader(len(rows))
 	if len(rows) == 0 {
 		header = ""
-	}
-	if !record.expanded {
-		return header
 	}
 	var b strings.Builder
 	b.WriteString(header)
@@ -131,6 +124,10 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) string {
 			continue
 		}
 		b.WriteByte('\n')
+		if !clocks && !row.settled {
+			b.WriteString(row.label)
+			continue
+		}
 		b.WriteString(row.inlineLine(width))
 		if row.outputExpanded && row.changeText != "" {
 			b.WriteByte('\n')
@@ -145,18 +142,17 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) string {
 }
 
 func (m *replModel) toolInspectionImages(ids []int64) []style.Image {
-	images := make([]style.Image, 0)
+	var images []style.Image
 	for _, id := range ids {
 		record := m.toolDisclosures.get(id)
 		if record == nil {
 			continue
 		}
-		for _, row := range record.rows {
-			for _, img := range row.inspectionImages {
-				images = append(images, img)
-				if len(images) == style.MaxImagesPerBlock {
-					return images
-				}
+		for i := range record.rows {
+			viewed := record.rows[i].inspectionImages
+			images = append(images, viewed[:min(len(viewed), style.MaxImagesPerBlock-len(images))]...)
+			if len(images) == style.MaxImagesPerBlock {
+				return images
 			}
 		}
 	}
@@ -171,13 +167,11 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	record.displayRows = nil
-	if record.expanded {
-		rows := ordinaryToolRows(record.rows)
-		record.displayRows = append([]toolDisclosureRow(nil), rows...)
-	}
+	// The snapshot is current whether or not its rows are on screen, so a
+	// chunk that opens later lists them as they stand.
+	record.displayRows = ordinaryToolRows(record.rows)
 	index := record.transcriptIndex
-	text := toolDisclosureText(record)
+	text := toolRecordText(record, 0, m.showsRows(record))
 	if m.transcript[index].text == text {
 		return
 	}
@@ -234,39 +228,6 @@ func runningToolLine(label string, elapsed time.Duration) string {
 	return "  " + style.Styled("→", "run", mod) + " " +
 		styledToolText(label) + " " +
 		style.Styled("· "+formatElapsed(elapsed), "muted", "")
-}
-
-func (m *replModel) toggleToolDisclosure(recordID int64) bool {
-	record := m.toolDisclosures.get(recordID)
-	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
-		return false
-	}
-	// The record's line is the control: its thoughts and agents go with it.
-	thoughtIDs, toolIDs := m.lineRecords(record.transcriptIndex)
-	return m.toggleActivityLine(thoughtIDs, toolIDs, 0)
-}
-
-// setToolDisclosureExpanded opens or folds a record and re-lays its entry
-// out. A held viewport is measured before the flip: a folded line's head
-// carries its latest call, so the head and the rows change height together,
-// and a measurement taken between the flag and the text would count both.
-func (m *replModel) setToolDisclosureExpanded(record *toolDisclosureRecord, expand, reanchor bool) {
-	if record == nil {
-		return
-	}
-	if record.expanded == expand {
-		m.refreshToolDisclosureWithAnchor(record, reanchor)
-		return
-	}
-	apply := func(bool) {
-		record.expanded = expand
-		m.refreshToolDisclosureWithAnchor(record, false)
-	}
-	if !reanchor {
-		apply(false)
-		return
-	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), apply)
 }
 
 // refreshActiveTools updates each running disclosure row with the current
@@ -348,9 +309,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		row.setPresentation(toolPresentation{outcome: toolOutcome(reason)})
 		row.settled = true
 	}
-	if record.expanded {
-		m.refreshToolDisclosure(record)
-	}
+	m.refreshToolDisclosure(record)
 	m.refreshAgentRecord(record)
 }
 
@@ -392,11 +351,9 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 	if len(rows) == 0 {
 		return nil
 	}
-	open := m.newRecordOpen()
 	record := &toolDisclosureRecord{
 		rows:     append([]toolDisclosureRow(nil), rows...),
 		complete: true,
-		expanded: open,
 	}
 	for i := range record.rows {
 		record.rows[i].label = style.StripImageMarkers(record.rows[i].label)

@@ -399,11 +399,11 @@ func keyBindingGroups() []keyGroup {
 			{"Shift-drag", "Select terminal text"},
 		}},
 		{title: "Agent panel", bindings: []keyBinding{
-			// Opens or closes every thinking and tool block in the view the
+			// Collapses or expands every chunk of activity in the view the
 			// keys address — the inspector's selected view while it has
 			// focus, otherwise the visible conversation — and holds that
-			// choice for blocks that arrive later.
-			replKey("Ctrl-O", "Cycle folded → opened → opened + details", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
+			// state for activity that arrives later.
+			replKey("Ctrl-O", "Collapse or expand all activity", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Navigate agents or switch swarm sections"},
 			{"Shift-Tab", "Inline/panel actions: Left/Right choose, Enter activates"},
@@ -411,11 +411,12 @@ func keyBindingGroups() []keyGroup {
 			{"Output pages", "Previous/Next reads all recorded output"},
 			{"Backspace", "Return to the agent panel parent"},
 			{"Click task marks", "Open the checklist · PLAN and /todo also open it"},
+			{"Click header", "Fold or open that run of calls"},
+			{"Click thought row", "Show or hide that step's thinking"},
 			{"Click tool row", "Show or hide its output inline"},
 			{"Click agent", "Open its conversation"},
-			{"Click disclosure", "Expand thinking or tool calls"},
 			{"Click thumbnail", "Open the image"},
-			{"Disclosure level", "New blocks inherit the last Ctrl-O level"},
+			{"Fold state", "New activity follows the last Ctrl-O press"},
 		}},
 		{title: "Approve", bindings: []keyBinding{
 			approvalKey("y", "Allow", 'y', "y", "Y"),
@@ -425,8 +426,8 @@ func keyBindingGroups() []keyGroup {
 	}
 }
 
-// toggleSelectedViewDisclosures is Ctrl-O: it moves the focused pane's depth
-// to the next of the cycle, without changing the conversation beside an
+// toggleSelectedViewDisclosures is Ctrl-O: it collapses or expands every
+// chunk of the focused pane, without changing the conversation beside an
 // inspector. Caller holds r.model.mu. Reports quit, which it never does.
 func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	if !r.inspectorFocused() {
@@ -437,11 +438,11 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
-	// The inspector pane wraps its own disclosures, at the width the
-	// click path lays them out with. The toggle runs on a projection copy
-	// whose depth dies with it, so the depth is carried back into the view
-	// state along with the row and thought defaults it set, where later
-	// projections re-apply them.
+	// The inspector pane wraps its own activity, at the width the click
+	// path lays it out with. The toggle runs on a projection copy whose
+	// state dies with it, so the bulk state is carried back into the view
+	// state along with the cleared hand folds, where later projections
+	// re-apply them.
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	r.mutateInspectedView(func(m *replModel) bool {
 		if !m.toggleAllDisclosures(r.chrome.inner.Dx()) {

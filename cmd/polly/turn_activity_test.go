@@ -69,7 +69,7 @@ func TestHydratedCapsKeepIncompleteOutcome(t *testing.T) {
 			history = append(history, interruptedTurnMarker(llm.ErrMaxIterations))
 		}
 		m.hydrateHistory(history, "ctx")
-		if got := plainStyledText(strings.Join(m.flattenTranscript(), "\n")); !strings.Contains(got, "incomplete") || strings.Contains(got, "✓") {
+		if got := shown(m, 100); !strings.Contains(got, "incomplete") || strings.Contains(got, "✓") {
 			t.Fatalf("restored cap was called done: %q", got)
 		}
 	}
@@ -187,12 +187,7 @@ func TestTurnActivityScopeParity(t *testing.T) {
 		ui.CompleteTurn(turnCompletion{Elapsed: time.Second})
 	}
 	r.endTurn(nil)
-	var dock turnDockState
-	for _, record := range r.model.toolDisclosures.all() {
-		if record.trailer != nil {
-			dock = *record.trailer
-		}
-	}
+	dock := r.model.settledDock
 	a, b := line.activity.summary(), r.model.activitySummaryFor(dock)
 	if a.Tools != b.Tools || a.Images != b.Images || a.Agents != b.Agents || a.In != b.In || a.Out != b.Out || a.Cost != b.Cost || a.Reasoned != b.Reasoned {
 		t.Fatalf("parent summaries differ: line=%+v TUI=%+v", a, b)

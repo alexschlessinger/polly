@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"slices"
 
@@ -14,21 +13,21 @@ import (
 func (r *managedREPL) inlineKeyboardActions() []inspectorKeyboardAction {
 	var actions []inspectorKeyboardAction
 	seen := map[string]bool{}
-	add := func(key string, rect image.Rectangle) {
-		// A line's hitboxes cover each of its rows; the keyboard stops at
-		// the first.
+	addMarked := func(key string, rect, mark image.Rectangle) {
+		// A keyboard stop is a semantic action, not a screen position.
 		if !rect.Empty() && !seen[key] {
 			seen[key] = true
-			actions = append(actions, inspectorKeyboardAction{key: key, rect: rect, mark: rect})
+			actions = append(actions, inspectorKeyboardAction{key: key, rect: rect, mark: mark})
 		}
 	}
+	add := func(key string, rect image.Rectangle) { addMarked(key, rect, rect) }
 	add("todo", r.model.todoLink)
 	if r.workspace().inspector.open && r.chrome.main.Empty() {
 		return actions // The composer divider remains visible.
 	}
 	for _, kind := range disclosureKinds {
 		for _, p := range r.model.disclosurePlacements[kind] {
-			add(fmt.Sprintf("disclosure:%d:%d", kind, p.recordID), image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+1))
+			addMarked(p.keyboardKey(), p.rect(0), p.mark(0))
 		}
 	}
 	for _, link := range r.model.toolOutputLinks {

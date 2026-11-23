@@ -391,9 +391,8 @@ func TestRunningToolLine(t *testing.T) {
 
 func TestActiveToolLifecycle(t *testing.T) {
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 
-	// Starting a tool adds one collapsed disclosure and tracks its semantic row.
+	// Starting a tool adds one folded chunk and tracks its semantic row.
 	m.appendToolStartLine("id1", "bash sleep 30")
 	if len(m.transcript) != 1 || len(m.activeTools) != 1 {
 		t.Fatalf("after start: %d transcript, %d active", len(m.transcript), len(m.activeTools))
@@ -402,18 +401,25 @@ func TestActiveToolLifecycle(t *testing.T) {
 		t.Fatalf("active tool row = %d, want 0", m.activeTools[0].row)
 	}
 	record := m.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0].text, "1 tool") {
+	if record == nil || m.lineOpenOf(record) || len(record.rows) != 1 {
 		t.Fatalf("started disclosure = %#v transcript=%#v", record, m.transcript)
 	}
 
-	// A render frame updates the hidden semantic row without leaking its timer.
+	// A render frame updates the semantic row. The folded chunk is its header
+	// alone and carries no timer; the open chunk's row shows the elapsed time.
 	m.activeTools[0].started = m.activeTools[0].started.Add(-15500 * time.Millisecond)
 	m.refreshActiveTools()
-	if strings.Contains(m.transcript[0].text, "15.5s") || !strings.Contains(record.rows[0].line, "15.5s") {
-		t.Fatalf("collapsed timer update: row=%q transcript=%q", record.rows[0].line, m.transcript[0].text)
+	if !strings.Contains(record.rows[0].line, "15.5s") {
+		t.Fatalf("live row did not update: %q", record.rows[0].line)
 	}
-	if !m.toggleToolDisclosure(record.id) || !strings.Contains(m.transcript[0].text, "15.5s") {
-		t.Fatalf("expanded disclosure missing elapsed: %q", m.transcript[0].text)
+	if folded := activityText(t, m, 80, 0); strings.Contains(folded, "\n") || strings.Contains(folded, "15.5s") {
+		t.Fatalf("folded chunk leaked its call's row or timer: %q", folded)
+	}
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("the chunk did not open")
+	}
+	if open := activityText(t, m, 80, 0); !strings.Contains(open, "15.5s") {
+		t.Fatalf("open chunk missing elapsed: %q", open)
 	}
 
 	// Finishing frees the active slot and freezes the same semantic row.
@@ -1859,15 +1865,24 @@ func TestCompletedTurnMetricsMoveFromStatusToLastTurn(t *testing.T) {
 func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	// A settled turn's outcome rides on its prompt's row.
+	trailers := func() (docks []*turnDockState) {
+		for i := range m.transcript {
+			if dock := m.transcript[i].trailer; dock != nil {
+				docks = append(docks, dock)
+			}
+		}
+		return docks
+	}
 
 	m.beginTurn("first")
 	first := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	first.RecordTurnTokens(1000, 250, false)
 	first.RecordTurnTokens(1200, 300, false)
 	r.endTurn(nil)
-	firstTrailer := m.turnTrailers.latest()
-	if firstTrailer == nil || firstTrailer.dock.inputTokens != 1200 || firstTrailer.dock.outputTokens != 300 {
-		t.Fatalf("first completed trailer = %#v", firstTrailer)
+	docks := trailers()
+	if len(docks) != 1 || docks[0].inputTokens != 1200 || docks[0].outputTokens != 300 || m.turnTrailers.latest() != nil {
+		t.Fatalf("first completed turn: trailers=%#v status row=%#v", docks, m.turnTrailers.latest())
 	}
 
 	m.beginTurn("second")
@@ -1875,9 +1890,9 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	second.RecordTurnTokens(800, 200, false)
 	r.endTurn(nil)
 
-	secondTrailer := m.turnTrailers.latest()
-	if secondTrailer == firstTrailer || secondTrailer.dock.inputTokens != 800 || firstTrailer.dock.inputTokens != 1200 {
-		t.Fatalf("second completed trailer should hold only this turn: first=%#v second=%#v", firstTrailer.dock, secondTrailer.dock)
+	docks = trailers()
+	if len(docks) != 2 || docks[1].inputTokens != 800 || docks[0].inputTokens != 1200 || m.turnTrailers.latest() != nil {
+		t.Fatalf("second completed trailer should hold only this turn: %#v", docks)
 	}
 	// The transcript repeats no token count; /context says the last turn's.
 	if history := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(history, " in / ") {

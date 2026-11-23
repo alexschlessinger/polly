@@ -31,7 +31,10 @@ func TestInspectorLiveThoughtClock(t *testing.T) {
 	readElapsed := func() time.Duration {
 		t.Helper()
 		text := strings.Join(transcriptRowsText(v.view.Rows(v.model, 69)), "\n")
-		_, suffix, ok := strings.Cut(text, "thought ")
+		_, suffix, ok := strings.Cut(text, thoughtGlyph+" Thinking… ")
+		if !ok {
+			_, suffix, ok = strings.Cut(text, thoughtGlyph+" Thought for ")
+		}
 		if !ok || len(strings.Fields(suffix)) == 0 {
 			t.Fatalf("thought clock missing: %q", text)
 		}

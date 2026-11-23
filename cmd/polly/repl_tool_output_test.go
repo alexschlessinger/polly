@@ -44,15 +44,26 @@ func TestInlineToolOutputClickReplayAndResize(t *testing.T) {
 				tui.AppendAssistantText("done")
 				r.endTurn(nil)
 			}
+			// The expanded view lists the thought's row and both calls; the
+			// calls' rows are the ones that open an output.
+			expandLines(m, nil)
+			callLinks := func() (links []toolOutputLink) {
+				for _, link := range m.toolOutputLinks {
+					if link.action == "" {
+						links = append(links, link)
+					}
+				}
+				return links
+			}
 			for _, width := range []int{140, 48, 80, 180} {
 				screen.SetSize(width, 50)
 				r.render()
-				if len(m.toolOutputLinks) != 2 {
+				if len(callLinks()) != 2 || len(m.toolOutputLinks) < 3 {
 					t.Fatalf("width %d: tool links=%+v", width, m.toolOutputLinks)
 				}
-				for _, original := range append([]toolOutputLink(nil), m.toolOutputLinks...) {
+				for _, original := range callLinks() {
 					var link toolOutputLink
-					for _, current := range m.toolOutputLinks {
+					for _, current := range callLinks() {
 						if current.key == original.key {
 							link = current
 						}
@@ -80,7 +91,7 @@ func TestInlineToolOutputClickReplayAndResize(t *testing.T) {
 					t.Fatal("tool click opened a panel")
 				}
 			}
-			link := m.toolOutputLinks[0]
+			link := callLinks()[0]
 			r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
 			r.render()
 			text := strings.Join(transcriptRowsText(m.transcriptRows(180)), "\n")
@@ -164,10 +175,11 @@ func TestInlineToolOutputArtifactLoadsOnDemandAndRejectsStaleResult(t *testing.T
 			tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 			tui.AppendToolEnd(call, "preview-only", time.Second, nil)
 			tui.AppendToolResult(call, messages.ChatMessage{Content: "preview-only", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
+			expandLines(m, nil)
 			screen.SetSize(140, 40)
 			r.render()
-			if store.opens.Load() != 0 {
-				t.Fatal("opening the batch read the artifact")
+			if store.opens.Load() != 0 || len(m.toolOutputLinks) != 1 {
+				t.Fatalf("opening the chunk read the artifact or lost the call's row: opens=%d links=%+v", store.opens.Load(), m.toolOutputLinks)
 			}
 			link := m.toolOutputLinks[0]
 			r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
@@ -244,10 +256,14 @@ func TestSavedWriteToolClickShowsDiffWithoutLoadingRawOutput(t *testing.T) {
 		result,
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 	}, "ctx")
+	expandLines(r.model, nil)
 	screen.SetSize(140, 40)
 	r.render()
 	if text := strings.Join(transcriptRowsText(r.model.transcriptRows(140)), "\n"); strings.Contains(text, "+delta") {
 		t.Fatal("saved write diff was visible before a click")
+	}
+	if len(r.model.toolOutputLinks) != 1 {
+		t.Fatalf("expanded view lost the write's row: %+v", r.model.toolOutputLinks)
 	}
 	link := r.model.toolOutputLinks[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
@@ -331,8 +347,12 @@ func TestMainInlineToolOutputKeepsAgentPanel(t *testing.T) {
 	agent.appendLine("agent conversation")
 	watchTestAgent(r, agent)
 	waitInspector(t, r, 160)
+	expandLines(m, nil)
 	screen.SetSize(160, 40)
 	r.render()
+	if len(m.toolOutputLinks) != 1 {
+		t.Fatalf("expanded view lost the call's row: %+v", m.toolOutputLinks)
+	}
 	link := m.toolOutputLinks[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
 	r.render()

@@ -24,3 +24,4 @@ Start with the [project overview and quick start](../README.md).
 ## Design notes
 
 - [Session todos and plan mode](PLAN.md): how progress is recorded, what plan approval freezes, and how to resume without replaying work.
+- [Main transcript display modes](TRANSCRIPT_MODES.md): current activity rendering and the proposed two-state design, with code references and acceptance scenarios.

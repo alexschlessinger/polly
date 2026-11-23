@@ -21,10 +21,10 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"path": path, "offset": 200, "limit": 220})
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: string(args)}
 	m := newReplModel()
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.toolBaseDir = root
 	record := m.appendToolCallStart(call)
 	record.rows[0].setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: "0.0s"})
+	m.refreshToolDisclosure(record)
 	m.toggleToolDisclosure(record.id)
 	// The rail costs an open tool row two columns, so 42 is the
 	// narrowest pane that keeps the filename and range whole.
@@ -106,7 +106,7 @@ func TestSavedAgentInspectorUsesOwnedExecutionRoot(t *testing.T) {
 		t.Fatalf("saved inspector root = %q, want %q", view.model.toolBaseDir, root)
 	}
 	for _, record := range view.model.toolDisclosures.all() {
-		if !record.expanded {
+		if !view.model.lineOpenOf(record) {
 			view.model.toggleToolDisclosure(record.id)
 		}
 	}

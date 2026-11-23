@@ -23,6 +23,9 @@ type agentActivity struct {
 	background               bool
 	attached                 bool
 	workflowID, workflowName string
+	// launch is the call that started this projected member's workflow. A
+	// member is listed with that call when its row is in the same record.
+	launch string
 	// state is what the row says about its agent: the swarm's presentation
 	// once attached to a member, else built from the launch call's outcome.
 	// Rows decide on its typed fields, never on its label.
@@ -66,6 +69,13 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 	row.toolName = call.Name
 	if command, ok := bashCommandOf(call); ok {
 		row.bash = newBashSummary(command)
+		row.testCommand = isTestCommand(command)
+	}
+	if call.Name == "view_image" && call.Arguments != "" {
+		var args struct{ Source string }
+		if json.Unmarshal([]byte(call.Arguments), &args) == nil {
+			row.imageSource = args.Source
+		}
 	}
 	if call.Arguments != "" {
 		row.arguments = call.Arguments
@@ -300,48 +310,41 @@ func agentActivityLine(a *agentActivity, labelWidth int) string {
 	return line
 }
 
-// agentLinkStyle is the cell style style.Link renders with, which agentDetail
-// matches to find the clickable cells of a rendered row. It is resolved on
-// every call rather than cached: it holds a resolved ui.Color, so a cache would
-// stop matching freshly parsed link cells after a theme change and the links
-// would silently stop being clickable (see applyStyleEpoch in
-// repl_theme_epoch.go).
+// agentLinkStyle is the cell style style.Link renders with. The agent detail
+// renderer uses it to find clickable cells. Resolve it on every call: caching
+// a ui.Color would stop matching freshly parsed links after a theme change
+// (see applyStyleEpoch in repl_theme_epoch.go).
 func agentLinkStyle() ui.Style {
 	return style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
 }
 
-// agentDetail lists the agents behind ids as rows with their inspector
-// links, each row behind prefix and wrapped at width with the normal cell
-// wrapper, so display and link geometry agree. Only the accent label is
-// clickable, including each wrapped fragment.
-func (m *replModel) agentDetail(ids []int64, width int, prefix string) (string, []agentLink) {
+type agentRowRef struct {
+	record *toolDisclosureRecord
+	index  int
+}
+
+// agentRowsDetail lists a chunk's agents with their inspector links, each row
+// behind prefix and wrapped at width in the normal cell wrapper. Only the
+// accent label is clickable, including each wrapped fragment.
+func (m *replModel) agentRowsDetail(rows []agentRowRef, width int, prefix string) (string, []agentLink) {
+	if len(rows) == 0 {
+		return "", nil
+	}
 	// Keep interleaved workflow steps together without moving stored rows:
 	// active tools and inspector links refer to their original row indices.
-	type rowRef struct {
-		record *toolDisclosureRecord
-		index  int
-	}
-	var groups [][]rowRef
+	var groups [][]agentRowRef
 	workflowGroups := map[string]int{}
-	for _, id := range ids {
-		record := m.toolDisclosures.get(id)
-		if record == nil {
-			continue
-		}
-		for i, row := range record.rows {
-			if !row.isAgent() || row.agent == nil {
-				continue
+	for _, ref := range rows {
+		id := ref.record.rows[ref.index].agent.workflowID
+		group, exists := workflowGroups[id]
+		if id == "" || !exists {
+			group = len(groups)
+			groups = append(groups, nil)
+			if id != "" {
+				workflowGroups[id] = group
 			}
-			group, exists := workflowGroups[row.agent.workflowID]
-			if row.agent.workflowID == "" || !exists {
-				group = len(groups)
-				groups = append(groups, nil)
-				if row.agent.workflowID != "" {
-					workflowGroups[row.agent.workflowID] = group
-				}
-			}
-			groups[group] = append(groups[group], rowRef{record, i})
 		}
+		groups[group] = append(groups[group], ref)
 	}
 	// Folded workflow rows count too, so showing them never moves the column.
 	labelWidth := 0

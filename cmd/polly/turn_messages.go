@@ -154,6 +154,9 @@ type durableDisplayToolCall struct {
 	DisplayID string `json:"display_id,omitempty"`
 	Name      string `json:"name"`
 	Denied    bool   `json:"denied,omitempty"`
+	// Response is the 1-based assistant response containing this batch. It
+	// keeps stripped denials in their actual step, without saving arguments.
+	Response int `json:"response,omitempty"`
 }
 
 func displayToolIdentity(providerID, displayID string) string {
@@ -180,13 +183,15 @@ func deniedDisplayToolCalls(generated []messages.ChatMessage, deniedIDs map[stri
 		return ""
 	}
 	var calls []durableDisplayToolCall
+	response := 0
 	for _, msg := range generated {
 		if msg.Role != messages.MessageRoleAssistant {
 			continue
 		}
+		response++
 		for _, call := range msg.ToolCalls {
 			_, denied := deniedIDs[displayToolIdentity(call.ID, call.DisplayID)]
-			calls = append(calls, durableDisplayToolCall{ID: call.ID, DisplayID: call.DisplayID, Name: toolDisplayName(call.Name), Denied: denied})
+			calls = append(calls, durableDisplayToolCall{ID: call.ID, DisplayID: call.DisplayID, Name: toolDisplayName(call.Name), Denied: denied, Response: response})
 		}
 	}
 	if len(calls) == 0 {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,13 +25,10 @@ const resumedTurnLimit = 5
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	defer m.hydrateDisplayCatalog(history)
-	// Records take the view's depth once the whole transcript is here, in
-	// one pass.
+	// Replayed records open nothing: every chunk follows the view's bulk
+	// state, and every thought and output waits for a click.
 	m.hydrating = true
-	defer func() {
-		m.hydrating = false
-		m.openHydratedLines()
-	}()
+	defer func() { m.hydrating = false }()
 	m.historyContinuation, m.historyContinuationAt = nil, 0
 	m.clearTurnDock()
 	for _, msg := range history {
@@ -59,7 +57,8 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	h.flushTools()
 	continuation := h
 	// Keep display context, not another copy of the last user message or a
-	// reference back to this whole model. Record pointers are rebound on copy.
+	// reference back to this whole model. Record pointers are rebound on
+	// copy; the flush above left none waiting to be written.
 	continuation.m = nil
 	continuation.lastUser = messages.ChatMessage{}
 	continuation.lastUserContent = ""
@@ -127,7 +126,11 @@ type historyHydrator struct {
 	toolRows   []toolDisclosureRow     // rows not yet folded into the turn's disclosure
 	tools      *toolDisclosureRecord   // the turn's disclosure, once one exists
 	toolGroups []*toolDisclosureRecord // prose-separated activity in this turn
-	reasoning  *reasoningRecord
+	// stale are the disclosures whose rows have changed since their
+	// transcript entry was written. flushTools writes them, so a run of
+	// steps is written once however long it is.
+	stale     []*toolDisclosureRecord
+	reasoning *reasoningRecord
 	// dockReasoning is the turn's latest record, kept for the dock after
 	// prose closes the open one.
 	dockReasoning *reasoningRecord
@@ -184,7 +187,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.toolGroups = nil
 	h.reasoning, h.dockReasoning, h.reasonings = nil, nil, nil
 	h.step, h.stepIDs = 0, nil
-	m.turnStep, m.turnStepKnown = 0, false
+	m.turnStep, m.turnSteps, m.turnStepKnown = 0, 0, false
 	h.turnInput, h.turnOutput = 0, 0
 	h.cache = turnCacheUsage{}
 	h.stopReason = ""
@@ -196,6 +199,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	} else {
 		assignment := m.assignment
 		m.appendUserPrompt(content)
+		m.markTurnPrompt()
 		if contextOnly {
 			m.assignment = assignment
 		}
@@ -219,16 +223,18 @@ func (m *replModel) assistantDisplayText(msg messages.ChatMessage) string {
 
 func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
-	h.flushTools()
+	h.foldTools()
 	// Each response is a step of its turn; its thought and calls carry the
 	// number, and the audit at the turn's end says when it began.
 	h.step = len(h.stepIDs)
 	h.stepIDs = append(h.stepIDs, msg.DisplayID())
-	m.turnStep, m.turnStepKnown = h.step, false
+	m.turnStep, m.turnSteps, m.turnStepKnown = h.step, len(h.stepIDs), false
 	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
 	h.recordUsage(msg)
 	h.stopReason = msg.StopReason
 	if content := m.assistantDisplayText(msg); content != "" {
+		// Prose ends the run of steps before it: their disclosure is written.
+		h.flushTools()
 		m.appendAssistant(content)
 		if m.currentAssistant >= 0 {
 			m.transcript[m.currentAssistant].displayID = msg.DisplayID()
@@ -305,7 +311,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	}
 	row.output = newInlineToolOutput(call, msg)
 	if group != nil {
-		h.m.refreshToolDisclosure(group)
+		h.deferRefresh(group)
 	}
 	h.lastRole = msg.Role
 }
@@ -335,8 +341,10 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 		return
 	}
 	if c, ok := msg.Compaction(); ok {
-		// Where the conversation was compacted, as the live notice showed.
+		// The notice ends this activity run, not the turn. Keep its records
+		// for the audit and late results, but place new activity below it.
 		h.flushTools()
+		h.tools, h.reasoning = nil, nil
 		h.m.appendLine("  " + style.Styled(llm.CompactionNote(c, h.summaryModel), "muted", ""))
 		return
 	}
@@ -350,6 +358,11 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	}
 	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
 	if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
+		// The stripped reasoning-only terminal proposal is a separate response,
+		// not a continuation of the preceding successful batch's thought.
+		h.step = len(h.stepIDs)
+		h.stepIDs = append(h.stepIDs, msg.DisplayID())
+		m.turnStep, m.turnSteps, m.turnStepKnown = h.step, len(h.stepIDs), false
 		h.appendReasoning(displayReasoning, msg.ThinkingDuration())
 	}
 	h.applyToolOrder(displayToolCalls)
@@ -395,14 +408,16 @@ func (h *historyHydrator) agentLaunch(launch agentLaunch) {
 	agent := &agentActivity{label: label, background: true}
 	agent.setLocal("unknown", false)
 	m := h.m
-	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true, expanded: m.newRecordOpen()}, m.appendTranscriptEntry(""))
-	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent}}
+	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
+	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent, step: h.step}}
 	m.refreshAgentRecord(record)
 }
 
-// flushTools folds the pending rows into the turn's disclosure, opening one
-// on first use.
-func (h *historyHydrator) flushTools() {
+// foldTools moves the pending rows into the turn's disclosure, opening one
+// on first use. An open disclosure takes them without being written again:
+// its entry lists every row, so a write at each step of a run would cost the
+// square of the run's length.
+func (h *historyHydrator) foldTools() {
 	if len(h.toolRows) == 0 {
 		return
 	}
@@ -416,9 +431,28 @@ func (h *historyHydrator) flushTools() {
 			}
 		}
 		h.tools.rows = append(h.tools.rows, h.toolRows...)
-		h.m.refreshToolDisclosure(h.tools)
+		h.deferRefresh(h.tools)
 	}
 	h.toolRows = nil
+}
+
+// deferRefresh leaves record's transcript entry and display snapshot behind
+// its rows until the next flushTools.
+func (h *historyHydrator) deferRefresh(record *toolDisclosureRecord) {
+	if !slices.Contains(h.stale, record) {
+		h.stale = append(h.stale, record)
+	}
+}
+
+// flushTools folds the pending rows and writes every disclosure whose rows
+// have changed. Whatever reads a disclosure's entry or snapshot, or ends the
+// run it belongs to, flushes first.
+func (h *historyHydrator) flushTools() {
+	h.foldTools()
+	for _, record := range h.stale {
+		h.m.refreshToolDisclosure(record)
+	}
+	h.stale = nil
 }
 
 // isDisplayCall reports whether the row is the recorded call, by ID.
@@ -448,20 +482,23 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		return
 	}
 	// Safe display markers cover a whole turn. Apply known calls at their
-	// original prose-separated group. Stripped denied calls have no transcript
-	// position; keep them with the latest batch, as legacy hydration did.
+	// original prose-separated group. Place stripped denials alongside their
+	// response's siblings; older markers lack a response and use the latest group.
 	if len(h.toolGroups) > 0 {
 		orders := make(map[*toolDisclosureRecord][]durableDisplayToolCall)
 		used := make(map[*toolDisclosureRow]bool)
 		for _, call := range order {
 			target := h.tools
-			if target == nil {
-				target = h.toolGroups[len(h.toolGroups)-1]
+			if target == nil && call.Response == 0 {
+				target = h.toolGroups[len(h.toolGroups)-1] // legacy marker: no batch position
 			}
 		search:
 			for _, group := range h.toolGroups {
 				for i := range group.rows {
 					row := &group.rows[i]
+					if call.Response > 0 && row.step == call.Response-1 {
+						target = group // a stripped call belongs with its batch siblings
+					}
 					if !used[row] && (row.isDisplayCall(call) || row.couldBeDisplayCall(call)) {
 						target = group
 						used[row] = true
@@ -472,7 +509,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 			orders[target] = append(orders[target], call)
 		}
 		for _, group := range h.toolGroups {
-			localHydrator := historyHydrator{m: h.m, tools: group}
+			localHydrator := historyHydrator{m: h.m, tools: group, step: h.step}
 			localHydrator.applyToolOrder(orders[group])
 		}
 		if missing := orders[nil]; len(missing) > 0 {
@@ -506,7 +543,11 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 				}
 			}
 		}
-		row := toolDisclosureRow{callID: displayCall.ID, label: name, settled: true}
+		step := h.step
+		if displayCall.Response > 0 {
+			step = displayCall.Response - 1
+		}
+		row := toolDisclosureRow{callID: displayCall.ID, label: name, settled: true, step: step}
 		if pick >= 0 {
 			used[pick] = true
 			row = existing[pick]
@@ -536,7 +577,6 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	}
 	h.tools.rows = ordered
 	h.tools.complete = true
-	h.tools.expanded = h.m.newRecordOpen()
 	h.m.refreshToolDisclosure(h.tools)
 }
 
@@ -553,7 +593,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 		h.reasonings = append(h.reasonings, h.reasoning)
 	}
 	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
-	h.reasoning.elapsed += elapsed
+	h.reasoning.addThinkingTime(elapsed)
 	h.m.markReasoningDirty(h.reasoning)
 }
 

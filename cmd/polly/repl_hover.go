@@ -92,8 +92,8 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 		return hoverTarget{rect: m.parentLink}
 	}
 	for _, f := range []statusSessionPlacement{m.status.modelField, m.status.sessionField, m.status.agentsField, m.status.contextField} {
-		if f.hit(p.X, p.Y, height) {
-			return hoverTarget{rect: image.Rect(f.X, height-1, f.X+f.Cols, height)}
+		if rect := f.rect(height); p.In(rect) {
+			return hoverTarget{rect: rect}
 		}
 	}
 	right := r.chrome.main.Max.X
@@ -120,8 +120,8 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 	for _, kind := range disclosureKinds {
 		placements := m.disclosurePlacements[kind]
 		for _, pl := range placements {
-			if x := pl.X + disclosureX; p.Y == pl.Y && p.X >= x && p.X < x+pl.Cols {
-				return hoverTarget{rect: image.Rect(x, pl.Y, x+pl.Cols, pl.Y+1)}
+			if p.In(pl.rect(disclosureX)) {
+				return hoverTarget{rect: pl.mark(disclosureX)}
 			}
 		}
 	}

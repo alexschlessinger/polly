@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
@@ -60,47 +61,56 @@ func (m *replModel) adoptLiveTools(live []swarm.LiveToolActivity) {
 	if len(live) == 0 {
 		return
 	}
-	record := m.currentTurnToolRecord()
+	last := m.currentTurnToolRecord()
 	known := make(map[string]bool, len(m.displayCatalog.tools))
 	for _, tool := range m.displayCatalog.tools {
 		if tool.call.DisplayID != "" {
 			known[tool.call.DisplayID] = true
 		}
 	}
-	adopted := false
-	for _, tool := range live {
-		call := tool.Call
-		index := -1
-		if record != nil {
-			for i := range record.rows {
-				row := &record.rows[i]
-				if row.isProjectedAgent() {
-					continue
-				}
-				// A host identity names its row outright. Without one, only a
-				// still-open row that also lacks one and carries the provider's
-				// call ID can be this call.
-				if call.DisplayID != "" && row.displayID == call.DisplayID || call.DisplayID == "" && row.displayID == "" && row.callID == call.ID && !row.settled {
-					index = i
-					break
-				}
-			}
+	// The runtime snapshot supplies one batch, in call order. If the
+	// transcript already has an open member of that batch, keep its step.
+	// Otherwise we only know that this is newer than the responses we saw.
+	var record *toolDisclosureRecord
+	step := m.turnSteps
+	if last != nil {
+		for _, row := range last.rows {
+			step = max(step, row.step+1)
 		}
-		if index < 0 && call.DisplayID != "" && known[call.DisplayID] {
+	}
+	matches := make([]int, len(live))
+	for i, tool := range live {
+		matches[i] = liveToolRow(last, tool.Call)
+		if at := matches[i]; at >= 0 && !last.rows[at].settled {
+			record, step = last, last.rows[at].step
+		}
+	}
+	adopted := false
+	ordinal := len(m.displayCatalog.tools)
+	for i, tool := range live {
+		call := tool.Call
+		index := matches[i]
+		if index >= 0 && last.rows[index].settled || index < 0 && known[call.DisplayID] {
 			// The transcript owns this call: its row sits in an earlier record
 			// or has settled while the metadata lags.
 			continue
 		}
-		if index >= 0 && record.rows[index].settled {
-			continue
-		}
 		if index < 0 {
 			if record == nil {
+				// A new record lands at the current transcript position, not
+				// above intervening prose or notices. Adjacent records still
+				// fold into one line, but not one batch.
+				m.resetToolDisclosure()
+				m.activeTools = nil
 				record = m.ensureToolDisclosure()
 			}
-			row := toolDisclosureRow{callID: call.ID, label: style.StripImageMarkers(toolLabel(call))}
+			ordinal++
+			row := toolDisclosureRow{
+				callID: call.ID, label: style.StripImageMarkers(toolLabel(call)),
+				step: step, batchStart: len(record.rows) == 0, runtimeOnly: true,
+			}
 			row.setCall(call)
-			row.sectionKey = displayToolKey(call, len(m.displayCatalog.tools)+len(record.rows)+1)
+			row.sectionKey = displayToolKey(call, ordinal)
 			record.rows = append(record.rows, row)
 			index = len(record.rows) - 1
 		}
@@ -126,6 +136,23 @@ func (m *replModel) adoptLiveTools(live []swarm.LiveToolActivity) {
 	m.refreshToolDisclosure(record)
 }
 
+// liveToolRow matches by host identity. Without one, only an open row that
+// also lacks one and carries the same provider ID can be this call.
+func liveToolRow(record *toolDisclosureRecord, call messages.ChatMessageToolCall) int {
+	if record != nil {
+		for i := range record.rows {
+			row := &record.rows[i]
+			if row.isProjectedAgent() {
+				continue
+			}
+			if call.DisplayID != "" && row.displayID == call.DisplayID || call.DisplayID == "" && row.displayID == "" && row.callID == call.ID && !row.settled {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // currentTurnToolRecord is the newest tool record, when it belongs to the
 // turn in progress: no later prompt follows it.
 func (m *replModel) currentTurnToolRecord() *toolDisclosureRecord {
@@ -135,10 +162,10 @@ func (m *replModel) currentTurnToolRecord() *toolDisclosureRecord {
 			last = record
 		}
 	}
-	if last == nil || last.transcriptIndex < 0 {
+	if last == nil || last.transcriptIndex < 0 || last.transcriptIndex >= len(m.transcript) || m.transcript[last.transcriptIndex].activityTurn != m.activityTurn {
 		return nil
 	}
-	for _, entry := range m.transcript[min(len(m.transcript), last.transcriptIndex+1):] {
+	for _, entry := range m.transcript[last.transcriptIndex+1:] {
 		if strings.HasPrefix(entry.text, userGutter()) {
 			return nil
 		}

@@ -63,6 +63,15 @@ type transcriptEntry struct {
 	markdownSource string
 	markdownWidth  int
 	codeCache      *markdown.CodeCache
+	// promptLines is how many lines of an echoed prompt are the user's own
+	// words, before any attachment or file rows. promptTurn marks the
+	// prompt that started a display turn, by the turn's number. trailer,
+	// once that turn settles, is what the prompt's last text row carries at
+	// its right edge: how long the turn took and, when it did not finish,
+	// how it ended.
+	promptLines int
+	promptTurn  uint64
+	trailer     *turnDockState
 }
 
 // replModel is the mutex-protected state for the TUI. Mutated from both the
@@ -91,7 +100,11 @@ type replModel struct {
 	// activityTurn advances only when a live or replayed turn starts, not
 	// when queued input is echoed. Unlike turnID's callback generation, it
 	// survives settlement and is also carried by copied history displays.
-	activityTurn   uint64
+	activityTurn uint64
+	activityHold collapsedActivityHold
+	// pendingPrompt is the echoed prompt of the turn about to start, as a
+	// transcript index plus one; zero when a turn starts without one.
+	pendingPrompt  int
 	userPromptSeen bool
 	hydrating      bool   // hydrateHistory in progress: its records take the default level at the end
 	assignment     string // latest genuine prompt whose turn has started
@@ -164,16 +177,23 @@ type replModel struct {
 	// activeToolsPhase is the arrow-pulse phase of the last refreshActiveTools
 	// repaint; -1 forces a repaint on the first tick of a new batch.
 	activeToolsPhase int
-	// depth is Ctrl-O's depth for every activity line, current and future.
-	// Per view, not persisted.
+	// depth is the view's bulk state, collapsed or expanded: what Ctrl-O last
+	// set, and what a chunk nobody folded or opened by hand follows. Per
+	// view, not persisted.
 	depth disclosureDepth
-	// Tool activity is a semantic disclosure from its first call. It defaults
-	// collapsed; deliberate expansion reveals every live or completed row.
+	// chunkFolds are the chunks folded or opened by hand since the last
+	// Ctrl-O, by chunk key. Per view, not persisted.
+	chunkFolds map[string]bool
+	// followThoughts is set while the reader follows the running turn's
+	// thinking: each thought the turn starts opens with its text showing.
+	followThoughts bool
+	// Tool activity is a semantic record from its first call. Which of its
+	// rows show is the fold of the chunk each belongs to.
 	toolDisclosures       transcriptRegistry[*toolDisclosureRecord]
 	turnToolDisclosureID  int64
 	turnToolDisclosureIDs []int64 // every disclosure opened this turn
-	// disclosurePlacements is the last rendered frame's activity controls
-	// per kind, in absolute screen cells, for mouse hit-testing.
+	// disclosurePlacements is the last rendered frame's chunk headers, in
+	// absolute screen cells, for mouse hit-testing.
 	disclosurePlacements [activityKindCount][]disclosurePlacement
 	toolOutputLinks      []toolOutputLink
 	inlineKeyboardAction string
@@ -331,7 +351,9 @@ type transcriptVisualBlock struct {
 	reasoningIDs      []int64
 	toolDisclosureIDs []int64
 	turnTrailerID     int64
-	activityFields    []turnDockPlacement
+	chunks            []chunkMark
+	currentActivity   bool
+	activityFields    []turnDockPlacement // chunk headers, in display rows
 	activityLabels    []turnDockPlacement // label paint bounds, independent of hitboxes
 
 	agentLinks      []agentLink
@@ -358,7 +380,6 @@ type reasoningRecord struct {
 	previewLines   []string
 	previewCode    *markdown.CodeCache
 	dirty          bool
-	expanded       bool
 	// tailCut says the retained text itself lost its beginning to the
 	// tail bound.
 	tailCut  bool
@@ -372,10 +393,6 @@ type reasoningRecord struct {
 	// contributed to previewLines.
 	segments        []reasoningSegment
 	previewSegments []int
-	// trailer is the settled turn whose outcome and elapsed time this
-	// record's activity row carries in its right column, when it is the
-	// turn's last activity record.
-	trailer *turnDockState
 }
 
 // reasoningSegment is the part of a thought one model response produced:
@@ -383,24 +400,26 @@ type reasoningRecord struct {
 // number within its turn, and, when known, how long after the prompt the
 // response began.
 type reasoningSegment struct {
-	step  int
-	start int
-	at    time.Duration
-	known bool
-	// full shows every retained row of the part rather than its newest
-	// rows of text: the expanded depth sets it, a click on the part flips
-	// it.
-	full bool
+	elapsed time.Duration // thinking time of this response alone
+	step    int
+	start   int
+	at      time.Duration
+	known   bool
+	// open shows the part's retained text under its row. Only a click on
+	// that row sets it, or the reader following a running turn's thinking;
+	// no fold and no Ctrl-O press changes it.
+	open bool
 }
 
 // disclosurePlacement is the last rendered header-row geometry for one
 // disclosure. Like native image placements, it is viewport-aware and exists
 // only for mouse hit-testing.
 type disclosurePlacement struct {
-	recordID  int64
-	recordIDs []int64
-	// thoughtIDs are the reasoning records an activity line also toggles;
-	// recordIDs are its tool disclosures.
+	// key names the chunk whose header this is.
+	key string
+	// recordIDs and thoughtIDs are the tool and reasoning records of the
+	// line the chunk belongs to, for re-anchoring a held viewport.
+	recordIDs  []int64
 	thoughtIDs []int64
 	X, Y       int
 	Cols       int
@@ -410,8 +429,15 @@ type statusSessionPlacement struct {
 	X, Cols int
 }
 
+func (p statusSessionPlacement) rect(terminalHeight int) image.Rectangle {
+	if p.Cols <= 0 || terminalHeight <= 0 {
+		return image.Rectangle{}
+	}
+	return image.Rect(p.X, terminalHeight-1, p.X+p.Cols, terminalHeight)
+}
+
 func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
-	return p.Cols > 0 && terminalHeight > 0 && y == terminalHeight-1 && x >= p.X && x < p.X+p.Cols
+	return image.Pt(x, y).In(p.rect(terminalHeight))
 }
 
 type toolDisclosureRow struct {
@@ -425,6 +451,10 @@ type toolDisclosureRow struct {
 	line             string
 	inline           *inlineToolLine
 	bash             *bashSummary
+	batchStart       bool   // first call of one explicit live tool request batch
+	runtimeOnly      bool   // inspector fallback without a transcript proposal
+	testCommand      bool   // conservative classification of the original, unfitted command
+	imageSource      string // original view_image source, before an inspection receipt exists
 	file             *inlineFileSummary
 	inspectionImages []style.Image
 	settled          bool
@@ -445,16 +475,10 @@ type toolDisclosureRow struct {
 type toolDisclosureRecord struct {
 	transcriptAnchor
 	rows []toolDisclosureRow
-	// displayRows snapshots the visible rows with the canonical transcript
+	// displayRows snapshots the ordinary rows with the canonical transcript
 	// update, so width projection cannot observe a half-applied mutation.
 	displayRows []toolDisclosureRow
-	// expanded is the record's activity line being open; its agents and
-	// viewed images open with it.
-	expanded bool
-	complete bool
-	// trailer is as on reasoningRecord: the settled turn this record's
-	// activity row reports.
-	trailer *turnDockState
+	complete    bool
 }
 
 type approvalState struct {

@@ -1,4 +1,7 @@
-:click Test value llm
+# Run with agent-inspection.json. An agent is a row of its run: open the
+# run, then the agent.
+:click "1 agent"
+:click "Test value llm" 5
 :settle
 :shot $POLLY_SHOT_DIR/agent-view.png
 :size 80x36

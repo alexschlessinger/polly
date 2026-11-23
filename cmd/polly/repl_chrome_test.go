@@ -405,14 +405,14 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "image ready", time.Second, nil)
 	m.currentToolDisclosure().rows[0].inspectionImages = inspectionTranscriptImages(messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}}, m.artifactStore)
-	m.currentToolDisclosure().expanded = true
+	m.setLineOpenOf(m.currentToolDisclosure(), true)
 	m.refreshToolDisclosure(m.currentToolDisclosure())
 	r.endTurn(nil)
 	m.toggleToolDisclosure(m.currentToolDisclosure().id)
-	m.currentToolDisclosure().expanded = true
+	m.setLineOpenOf(m.currentToolDisclosure(), true)
 	m.refreshToolDisclosure(m.currentToolDisclosure())
 	agent := childDisplayCopy(m)
-	m.currentToolDisclosure().expanded = false
+	m.setLineOpenOf(m.currentToolDisclosure(), false)
 	m.refreshToolDisclosure(m.currentToolDisclosure())
 	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)

@@ -77,7 +77,7 @@ func newViewportOutputFixture(t *testing.T, pane string, count int, dense, detai
 		watchTestAgent(r, m)
 		s := r.workspace().viewState(r.workspace().inspector.target)
 		if detailed {
-			s.depth = depthFull
+			s.depth = depthExpanded
 			openAllOutputs(m)
 			rememberViewSections(m, s)
 		}
@@ -86,7 +86,7 @@ func newViewportOutputFixture(t *testing.T, pane string, count int, dense, detai
 	} else {
 		openAllLines(m)
 		if detailed {
-			m.depth = depthFull
+			m.depth = depthExpanded
 			openAllOutputs(m)
 		}
 		m.followBottom, m.scrollAnchor = false, 0

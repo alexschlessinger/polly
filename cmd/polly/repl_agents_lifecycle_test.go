@@ -15,8 +15,15 @@ func TestInspectorRuntimeOnlyToolKeepsManualSectionsAtCheckpoint(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	child := testAcquireSession(t, store, "worker")
 	id := child.(sessions.ViewIdentity).ViewID()
+	read := readCall("setup")
+	read.DisplayID = "host-setup"
+	setup := continuationMessage(read.DisplayID, messages.MessageRoleTool, "setup complete")
+	setup.ToolCallID, setup.ToolName = read.ID, read.Name
+	setup.SetToolSucceeded(true)
 	testAddMessages(t, child, []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "Run the suite"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{read}},
+		setup,
 		{Role: messages.MessageRoleAssistant, Content: "Running it now."},
 	})
 	if err := child.Close(); err != nil {
@@ -36,10 +43,14 @@ func TestInspectorRuntimeOnlyToolKeepsManualSectionsAtCheckpoint(t *testing.T) {
 	r.inspect(viewTarget{session: sessions.ViewTarget{ID: id}})
 	v := waitInspector(t, r, 140)
 	record := v.model.currentTurnToolRecord()
-	if record == nil || !record.expanded || len(record.rows) != 1 {
-		t.Fatal("initial running call did not open")
+	if record == nil || !v.model.lineOpenOf(record) || len(record.rows) != 1 || record.rows[0].step != 2 {
+		t.Fatalf("initial running call did not open in its own step: %+v", record)
 	}
-	v.model.setToolDisclosureExpanded(record, false, false)
+	text := inspectorRowsText(v, 100)
+	if setup, prose, runtime := strings.Index(text, "setup.go"), strings.Index(text, "Running it now."), strings.Index(text, "sleep 60"); setup < 0 || prose <= setup || runtime <= prose {
+		t.Fatalf("runtime batch crossed preceding prose: %q", text)
+	}
+	v.model.setLineOpenOf(record, false)
 	// A detailed-row choice must also survive the runtime row becoming durable.
 	record.rows[0].outputExpanded = true
 	state := r.workspace().viewState(r.workspace().inspector.target)
@@ -47,7 +58,7 @@ func TestInspectorRuntimeOnlyToolKeepsManualSectionsAtCheckpoint(t *testing.T) {
 	check := func(v *viewInstance) *toolDisclosureRow {
 		t.Helper()
 		record := v.model.currentTurnToolRecord()
-		if record == nil || record.expanded || len(record.rows) != 1 {
+		if record == nil || v.model.lineOpenOf(record) || len(record.rows) != 1 {
 			t.Fatalf("manual fold or row identity lost: record=%+v sections=%+v", record, state.sections)
 		}
 		row := &record.rows[0]

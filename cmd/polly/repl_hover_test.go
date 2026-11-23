@@ -49,69 +49,64 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.affordances.inputAt = time.Now()
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
-	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
+	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: `{"path":"main.go"}`}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "done", time.Second, nil)
-	tui.AppendAssistantText("Found the relevant code.")
-	r.endTurn(nil)
 	r.render()
-	if hits := m.disclosurePlacements[activityAll]; len(hits) != 2 || hits[1].Y != hits[0].Y+1 {
-		t.Fatalf("tool hitboxes = %#v, want the line and its call row", hits)
+	hits := m.disclosurePlacements[activityAll]
+	if len(hits) != 1 || hits[0].X != 0 || hits[0].Cols != len("> Read main.go") {
+		t.Fatalf("chunk hitboxes = %#v, want one header over its triangle and label", hits)
 	}
-	target := m.disclosurePlacements[activityAll][0]
+	header := hits[0]
 	record := m.currentToolDisclosure()
 
-	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
-	frame := screenSnapshot(t, screen)
-	if got := frameUnderlinedRun(frame, target.Y); got != "▸ 1 tool call" {
-		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
+	// The whole header is one target; the mark sits under its label, from
+	// the triangle as from the label's last cell.
+	var frame *headlessscreen.Frame
+	for _, x := range []int{header.X, header.X + header.Cols - 1} {
+		hoverAt(t, r, image.Pt(x, header.Y))
+		frame = screenSnapshot(t, screen)
+		if got := frameUnderlinedRun(frame, header.Y); got != "Read main.go" {
+			t.Fatalf("header hovered at column %d underlined %q", x, got)
+		}
 	}
-	// The call row is the line's too, underlined on its own.
-	callRow := m.disclosurePlacements[activityAll][1]
-	hoverAt(t, r, image.Pt(callRow.X+1, callRow.Y))
-	if got := frameUnderlinedRun(screenSnapshot(t, screen), callRow.Y); got != "✓ read" {
-		t.Fatalf("hovered call row underline = %q", got)
+	if m.lineOpenOf(record) {
+		t.Fatal("hover opened the chunk")
 	}
-	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
-	if record.expanded {
-		t.Fatal("hover expanded the disclosure")
-	}
-	if str, style, _ := frame.Get(target.X-1, target.Y); style.HasUnderline() {
+	if str, style, _ := frame.Get(header.X+1, header.Y); style.HasUnderline() {
 		t.Fatalf("underline spilled onto %q before the label", str)
 	}
 
 	// Motion within the same target does not repaint; leaving it clears.
-	ev := mouseEvent("<MouseRelease>", image.Pt(target.X+1, target.Y))
+	ev := mouseEvent("<MouseRelease>", image.Pt(header.X+3, header.Y))
 	r.handleEvent(ev)
 	if r.wantsRenderForEvent(ev) {
 		t.Fatal("motion inside one target asked for a repaint")
 	}
-	hoverAt(t, r, image.Pt(target.X, target.Y+1))
-	if got := underlinedRun(t, screen, target.Y); got != "" {
+	hoverAt(t, r, image.Pt(header.X, header.Y+1))
+	if got := underlinedRun(t, screen, header.Y); got != "" {
 		t.Fatalf("underline stayed after the pointer left: %q", got)
 	}
 
-	// A click expands the rows; the pinned transcript shifts, and the
-	// pointer now rests on whatever moved under it. Affordance ticks repaint
-	// cells between frames and must keep that target's mark.
-	hoverAt(t, r, image.Pt(target.X, target.Y))
+	// Clicking the triangle opens the chunk; the pinned transcript shifts.
+	// Affordance ticks repaint cells between frames and must keep the mark.
+	hoverAt(t, r, image.Pt(header.X, header.Y))
 	at := time.Now()
-	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(target.X, target.Y)))
+	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(header.X, header.Y)))
 	r.render()
-	if !record.expanded {
-		t.Fatal("click did not expand the disclosure")
+	if !m.lineOpenOf(record) {
+		t.Fatal("click did not open the chunk")
 	}
-	// Move past the boundary spacing to the expanded tool row. It mixes a green check, a bright
+	// The call's row is under the header. It mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
-	target = m.disclosurePlacements[activityAll][0]
-	point := image.Pt(target.X+2, target.Y+1)
+	header = m.disclosurePlacements[activityAll][0]
+	point := image.Pt(header.X+2, header.Y+1)
 	hoverAt(t, r, point)
 	if r.hover.rect.Empty() || underlinedRun(t, screen, point.Y) == "" {
-		t.Fatal("expanded tool row lost its inline output click target")
+		t.Fatal("open chunk's tool row lost its inline output click target")
 	}
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	r.tickAffordances(at.Add(2 * time.Second))

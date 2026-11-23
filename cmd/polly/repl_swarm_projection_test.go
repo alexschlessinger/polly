@@ -122,7 +122,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 			t.Fatalf("%s not attached to workflow launch", id)
 		}
 	}
-	launch.expanded = true
+	m.setLineOpenOf(launch, true)
 	detail, links := m.agentDetail([]int64{launch.id}, 32, "  ")
 	if strings.Count(plainStyledText(detail), "Workflow · review change") != 1 || len(links) < 3 {
 		t.Fatalf("workflow group or links missing: %s, %+v", detail, links)
@@ -160,7 +160,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	}
 	view := viewState{}
 	for _, record := range m.toolDisclosures.all() {
-		record.expanded = true
+		m.setLineOpenOf(record, true)
 	}
 	rememberViewSections(m, &view)
 	s.Members["member"].Name = "renamed"
@@ -177,7 +177,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 		t.Fatal("restored member missing or duplicated")
 	}
 	for _, record := range m.toolDisclosures.all() {
-		if !record.expanded {
+		if !m.lineOpenOf(record) {
 			t.Fatal("restored member lost its inspector disclosure state")
 		}
 	}
@@ -187,7 +187,6 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "parent", 0, 0)
 	m := r.model
-	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("review")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{
@@ -219,16 +218,32 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 	if !lastTool.settled {
 		t.Fatal("late workflow member displaced an active tool row")
 	}
+	// The launches are one chunk and the later read another. A member is
+	// listed with the call that launched its workflow, whichever batch was
+	// newest when the swarm reported it.
 	blocks := activityBlocks(m, 120)
-	if len(blocks) != 1 || !m.toggleDisclosureGroup(activityAgents, blocks[0].toolDisclosureIDs, 0) {
-		t.Fatalf("workflow batch did not share an Agents disclosure: %+v", blocks)
+	if len(blocks) != 1 || len(blocks[0].chunks) != 2 {
+		t.Fatalf("workflow launches and the later read want one line of two chunks: %+v", blocks)
 	}
+	if got := plainStyledText(blocks[0].text); got != "▸ 3 agents\n▸ Read a file" {
+		t.Fatalf("folded headers = %q", got)
+	}
+	expandLines(m, nil)
 	text := strings.Join(transcriptRowsText(m.transcriptRows(120)), "\n")
 	if strings.Count(text, "Workflow · first [review]") != 1 || strings.Count(text, "Workflow · second review") != 1 {
 		t.Fatalf("workflow headings repeated or escaped incorrectly:\n%s", text)
 	}
-	if strings.Index(text, "three · idle") > strings.Index(text, "Workflow · second review") {
-		t.Fatalf("late member appeared under the wrong workflow:\n%s", text)
+	at := func(want string) int {
+		t.Helper()
+		i := strings.Index(text, want)
+		if i < 0 {
+			t.Fatalf("no %q in:\n%s", want, text)
+		}
+		return i
+	}
+	first, second, read := at("Workflow · first [review]"), at("Workflow · second review"), at("▾ Read a file")
+	if one, two, three := at("· one"), at("· two"), at("· three"); !(first < one && one < three && three < second && second < two && two < read) {
+		t.Fatalf("a member appeared outside its workflow or its launch's chunk:\n%s", text)
 	}
 }
 
@@ -289,7 +304,7 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 			if row.agent != nil && row.agent.workflowID == id {
 				recordID = record.id
 				memberID = row.agent.viewID
-				record.expanded = true
+				r.model.setLineOpenOf(record, true)
 			}
 		}
 	}

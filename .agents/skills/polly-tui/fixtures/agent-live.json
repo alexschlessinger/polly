@@ -23,6 +23,10 @@
       "match": "Inspect the live-watch display",
       "steps": [{"content": "The read-only checks completed. The earlier live update now appears once in saved history."}],
       "mark": "live-finished"
+    },
+    {
+      "steps": [{"content": "The agent finished its read-only checks and changed nothing."}],
+      "mark": "parent-finished"
     }
   ]
 }

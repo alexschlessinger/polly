@@ -54,8 +54,8 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 		}
 		for _, kind := range disclosureKinds {
 			for _, p := range m.disclosurePlacements[kind] {
-				x := p.X + r.chrome.inner.Min.X
-				add(fmt.Sprintf("disclosure:%d:%d", kind, p.recordID), image.Rect(x, p.Y, x+p.Cols, p.Y+1))
+				x := r.chrome.inner.Min.X
+				addMarked(p.keyboardKey(), p.rect(x), p.mark(x))
 			}
 		}
 		for _, p := range m.imagePlacements {

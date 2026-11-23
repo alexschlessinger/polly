@@ -42,9 +42,12 @@ type turnDockState struct {
 }
 
 type turnDockPlacement struct {
-	kind activityKind
-	X, Y int
-	Cols int
+	// chunk is the 1-based chunk of the line a header or label belongs to;
+	// zero for a field that is not part of an activity line.
+	chunk int
+	kind  activityKind
+	X, Y  int
+	Cols  int
 }
 
 // turnTrailerRecord is the settled status row a turn leaves in the
@@ -499,11 +502,15 @@ func renderActivityFields(fields []turnDockField, right turnDockField, width int
 	return rendered.String(), hits, labels
 }
 
-// attachTurnDockTrailer hands the settled turn to its last activity line,
-// whose right column then carries the outcome and elapsed time. A turn with
-// no activity line leaves a status row in the transcript instead, and only
-// with an elapsed time or an outcome other than success: a bare outcome
-// glyph says nothing the reply did not. Tokens and cost live in /context.
+// attachTurnDockTrailer hands the settled turn to the prompt that started
+// it, whose last text row then carries how long the turn took and, when it
+// did not finish, how it ended. That is a fact about the turn, so it sits on
+// the turn's own row: beside a chunk it would read as that chunk's time. A
+// turn with no prompt row (an agent woken by mail, a display cleared while
+// the turn ran) leaves a status row in the transcript instead. Either way a
+// turn says something only with an elapsed time or an outcome other than
+// success: a bare outcome glyph says nothing the reply did not. Tokens and
+// cost live in /context.
 func (m *replModel) attachTurnDockTrailer() {
 	if !m.turnDock.visible || !m.turnDock.settled {
 		m.clearTurnDock()
@@ -511,12 +518,12 @@ func (m *replModel) attachTurnDockTrailer() {
 	}
 	dock := m.turnDock
 	m.settledDock = dock
-	if m.attachDockToActivity(dock) {
+	fields := m.turnDockStatusFields(dock)
+	if len(fields) == 0 || (len(fields) == 1 && fields[0].outcome == turnOutcomeDone && fields[0].elapsed == "") {
 		m.clearTurnDock()
 		return
 	}
-	fields := m.turnDockStatusFields(dock)
-	if len(fields) == 0 || (len(fields) == 1 && fields[0].outcome == turnOutcomeDone && fields[0].elapsed == "") {
+	if m.attachDockToPrompt(dock) {
 		m.clearTurnDock()
 		return
 	}
@@ -530,60 +537,33 @@ func (m *replModel) attachTurnDockTrailer() {
 	m.clearTurnDock()
 }
 
-// attachDockToActivity gives the settled dock to the turn's last activity
-// record, by transcript position, and reports whether there was one. The
-// layout reads it back as the line's right field.
-func (m *replModel) attachDockToActivity(dock turnDockState) bool {
-	index := -1
-	var reasoning *reasoningRecord
-	var tools *toolDisclosureRecord
-	for _, id := range dock.reasoningIDs {
-		if record := m.reasoningRecords.get(id); record != nil && record.transcriptIndex > index {
-			index, reasoning, tools = record.transcriptIndex, record, nil
-		}
-	}
-	for _, id := range dock.toolIDs {
-		if record := m.toolDisclosures.get(id); record != nil && record.transcriptIndex > index {
-			index, reasoning, tools = record.transcriptIndex, nil, record
-		}
-	}
-	if index < 0 {
+// attachDockToPrompt gives the settled dock to the echoed prompt of the turn
+// that just ran, and reports whether there was one. The layout reads it back
+// as the prompt row's right field.
+func (m *replModel) attachDockToPrompt(dock turnDockState) bool {
+	if m.activityTurn == 0 {
 		return false
 	}
-	if reasoning != nil {
-		reasoning.trailer = &dock
-	} else {
-		tools.trailer = &dock
+	for i := len(m.transcript) - 1; i >= 0; i-- {
+		if entry := &m.transcript[i]; entry.promptTurn == m.activityTurn {
+			entry.trailer = &dock
+			m.visual.invalidate()
+			return true
+		}
 	}
-	m.visual.invalidate()
-	return true
+	return false
 }
 
-// activityTrailerField is the right field of an activity line: the settled
+// promptTrailerField is the right field of a settled turn's prompt row: the
 // turn's elapsed time, with its outcome when that was not success. Empty
-// for a line that is not a turn's last, or a settled turn with nothing to
-// say.
-func (m *replModel) activityTrailerField(reasoningIDs, toolIDs []int64) turnDockField {
-	var dock *turnDockState
-	for _, id := range reasoningIDs {
-		if record := m.reasoningRecords.get(id); record != nil && record.trailer != nil {
-			dock = record.trailer
-		}
-	}
-	for _, id := range toolIDs {
-		if record := m.toolDisclosures.get(id); record != nil && record.trailer != nil {
-			dock = record.trailer
-		}
-	}
-	if dock == nil {
-		return turnDockField{}
-	}
+// for a settled turn with nothing to say.
+func (m *replModel) promptTrailerField(dock turnDockState) turnDockField {
 	elapsed := ""
 	if dock.elapsedKnown {
-		elapsed = formatElapsed(m.turnDockElapsedFor(*dock))
+		elapsed = formatElapsed(m.turnDockElapsedFor(dock))
 	}
 	if dock.outcome == turnOutcomeDone {
-		return turnDockField{raw: elapsed, rendered: style.Styled(elapsed, "muted", "")}
+		return turnDockField{raw: elapsed, rendered: style.Styled(elapsed, "muted", ""), elapsed: elapsed}
 	}
 	return turnOutcomeField(dock.outcome, elapsed)
 }

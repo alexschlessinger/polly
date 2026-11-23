@@ -16,6 +16,9 @@ migrate the database
 :wait "Migrating to PostgreSQL 16." 10
 :sleep 400
 :shot $POLLY_SHOT_DIR/03-answered.png
+# The call is a row of its run: open the run, then the call, whose row shows
+# the question it asked.
 :click "ask_user" 5
-:sleep 400
+:click "✓ ask_user" 5
+:wait "one week of work" 5
 :shot $POLLY_SHOT_DIR/04-question-body.png

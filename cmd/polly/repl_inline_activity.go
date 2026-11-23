@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 		}
 		active = active || record.active
 		unsaved = unsaved || record.unsaved
-		expanded = expanded || record.expanded
+		expanded = expanded || record.anyOpen()
 	}
 	if !found {
 		return turnDockField{}, false
@@ -164,22 +165,6 @@ func countNoun(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// toolsExpanded reports whether any of the tool disclosures is open.
-func (m *replModel) toolsExpanded(ids []int64) bool {
-	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil && record.expanded {
-			return true
-		}
-	}
-	return false
-}
-
-// activityRowWindow is how many of its newest tool rows an abridged activity
-// line shows, so it stays within a screen however long the turn ran; the
-// full depth shows them all. Agent rows and viewed images are few and stay
-// whole.
-const activityRowWindow = 3
-
 func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
 	images := m.toolInspectionImages(ids)
 	if len(images) == 0 {
@@ -188,11 +173,11 @@ func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField,
 	return activityField(turnImageLabel(len(images)), activityImages, expanded), images, true
 }
 
-// renderInspectionImages lays the Images disclosure out in horizontal strips
-// when thumbnails draw natively. Each slot is sized from the same
-// CellGeometry inputs the transcript cell pass uses, so every thumbnail fits
-// the slot layout gave it. Without a native backend only the captions
-// survive, and they stack one per row.
+// renderInspectionImages lays viewed images out in horizontal strips when
+// thumbnails draw natively. Each slot is sized from the same CellGeometry
+// inputs the transcript cell pass uses, so every thumbnail fits the slot
+// layout gave it. Without a native backend only the captions survive, and
+// they stack one per row.
 func (m *replModel) renderInspectionImages(images []style.Image, width int) string {
 	if !m.nativeImages || width < style.MinimumThumbnailCols {
 		return style.RenderInspectionImages(images)
@@ -210,9 +195,9 @@ func (m *replModel) renderInspectionImages(images []style.Image, width int) stri
 }
 
 // layoutInlineActivityBlocks lays adjacent thought, tool, agent, and image
-// disclosures out as one activity line: one row of controls, and beneath it
-// the line's records step by step, as the turn ran them.
-func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, width int) []transcriptDisplayBlock {
+// records out as one activity line: a header row for each chunk of the work,
+// and under an open header the chunk's rows, as the turn made them.
+func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, width int, now time.Time) []transcriptDisplayBlock {
 	if width < 1 {
 		width = 80
 	}
@@ -224,7 +209,9 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 		}
 		if n := len(laidOut); n > 0 {
 			previous := &laidOut[n-1]
-			if previous.turnTrailerID == 0 && previous.isActivity() {
+			// A queued prompt can be echoed above the last activity of the
+			// previous turn, leaving the two turns' activity adjacent.
+			if previous.turnTrailerID == 0 && previous.isActivity() && previous.activityTurn == block.activityTurn {
 				previous.reasoningIDs = append(previous.reasoningIDs, block.reasoningIDs...)
 				previous.toolDisclosureIDs = append(previous.toolDisclosureIDs, block.toolDisclosureIDs...)
 				previous.images = append(previous.images, block.images...)
@@ -235,100 +222,169 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 	}
 	for i := range laidOut {
 		if laidOut[i].isActivity() {
-			m.layoutInlineActivityBlock(&laidOut[i], width)
+			m.layoutInlineActivityBlock(&laidOut[i], width, now)
 		}
 	}
 	return laidOut
 }
 
-func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, width int) {
-	var fields []turnDockField
-	if field, ok := m.inlineReasoningField(block.reasoningIDs); ok {
-		fields = append(fields, field)
+// Only the newest activity block of the running turn hands a live label on
+// from call to call. Activity separated from it by assistant prose is past.
+func (m *replModel) isCurrentActivityBlock(block *transcriptDisplayBlock) bool {
+	if !m.busy {
+		return false
 	}
-	fields = append(fields, m.inlineToolFields(block.toolDisclosureIDs, m.toolsExpanded(block.toolDisclosureIDs), width-len(activityIndent))...)
-	// The agents and viewed images open with the line.
-	agentsExpanded := m.toolsExpanded(block.toolDisclosureIDs)
-	if field, ok := m.agentField(block.toolDisclosureIDs, agentsExpanded); ok {
-		fields = append(fields, field)
+	var tool *toolDisclosureRecord
+	var thought *reasoningRecord
+	if n := len(m.turnToolDisclosureIDs); n > 0 {
+		tool = m.toolDisclosures.get(m.turnToolDisclosureIDs[n-1])
 	}
-	block.activityImageDetail = ""
-	imagesExpanded := agentsExpanded
-	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs, imagesExpanded); ok {
-		fields = append(fields, field)
-		if imagesExpanded {
-			remaining := style.MaxImagesPerBlock - len(block.images)
-			if remaining > 0 {
-				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
-				block.activityImageDetail = style.OffsetImageMarkers(
-					m.renderInspectionImages(inspectionImages, width), len(block.images),
-				)
-				block.images = append(block.images, inspectionImages...)
+	if n := len(m.turnReasoningIDs); n > 0 {
+		thought = m.reasoningRecords.get(m.turnReasoningIDs[n-1])
+	}
+	if tool != nil && (thought == nil || tool.transcriptIndex >= thought.transcriptIndex) {
+		return slices.Contains(block.toolDisclosureIDs, tool.id)
+	}
+	return thought != nil && slices.Contains(block.reasoningIDs, thought.id)
+}
+
+// layoutInlineActivityBlock writes one activity line: its chunks in the
+// order the work happened, each a header row, and under an open header one
+// row per call and per thought, then the chunk's agents and viewed images.
+// Folding changes how much of the work shows, never its order. A thought
+// with no run to join is a row of its own among the headers. A collapsed
+// line past its row budget leads with a summary header that stands for its
+// earlier runs. The headers, the thought rows and the call rows are the
+// line's controls; where each one landed is recorded in logical lines of the
+// text, which the wrap pass turns into display rows.
+func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, width int, now time.Time) {
+	block.chunks = m.activityChunks(block.reasoningIDs, block.toolDisclosureIDs)
+	block.currentActivity = m.isCurrentActivityBlock(block)
+	// A collapsed line keeps to its row budget: the runs past it fold under
+	// one summary header, which is the line's first chunk. Closed, it hides
+	// their headers; open, they follow it as they would without it.
+	folded := m.foldedRuns(block)
+	hidden := 0
+	if folded > 0 {
+		open := m.chunkOpen(runsSummaryKey(block.chunks[0].key))
+		summary := m.runsSummary(block.chunks[:folded], folded < len(block.chunks), open)
+		block.chunks = append([]activityChunk{summary}, block.chunks...)
+		if !open {
+			hidden = folded
+		}
+	}
+	// The newest run has no header of its own when the summary stands for it.
+	if newestShown := hidden == 0 || hidden < len(block.chunks)-1; block.currentActivity && !now.IsZero() && newestShown {
+		// A following thought can have its own row without cutting short the
+		// last call label. Only the newest tool run can hold a live label.
+		for i := len(block.chunks) - 1; i >= 0; i-- {
+			c := &block.chunks[i]
+			if c.group != chunkThought {
+				m.holdCollapsedActivity(c, now)
+				break
 			}
 		}
 	}
-	header, placements, labels := renderActivityRow(fields, m.activityTrailerField(block.reasoningIDs, block.toolDisclosureIDs), width)
-	block.text = header
-	// The line's steps are one body: each step's thought rows, then its
-	// calls, a blank row between steps. Its targets, thought marks and call
-	// rows alike, count from the body's first row.
-	body := m.activityStepBody(block.reasoningIDs, block.toolDisclosureIDs, width)
-	block.activityReasoningDetail, block.activityThoughtTargets = body.thought, nil
-	block.thoughtFirstLine, block.thoughtEndLine = 0, 0
-	block.activityToolDetail, block.activityToolTargets = body.text, body.targets
-	// Open sections stack under the line, indented under it, one blank row
-	// between neighbours so the steps, the agents and the images read
-	// apart; the latest call's row, when the line carries one, is part of
-	// its head and stands apart the same way. section returns the byte
-	// offset where the content starts.
-	sections := 0
-	section := func(content string) int {
-		if sections > 0 || strings.Contains(block.text, "\n") {
-			block.text += "\n" + style.Rail
+	block.activityFields, block.activityLabels, block.activityTargets, block.agentSections = nil, nil, nil, nil
+	block.activityShift, block.openFirst, block.openLast = 0, false, false
+	var b strings.Builder
+	lines := 0
+	// write appends whole rows and reports the line the first of them is.
+	write := func(text string) int {
+		at := lines
+		if lines > 0 {
+			b.WriteByte('\n')
 		}
-		sections++
-		block.text += "\n"
-		start := len(block.text)
-		block.text += content
-		return start
+		b.WriteString(text)
+		lines += strings.Count(text, "\n") + 1
+		return at
 	}
-	if block.activityToolDetail != "" {
-		content := indentLines(block.activityToolDetail)
-		start := section(content)
-		block.toolFirstLine = strings.Count(block.text[:start], "\n")
-		block.toolEndLine = block.toolFirstLine + strings.Count(content, "\n") + 1
-	}
-	if agentsExpanded {
-		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
-			start := section(detail)
-			// Link rows count from the section's first row; the text above
-			// it, laid out the same way, says which display row that is.
-			native := m.nativeImages && width >= style.MinimumThumbnailCols
-			above, _ := transcriptBlockRowsWithImages(block.text[:start-1], false, width, block.images, native, m.imageCellWidth, m.imageCellHeight)
-			for i := range links {
-				links[i].Y += len(above)
+	// air is owed when the rows above end in an opened detail: one bare row
+	// before whatever follows, so a diff or an output does not run into it.
+	air := false
+	for i := range block.chunks {
+		c := &block.chunks[i]
+		// The chunks after a closed summary are the runs it stands for.
+		if i >= 1 && i <= hidden {
+			continue
+		}
+		last := i == len(block.chunks)-1
+		if air {
+			write(style.Rail)
+			air = false
+		}
+		if c.group == chunkThought {
+			p := c.parts[0]
+			row := renderThoughtRow(fitLabel(sentenceCase(headerText(c.label)), max(1, width-2)), c.live)
+			at := write(row)
+			cols := style.TextWidth(row)
+			// The row starts at the edge, a rail's width left of a chunk's rows.
+			block.activityTargets = append(block.activityTargets, toolOutputTarget{recordID: p.thought.id, key: m.thoughtPartKey(p.thought, p.segment), action: thoughtPartAction, line: at, x: -activityRailCols, cols: cols})
+			block.activityLabels = append(block.activityLabels, turnDockPlacement{chunk: i + 1, kind: activityThought, X: 2, Y: at, Cols: cols - 2})
+			if text := thoughtTextRows(p.thought, p.segment); len(text) > 0 {
+				for j := range text {
+					text[j] = reasoningBlockIndent + text[j]
+				}
+				write(indentLines(strings.Join(text, "\n")))
+				block.openFirst, block.openLast = block.openFirst || i == 0, last
+				air = true
 			}
-			block.agentLinks = links
+			continue
 		}
-	}
-	if block.activityImageDetail != "" {
-		section(block.activityImageDetail)
-	}
-	block.activitySections = sections
-	block.activityFields = placements
-	// Labels stay paintable while partially clipped without being clickable.
-	// Only an agents label's leading running count sweeps; outcome tails
-	// stay steady.
-	block.activityLabels = nil
-	for i, label := range labels {
-		if fields[i].kind == activityAgents {
-			leading, _, _ := strings.Cut(fields[i].raw, ",")
-			label.Cols = min(label.Cols, rw.StringWidth(leading))
-		}
+		open := m.chunkOpen(c.key)
+		text, cols, label := renderChunkHeader(c, width, open)
+		at := write(text)
+		block.activityFields = append(block.activityFields, turnDockPlacement{chunk: i + 1, kind: activityAll, Y: at, Cols: cols})
 		if label.Cols > 0 {
+			label.chunk, label.Y = i+1, at
 			block.activityLabels = append(block.activityLabels, label)
 		}
+		// A header ends the detail above it: the row before never claims it.
+		block.activityTargets = append(block.activityTargets, toolOutputTarget{line: at})
+		// A summary opens onto the headers after it and has no rows itself.
+		if !open || c.summary {
+			continue
+		}
+		// What is open under a header stacks in sections, one bare row
+		// between them so the calls, the agents and the images read apart.
+		sections := 0
+		section := func() {
+			if sections > 0 {
+				write(style.Rail)
+			}
+			sections++
+		}
+		body := m.chunkBody(c, width)
+		if body.text != "" {
+			section()
+			start := write(indentLines(body.text))
+			for _, target := range body.targets {
+				target.line += start
+				block.activityTargets = append(block.activityTargets, target)
+			}
+			air = body.open
+		}
+		agents, images := c.details(max(0, style.MaxImagesPerBlock-len(block.images)))
+		if detail, links := m.agentRowsDetail(agents, width, style.Rail); detail != "" {
+			section()
+			at := write(detail)
+			if len(links) > 0 {
+				block.agentSections = append(block.agentSections, agentSection{line: at, links: links})
+			}
+			air = false
+		}
+		if len(images) > 0 {
+			section()
+			write(style.OffsetImageMarkers(m.renderInspectionImages(images, width), len(block.images)))
+			block.images = append(block.images, images...)
+			air = true
+		}
+		if sections > 0 {
+			block.openFirst, block.openLast = block.openFirst || i == 0, last
+		}
 	}
+	block.text = b.String()
+	block.activityLines = lines
 	// Adjacent activity keeps its first section's identity as more calls arrive.
 	// Numeric registry IDs can be reused when a saved history window shifts.
 	if !strings.HasPrefix(block.key, "section:") {
@@ -336,21 +392,49 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	}
 }
 
+type agentSection struct {
+	line  int         // logical line in the activity layout
+	links []agentLink // wrapped rows relative to the start of the section
+}
+
+// layoutAgentLinks locates each section in the final wrap, including any
+// spacing and fitted image rows above it. It never rewraps a block prefix.
+func layoutAgentLinks(starts []int, shift int, sections []agentSection) []agentLink {
+	var links []agentLink
+	for _, section := range sections {
+		line := shift + section.line
+		if line >= len(starts) {
+			continue
+		}
+		at := starts[line]
+		for _, link := range section.links {
+			link.Y += at
+			links = append(links, link)
+		}
+	}
+	return links
+}
+
 // layoutToolOutputLinks uses logical-line offsets from the renderer's one wrap
 // pass, rather than rewrapping a growing prefix for every tool/control. Rows
-// covers the body until the next target (or the tool section end), so an output
-// can load on view even when its header is above the viewport.
+// covers the body until the next target (or the line's end), so an output
+// can load on view even when its header is above the viewport. A target with
+// no key is a chunk header: it ends the body above it and is no link itself.
 func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolOutputTarget, width int) []toolOutputLink {
-	if len(targets) == 0 {
+	if len(targets) == 0 || len(starts) == 0 {
 		return nil
 	}
+	at := func(line int) int { return starts[min(max(0, line), len(starts)-1)] }
 	links := make([]toolOutputLink, 0, len(targets))
 	for i, target := range targets {
-		end := starts[endLine]
-		if i+1 < len(targets) {
-			end = starts[firstLine+targets[i+1].line]
+		if target.key == "" {
+			continue
 		}
-		y := starts[firstLine+target.line]
+		end := at(endLine)
+		if i+1 < len(targets) {
+			end = at(firstLine + targets[i+1].line)
+		}
+		y := at(firstLine + target.line)
 		x := activityRailCols + target.x
 		links = append(links, toolOutputLink{recordID: target.recordID, key: target.key, action: target.action,
 			X: x, Y: y, Cols: min(target.cols, width-x), Rows: end - y})
@@ -358,38 +442,45 @@ func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolO
 	return links
 }
 
-// spaceExpandedActivityBlocks separates expanded activity from assistant prose,
-// but leaves it directly below a user prompt. Keep boundary rows inside the
-// activity block so viewport anchoring measures the full height change when a
-// disclosure opens or closes.
+// activityDisplayRows turns placements that count logical lines of a block's
+// text into ones that count its display rows, by the wrap pass's line
+// starts. shift is how many lines the spacing pass put above the layout's.
+func activityDisplayRows(starts []int, shift int, placements []turnDockPlacement) []turnDockPlacement {
+	if len(placements) == 0 {
+		return nil
+	}
+	out := make([]turnDockPlacement, len(placements))
+	for i, p := range placements {
+		if line := shift + p.Y; len(starts) > 0 {
+			p.Y = starts[min(max(0, line), len(starts)-1)]
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// spaceExpandedActivityBlocks separates an activity line from the prose
+// around it where the line shows rows there: above when its first chunk is
+// open, below when its last is. A line of headers alone sits against its
+// neighbours, and none takes a row above when it follows the prompt
+// directly. Keep boundary rows inside the activity block so viewport
+// anchoring measures the full height change when a fold opens or closes.
 func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 	for i := range blocks {
 		block := &blocks[i]
-		if !block.isActivity() || block.activitySections == 0 {
+		if !block.isActivity() || (!block.openFirst && !block.openLast) {
 			continue
 		}
 		before, after := "", ""
-		if i > 0 && !strings.HasPrefix(blocks[i-1].text, userGutter()) {
+		if block.openFirst && i > 0 && !strings.HasPrefix(blocks[i-1].text, userGutter()) {
 			previous := blocks[i-1].text
 			previous = previous[strings.LastIndex(previous, "\n")+1:]
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(previous, ui.StyleClear))) != "" {
 				before = "\n"
-				block.toolFirstLine++
-				block.toolEndLine++
-				block.thoughtFirstLine++
-				block.thoughtEndLine++
-				for j := range block.activityFields {
-					block.activityFields[j].Y++
-				}
-				for j := range block.activityLabels {
-					block.activityLabels[j].Y++
-				}
-				for j := range block.agentLinks {
-					block.agentLinks[j].Y++
-				}
+				block.activityShift++
 			}
 		}
-		if i+1 < len(blocks) {
+		if block.openLast && i+1 < len(blocks) {
 			next, _, _ := strings.Cut(blocks[i+1].text, "\n")
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(next, ui.StyleClear))) != "" && !strings.HasSuffix(block.text, "\n") {
 				after = "\n"
@@ -401,10 +492,10 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 	}
 }
 
-// The open sections of an activity line sit under it behind style.Rail, a
-// muted run of spaces: nothing drawn, no corner, no rows between sections,
-// so a lone open thought costs no rows beyond its own lines. The style is
-// what lets the wrapper repeat the indent on continuation rows.
+// What is open under a chunk's header sits behind style.Rail, a muted run
+// of spaces: nothing drawn, no corner, no rows between sections beyond the
+// one that sets them apart. The style is what lets the wrapper repeat the
+// indent on continuation rows.
 
 // activityIndent is the rail as it reads: the plain indent before a
 // section's content.
@@ -432,60 +523,8 @@ func indentLines(detail string) string {
 			b.WriteByte('\n')
 		}
 		first = false
-		if content, cut := strings.CutPrefix(line, reasoningCutIndent); cut {
-			b.WriteString(style.Styled(reasoningCutIndent, "muted", ""))
-			b.WriteString(content)
-			continue
-		}
-		content := strings.TrimPrefix(line, activityIndent)
 		b.WriteString(style.Rail)
-		b.WriteString(content)
+		b.WriteString(strings.TrimPrefix(line, activityIndent))
 	}
-	// A streaming thought reserves a second row; a settled one has no use
-	// for it.
-	text := b.String()
-	for strings.HasSuffix(text, "\n"+style.Rail) {
-		text = strings.TrimSuffix(text, "\n"+style.Rail)
-	}
-	return text
-}
-
-// Resolve activity from live records, never from cached label text or parent busy state.
-func (m *replModel) inlineActivityRunning(kind activityKind, reasoningIDs, toolIDs []int64) bool {
-	switch kind {
-	case activityAll:
-		return m.inlineActivityRunning(activityThought, reasoningIDs, toolIDs) ||
-			m.inlineActivityRunning(activityRunning, reasoningIDs, toolIDs) ||
-			m.inlineActivityRunning(activityAgents, reasoningIDs, toolIDs)
-	case activityThought:
-		for _, id := range reasoningIDs {
-			if record := m.reasoningRecords.get(id); record != nil && record.active {
-				return true
-			}
-		}
-	case activityRunning:
-		// The verb labels and a settled latest call hold still; only a
-		// running call sweeps.
-		for _, id := range toolIDs {
-			if record := m.toolDisclosures.get(id); record != nil {
-				for _, row := range ordinaryToolRows(record.rows) {
-					if !row.settled {
-						return true
-					}
-				}
-			}
-		}
-	case activityAgents:
-		return m.agentCounts(toolIDs).Running > 0
-	}
-	return false
-}
-
-// inlineActivityDetail is the text under an activity line's first row.
-func inlineActivityDetail(text string) string {
-	_, detail, ok := strings.Cut(text, "\n")
-	if !ok {
-		return ""
-	}
-	return detail
+	return b.String()
 }

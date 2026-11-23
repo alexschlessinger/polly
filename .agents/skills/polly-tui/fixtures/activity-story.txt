@@ -1,0 +1,36 @@
+# Run with activity-story.json. A transcript opens collapsed: one row per run
+# of calls, the newest naming the call in flight. While the model thinks
+# between calls that header says so, once the thought is half a second old.
+check the release
+:at thinking 15
+:wait "Thinking" 5
+:shot $POLLY_SHOT_DIR/thinking.png
+:sleep 2400
+:release test
+:at finished 30
+:ready
+:settle
+:shot $POLLY_SHOT_DIR/settled.png
+:size 48x24
+:settle
+:shot $POLLY_SHOT_DIR/narrow.png
+# Open one run, then a second beside it and the thought that led its call.
+:size 100x40
+:settle
+:click "Read 4 files"
+:wait "docs/CLI.md" 5
+:shot $POLLY_SHOT_DIR/read-chunk.png
+:click "Tests passed"
+:wait "go test ./internal/textdiff" 5
+:click "∴ thought"
+:wait "Check the diff renderer" 5
+:shot $POLLY_SHOT_DIR/thought-open.png
+# Ctrl-O expands every run. The opened thought stays open; no output opens.
+:key c-o
+:wait "view_image" 5
+:shot $POLLY_SHOT_DIR/expanded.png
+# Ctrl-O again collapses them all.
+:key c-o
+:size 28x20
+:settle
+:shot $POLLY_SHOT_DIR/folded.png

@@ -249,7 +249,55 @@ func formattedUserPrompt(p string) string {
 func (m *replModel) appendUserPrompt(p string) {
 	m.assignment = p
 	m.appendLine(formattedUserPrompt(p))
+	m.notePrompt(len(m.transcript)-1, p)
 	m.userPromptSeen = true
+}
+
+// notePrompt records that entry index echoes prompt p for the turn about to
+// start, so the turn can find its own row again when it settles.
+func (m *replModel) notePrompt(index int, p string) {
+	m.transcript[index].promptLines = strings.Count(p, "\n") + 1
+	m.pendingPrompt = index + 1
+}
+
+// markTurnPrompt gives the turn that has just started its echoed prompt, if
+// one was echoed for it.
+func (m *replModel) markTurnPrompt() {
+	if i := m.pendingPrompt - 1; i >= 0 && i < len(m.transcript) {
+		m.transcript[i].promptTurn = m.activityTurn
+	}
+	m.pendingPrompt = 0
+}
+
+// promptWithTrailer puts a settled turn's time at the right edge of the
+// prompt's last text row, two columns clear of the words. A row with no room
+// for it is left as the reader wrote it: the time is dropped before a prompt
+// is clipped or wrapped anew, so settling a turn never moves a row.
+func (m *replModel) promptWithTrailer(entry *transcriptEntry, text string, width int) string {
+	field := m.promptTrailerField(*entry.trailer)
+	if field.raw == "" || entry.promptLines < 1 || width < 1 {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	last := entry.promptLines - 1
+	if last >= len(lines) {
+		return text
+	}
+	rows, _ := style.WrapCellRows(style.ParseCells(lines[last], ui.StyleClear), width)
+	used := 0
+	if n := len(rows); n > 0 {
+		used = style.CellsWidth(rows[n-1])
+	}
+	if used+2+style.TextWidth(field.raw) > width {
+		// The transcript says how an unfinished turn ended on a row of its
+		// own; here the word goes before the time does.
+		if field.elapsed == "" || field.elapsed == field.raw || used+2+style.TextWidth(field.elapsed) > width {
+			return text
+		}
+		field = turnDockField{raw: field.elapsed, rendered: style.Styled(field.elapsed, "muted", "")}
+	}
+	lines[last] += strings.Repeat(" ", width-used-style.TextWidth(field.raw)) + field.rendered
+	return strings.Join(lines, "\n")
 }
 
 // userPromptBlankRow reports whether the echoed user prompt at entry index
@@ -348,7 +396,7 @@ func (m *replModel) clearDisplay() {
 	m.agentLinkPlacements = nil
 	m.toolOutputLinks = nil
 	m.settledAgentsShown = nil
-	m.disclosurePlacements[activityAgents] = nil
+	clear(m.disclosurePlacements[:]) // stale header hits must not address a newly hydrated registry
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -423,6 +471,10 @@ func (m *replModel) renderMarkdownAtWidth(width int) {
 // clipping happens after style parsing and wrapping in transcriptParagraph,
 // so wrapped rows remain reachable through scrollback.
 func (m *replModel) transcriptRows(width int) [][]ui.Cell {
+	return m.transcriptRowsAt(width, time.Now())
+}
+
+func (m *replModel) transcriptRowsAt(width int, now time.Time) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
@@ -432,11 +484,19 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	}
 	c := &m.visual
 	fits := c.fits(width, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
+	hold := &m.activityHold
+	if hold.pending && (!m.busy || hold.turn != m.activityTurn || !now.Before(hold.until)) {
+		c.invalidate()
+	}
+	if !m.busy || hold.turn != m.activityTurn {
+		*hold = collapsedActivityHold{}
+	}
 	if c.valid && fits {
 		return c.rows
 	}
 
-	sources := m.transcriptDisplayEntries(width)
+	hold.pending = false
+	sources := m.transcriptDisplayEntriesAt(width, now)
 	spaceExpandedActivityBlocks(sources)
 	oldBlocks := c.blocks
 	canPatch := fits && len(oldBlocks) == len(sources)
@@ -454,7 +514,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		rows := old.rows
 		lineStarts := old.lineStarts
 		imageSpans := old.imageSpans
-		changed := !fits || (len(source.activityToolTargets) > 0 && len(lineStarts) == 0) ||
+		changed := !fits || (len(source.activityTargets)+len(source.activityFields) > 0 && len(lineStarts) == 0) ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
 			!slices.Equal(old.cells, source.cells) ||
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
@@ -469,7 +529,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			}
 			rows, lineStarts = style.WrapCellRows(cells, width)
 			rows, imageSpans = transcriptRowImages(
-				rows, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, source.images, nativeSlots,
+				rows, lineStarts, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
 			)
 		}
@@ -491,11 +551,12 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			reasoningIDs:      append([]int64(nil), source.reasoningIDs...),
 			toolDisclosureIDs: append([]int64(nil), source.toolDisclosureIDs...),
 			turnTrailerID:     source.turnTrailerID,
-			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
-			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
-			agentLinks:        append([]agentLink(nil), source.agentLinks...),
-			toolOutputLinks: append(layoutToolOutputLinks(lineStarts, source.thoughtFirstLine, source.thoughtEndLine, source.activityThoughtTargets, width),
-				layoutToolOutputLinks(lineStarts, source.toolFirstLine, source.toolEndLine, source.activityToolTargets, width)...),
+			chunks:            chunkMarks(source.chunks),
+			currentActivity:   source.currentActivity,
+			activityFields:    activityDisplayRows(lineStarts, source.activityShift, source.activityFields),
+			activityLabels:    activityDisplayRows(lineStarts, source.activityShift, source.activityLabels),
+			agentLinks:        layoutAgentLinks(lineStarts, source.activityShift, source.agentSections),
+			toolOutputLinks:   layoutToolOutputLinks(lineStarts, source.activityShift, source.activityShift+source.activityLines, source.activityTargets, width),
 		}
 		offset += len(old.rows)
 	}
@@ -544,6 +605,10 @@ func (m *replModel) entryBlockKey(i int) string {
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
+	return m.transcriptDisplayEntriesAt(width, time.Time{})
+}
+
+func (m *replModel) transcriptDisplayEntriesAt(width int, now time.Time) []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+2)
 	if masthead, ok := m.mastheadBlock(width); ok {
 		blocks = append(blocks, masthead)
@@ -591,6 +656,10 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			cells:         cells,
 			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
+			activityTurn:  m.transcript[i].activityTurn,
+		}
+		if m.transcript[i].trailer != nil {
+			block.text = m.promptWithTrailer(&m.transcript[i], block.text, width)
 		}
 		// An echoed user prompt keeps a blank row beneath it: the block's own
 		// trailing newline becomes that row in the joined renderer.
@@ -605,7 +674,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		}
 		blocks = append(blocks, block)
 	}
-	return m.layoutInlineActivityBlocks(blocks, width)
+	return m.layoutInlineActivityBlocks(blocks, width, now)
 }
 
 func transcriptBlockRowsWithImages(text string, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
@@ -615,17 +684,17 @@ func transcriptBlockRowsWithImages(text string, followed bool, width int, images
 
 func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	rows, _ := style.WrapCellRows(cells, width)
-	return transcriptRowImages(rows, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, images, native, cellWidth, cellHeight)
+	return transcriptRowImages(rows, nil, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, images, native, cellWidth, cellHeight)
 }
 
-func transcriptRowImages(rows [][]ui.Cell, trailingBlank bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+func transcriptRowImages(rows [][]ui.Cell, lineStarts []int, trailingBlank bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	// The separator between blocks terminates a final empty row when the
 	// preceding block is empty or already ends in a newline. Do not append a
 	// cell to the source buffer just to represent that separator.
 	if trailingBlank {
 		rows = append(rows, []ui.Cell{})
 	}
-	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
+	return locateTranscriptImages(rows, lineStarts, images, native, width, cellWidth, cellHeight)
 }
 
 // scrollByWidth moves the scroll anchor by delta display rows (negative = up)
