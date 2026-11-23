@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 
@@ -27,8 +28,14 @@ func newBashSummary(command string) *bashSummary {
 	if len(command) <= 64<<10 {
 		file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 		if err == nil && len(file.Stmts) > 0 {
-			for i, stmt := range file.Stmts {
-				if i > 0 && !file.Stmts[i-1].Background {
+			// Shell options set before the first command are setup for the
+			// script, like a leading cd: the display opens with the work.
+			stmts := file.Stmts
+			for len(stmts) > 1 && isBashOptionsPreamble(stmts[0]) {
+				stmts = stmts[1:]
+			}
+			for i, stmt := range stmts {
+				if i > 0 && !stmts[i-1].Background {
 					s.parts = append(s.parts, bashSummaryPart{text: ";", operator: true})
 				}
 				s.appendStmt(command, stmt)
@@ -71,6 +78,32 @@ func isBashCDPreamble(stmt *syntax.Stmt) bool {
 		len(call.Assigns) == 0 && len(stmt.Redirs) == 0 && !stmt.Negated && !stmt.Background
 }
 
+// isBashOptionsPreamble reports a plain "set" of shell options, such as
+// "set -euo pipefail": no positional parameters, assignments, redirections,
+// negation or backgrounding, so only how the script fails or echoes changes.
+// A bare "set" or "set -o" prints instead, and stays.
+func isBashOptionsPreamble(stmt *syntax.Stmt) bool {
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Args) < 2 || call.Args[0].Lit() != "set" ||
+		len(call.Assigns) > 0 || len(stmt.Redirs) > 0 || stmt.Negated || stmt.Background || stmt.Coprocess {
+		return false
+	}
+	for i := 1; i < len(call.Args); i++ {
+		option := call.Args[i].Lit()
+		if len(option) < 2 || (option[0] != '-' && option[0] != '+') || option[1] == '-' {
+			return false
+		}
+		// -o and +o take the option's name as the next word.
+		if option[len(option)-1] == 'o' {
+			i++
+			if i == len(call.Args) || !syntax.ValidName(call.Args[i].Lit()) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func bashStatementSource(command string, stmt *syntax.Stmt) string {
 	end := stmt.End().Offset()
 	if stmt.Semicolon.IsValid() && !stmt.Background && !stmt.Coprocess {
@@ -90,7 +123,8 @@ func (s *bashSummary) appendStmt(command string, stmt *syntax.Stmt) {
 		// A leading "cd <dir>" is setup for the rest of the line, not the call
 		// the line is about. Drop it and its operator, so the display does not
 		// open with "… &&" on every command that names its directory first.
-		if binary.Op == syntax.AndStmt && isBashCDPreamble(binary.X) {
+		// Shell options are setup in the same way.
+		if binary.Op == syntax.AndStmt && (isBashCDPreamble(binary.X) || isBashOptionsPreamble(binary.X)) {
 			s.appendStmt(command, binary.Y)
 			return
 		}
@@ -150,33 +184,103 @@ func (s *bashSummary) fit(width int) string {
 			parts[i] = part.short
 		}
 	}
-	// Share the budget across commands, preserving the chain's operators and
-	// short stages such as "tail -40" while shrinking its longest stage first.
-	budgets := make([]int, len(parts))
-	total := max(0, len(parts)-1)
-	for i := range parts {
+	// Every command shown keeps room to be read: a third of the row, at most
+	// bashStageRoom columns, or all of a shorter command. The commands a row
+	// cannot give that much are left out, an ellipsis in their place after
+	// the operator that led to them, so a long script shows how it begins
+	// rather than a stub of each of its commands.
+	room := min(bashStageRoom, max(bashStageStub, width/3))
+	budgets, floors := make([]int, len(parts)), make([]int, len(parts))
+	need := max(0, len(parts)-1) // spaces between parts
+	for i, part := range s.parts {
 		budgets[i] = rw.StringWidth(parts[i])
-		total += budgets[i]
+		floors[i] = budgets[i]
+		if !part.operator {
+			floors[i] = min(budgets[i], room)
+		}
+		need += floors[i]
 	}
+	keep := len(parts)
+	for need > width {
+		// Drop the last command shown, and keep the operator before it.
+		last := keep - 1
+		for last > 0 && s.parts[last].operator {
+			last--
+		}
+		if last == 0 {
+			break // the first command is always shown, however little of it fits
+		}
+		if keep == len(parts) {
+			need += 2 // reserve the ellipsis and the space before it once
+		}
+		for _, floor := range floors[last:keep] {
+			need -= floor + 1
+		}
+		keep = last
+	}
+	parts, budgets = parts[:keep], budgets[:keep]
+	whole := slices.Clone(budgets)
+	total := max(0, keep-1)
+	for _, budget := range budgets {
+		total += budget
+	}
+	if keep < len(s.parts) {
+		total += 2
+	}
+	// Share what is left across the commands shown, preserving the chain's
+	// operators and short stages such as "tail -40" while shrinking its
+	// longest stage first.
 	for total > width {
 		longest := -1
-		for i, part := range s.parts {
-			if !part.operator && budgets[i] > 8 && (longest < 0 || budgets[i] > budgets[longest]) {
+		for i := range parts {
+			if budgets[i] > floors[i] && (longest < 0 || budgets[i] > budgets[longest]) {
 				longest = i
 			}
 		}
 		if longest < 0 {
 			break
 		}
-		cut := min(budgets[longest]-8, max(1, (total-width)/max(1, len(parts))))
+		cut := min(budgets[longest]-floors[longest], max(1, (total-width)/max(1, len(parts))))
 		budgets[longest] -= cut
 		total -= cut
+	}
+	// A command left a few columns short of whole takes them from the one
+	// cut the most: one ellipsis fewer on the row, at the cost of the tail
+	// of a command that was cut already.
+	for i := range parts {
+		short := whole[i] - budgets[i]
+		if short < 1 || short > bashSliver {
+			continue
+		}
+		donor := -1
+		for j := range parts {
+			if j != i && whole[j]-budgets[j] > bashSliver && budgets[j]-short >= floors[j] && (donor < 0 || budgets[j] > budgets[donor]) {
+				donor = j
+			}
+		}
+		if donor >= 0 {
+			budgets[donor] -= short
+			budgets[i] = whole[i]
+		}
 	}
 	for i := range parts {
 		parts[i] = rw.Truncate(parts[i], budgets[i], "…")
 	}
+	if keep < len(s.parts) {
+		parts = append(parts, "…")
+	}
 	return rw.Truncate(strings.Join(parts, " "), width, "…")
 }
+
+const (
+	// bashStageRoom is the most a row promises one command of a script
+	// before it leaves out the commands after it.
+	bashStageRoom = 32
+	// bashStageStub is the least a command shown is cut to.
+	bashStageStub = 8
+	// bashSliver is the most columns a command gets back to be shown whole.
+	bashSliver = 3
+)
 
 func shortenBashPaths(text string) string {
 	// Cache a path-shortened variant using shell word boundaries; whitespace

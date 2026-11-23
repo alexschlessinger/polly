@@ -1,6 +1,8 @@
 package main
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,6 +30,17 @@ func TestBashSummaryPreservesShellStructure(t *testing.T) {
 		{"for f in *.go; do echo \"$f\"; done; echo end", "for f in *.go; do echo \"$f\"; done ; echo end"},
 		{"for f in *.go; do echo \"$f\"; done", "for f in *.go; do echo \"$f\"; done"},
 		{"python <<'PY'\nprint('hello')\nPY", "python <<'PY' …"},
+		// Shell options ahead of the work are setup, like a leading cd.
+		{"set -e -o pipefail; gofmt -l .; go test ./...", "gofmt -l . ; go test ./..."},
+		{"set -euo pipefail\ngo build ./...", "go build ./..."},
+		{"set -e && go vet ./...", "go vet ./..."},
+		{"set +e; false; echo $?", "false ; echo $?"},
+		{"set -e", "set -e"},
+		{"echo hi; set -e; false", "echo hi ; set -e ; false"},
+		{"set -- a b; echo \"$1\"", "set -- a b ; echo \"$1\""},
+		{"set -x >log; echo hi", "set -x >log ; echo hi"},
+		{"set -o; echo hi", "set -o ; echo hi"},
+		{"set; echo hi", "set ; echo hi"},
 		{"echo 'unterminated\nnext line", "echo 'unterminated …"},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
@@ -59,6 +72,52 @@ func TestBashSummaryBudgetsStagesAndPaths(t *testing.T) {
 	}
 	if got := summary.fit(200); got != command {
 		t.Fatalf("widening did not restore command: %q", got)
+	}
+}
+
+// A script too long for its row shows how it begins: its first commands, each
+// with room to be read, then an ellipsis after the operator that led to the
+// rest. It is never a stub of every command.
+func TestBashSummaryShowsALongScriptsFirstCommands(t *testing.T) {
+	const script = "set -e -o pipefail; git diff --check; git ls-files -zco --exclude-standard '*.go' | while IFS= read -r -d '' p; do if test -f \"$p\"; then printf '%s\\0' \"$p\"; fi; done | xargs -0 gofmt -l; git diff -U3 -- cmd/polly/repl_transcript.go | grep -C 7 -E 'hold|until'; git diff --stat | grep -A47 handoff || test \"$?\" = 1"
+	summary := newBashSummary(script)
+	for width, want := range map[int]string{
+		131: `git diff --check ; git ls-files -zco --exclude-standard '*.go' | while IFS= read -r -d '' p; do if test -f… | xargs -0 gofmt -l ; …`,
+		60:  `git diff --check ; git ls-files -zco --exclude-standard… | …`,
+	} {
+		if got := summary.fit(width); got != want {
+			t.Errorf("width %d:\n got %q\nwant %q", width, got, want)
+		}
+	}
+	operators := regexp.MustCompile(` (;|\||\|\||&&) `)
+	for width := 1; width <= 400; width++ {
+		got := summary.fit(width)
+		if rw.StringWidth(got) > width {
+			t.Fatalf("width %d overflows: %q", width, got)
+		}
+		// A command cut short still has a third of the row, up to
+		// bashStageRoom columns; only the first may have less, when the row
+		// is too narrow to promise even that.
+		room := min(bashStageRoom, max(bashStageStub, width/3))
+		for i, stage := range operators.Split(strings.TrimSuffix(got, " …"), -1) {
+			if i > 0 && strings.HasSuffix(stage, "…") && rw.StringWidth(stage) < room {
+				t.Fatalf("width %d: %q is a stub in %q", width, stage, got)
+			}
+		}
+	}
+	if got := summary.fit(400); strings.Contains(got, "…") || !strings.HasPrefix(got, "git diff --check ; git ls-files") || !strings.HasSuffix(got, `|| test "$?" = 1`) {
+		t.Fatalf("a row wide enough shows the whole script: %q", got)
+	}
+}
+
+func BenchmarkBashSummaryFitLongScript(b *testing.B) {
+	for _, count := range []int{1000, 4000, 16000, 28000} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			summary := newBashSummary(strings.Repeat(":;", count) + ":")
+			for b.Loop() {
+				_ = summary.fit(100)
+			}
+		})
 	}
 }
 
