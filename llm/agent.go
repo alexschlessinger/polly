@@ -594,6 +594,23 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	return agent
 }
 
+// WithToolRegistry constructs an independent agent over exactly the supplied
+// source registry, sharing this agent's client and configuration, not its live
+// tool handles or transcript. A non-nil builtins list further narrows private
+// built-ins (an empty list installs none). Close the returned agent after use.
+func (a *Agent) WithToolRegistry(registry *tools.ToolRegistry, builtins []string) *Agent {
+	config := a.config
+	if builtins != nil {
+		config.Builtins = []string{}
+		for _, name := range builtins {
+			if a.config.installsBuiltin(name) {
+				config.Builtins = append(config.Builtins, name)
+			}
+		}
+	}
+	return NewAgent(a.client, registry, config)
+}
+
 // ToolRegistry returns the agent's effective tools, including its private
 // built-ins. Configured tools and policies are inherited from the caller.
 func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }

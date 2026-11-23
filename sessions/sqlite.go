@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	schemaVersion     = 9
+	schemaVersion     = 11
 	artifactChunkSize = 1 << 20
 	journalSizeLimit  = 64 << 20
 	// pageCacheKiB is how much of the database a connection may keep in
@@ -644,7 +644,7 @@ var unversionedSchema = []string{
 }
 
 var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
-	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8, applySchemaV9,
+	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8, applySchemaV9, applySchemaV10, applySchemaV11,
 }
 
 // applySchemaV6 rebuilt session_reports to admit the paused status. Schema
@@ -1037,6 +1037,18 @@ var schemaTables = map[string]schemaTableSpec{
 	"swarm_members":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"member_id", "BLOB", 1, 2, ""}}},
 	// schema v7
 	"model_metadata_cache": {columns: []schemaColumnSpec{{"cache_key", "TEXT", 1, 1, ""}, {"payload", "BLOB", 1, 0, ""}}},
+	// schema v10
+	"session_plans": {
+		columns:      []schemaColumnSpec{{"session_id", "BLOB", 1, 1, ""}, {"mode", "TEXT", 1, 0, ""}, {"path", "TEXT", 1, 0, ""}, {"base", "TEXT", 1, 0, ""}, {"revision", "TEXT", 1, 0, ""}, {"snapshot", "TEXT", 1, 0, ""}},
+		withoutRowID: 1,
+		requiredSQL:  []string{"check(modein('draft','exited','accepted'))", "check(length(path)>0)"},
+	},
+	// schema v11
+	"session_todos": {
+		columns:      []schemaColumnSpec{{"session_id", "BLOB", 1, 1, ""}, {"number", "INTEGER", 1, 2, ""}, {"text", "TEXT", 1, 0, ""}, {"state", "TEXT", 1, 0, ""}, {"reason", "TEXT", 1, 0, ""}, {"plan_step", "INTEGER", 1, 0, ""}},
+		withoutRowID: 1,
+		requiredSQL:  []string{"check(number>0)", "check(length(text)>0)", "check(statein('pending','active','blocked','done'))", "check((state='blocked')=(length(reason)>0))", "check(plan_step>=0)"},
+	},
 	// unversioned
 	"update_log_marks": {
 		columns:      []schemaColumnSpec{{"owner", "BLOB", 1, 1, ""}, {"place", "INTEGER", 1, 0, ""}},
@@ -1058,6 +1070,8 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		"session_artifacts_digest_idx": {"digest"}, // schema v8
 		"swarm_artifacts_digest_idx":   {"digest"}, // schema v8
 		"swarm_members_member_idx":     {"member_id"},
+		"session_todos_step_idx":       {"session_id", "plan_step"},
+		"session_todos_title_idx":      {"session_id", "text"},
 	} {
 		if err := requireIndexColumns(ctx, conn, index, columns); err != nil {
 			return err
@@ -1075,6 +1089,8 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		"session_artifacts": {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
 		"sessions":          {"parent_id>sessions.id:SET NULL": true},
 		"session_leases":    {"session_id>sessions.id:CASCADE": true},
+		"session_plans":     {"session_id>sessions.id:CASCADE": true},
+		"session_todos":     {"session_id>sessions.id:CASCADE": true},
 	}
 	for table, expected := range expectedForeignKeys {
 		if err := validateForeignKeys(ctx, conn, table, expected); err != nil {

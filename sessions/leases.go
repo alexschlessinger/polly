@@ -242,7 +242,10 @@ func endLease(ctx context.Context, conn *sql.Conn, held lease, pending []pending
 		hasTurn = 1
 	}
 	if retention == retentionAuto && hasTurn == 0 {
-		deleted, err = deleteSessions(ctx, conn, "id = ? AND NOT "+swarmPinnedSQL, held.id)
+		// A plan or todo list is meaningful use even before a first turn.
+		deleted, err = deleteSessions(ctx, conn, `id = ? AND NOT EXISTS
+			(SELECT 1 FROM session_plans WHERE session_id=sessions.id) AND NOT EXISTS
+			(SELECT 1 FROM session_todos WHERE session_id=sessions.id) AND NOT `+swarmPinnedSQL, held.id)
 		if err != nil || deleted {
 			return deleted, err
 		}

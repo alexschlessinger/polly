@@ -56,7 +56,7 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 		if _, err := conn.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 			return err
 		}
-		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "swarm_records", "swarm_artifacts", "swarm_members"} {
+		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "swarm_records", "swarm_artifacts", "swarm_members", "session_plans", "session_todos"} {
 			if err := copyTable(ctx, s.db, conn, table); err != nil {
 				return fmt.Errorf("promote %s: %w", table, err)
 			}

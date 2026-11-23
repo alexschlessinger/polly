@@ -1219,6 +1219,31 @@ err = session.AddMessage(ctx, messages.ChatMessage{
 | `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
 | `SyncStore.Sync` | Wait until everything accepted so far is on disk. The SQLite store commits without waiting for the disk, so a power loss can lose the latest commits |
 
+### Session plans and todos
+
+The SQLite session implements the optional `sessions.PlanSession` interface.
+`GetPlan` returns nil when the session has no plan. `StartPlan` and `ExitPlan`
+enter and leave draft mode without starting implementation. The caller reads
+and displays the draft and its extracted steps (`sessions.ParsePlanSteps`).
+On approval, it re-reads the file and passes the reviewed `PlanRevision` and
+current text to `AcceptPlan`. Only a successful call returning `started=true`
+should launch work; reopening the session or repeating the acceptance is not
+permission to replay it.
+
+There is one accepted plan per session. Its snapshot, digest, and ordered
+outcomes are independent of the draft file. Acceptance does not write todos.
+
+SQLite also implements `sessions.TodoSession`, independent of `PlanSession`.
+`GetTodos` returns the session checklist in stable number order, even when
+there is no plan. The CLI's `update_todos` tool uses `AddTodo`, `RenameTodo`,
+`SetTodoState`, and `InitPlanTodos`. The last operation takes the accepted
+revision and imports its exact outcomes once, without replacing ordinary items.
+`PlanTodo.Number` identifies an item across the session. `PlanTodo.PlanStep`
+is zero for an ordinary item or the one-based outcome in the accepted plan;
+linked wording is immutable. The `Todos` field returned by `GetPlan` contains
+only linked items.
+Read progress from the store, not from the transcript or Markdown.
+
 ### Metadata and titles
 
 `Metadata.Name` is the handle you resume by, and `Title` is a descriptive
