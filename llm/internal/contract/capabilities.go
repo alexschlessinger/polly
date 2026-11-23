@@ -1,11 +1,12 @@
 package contract
 
-// ModelCapabilities contains advertised facts; nil means unknown, not false.
-// A non-nil modalities/parameters list is an authoritative complete list.
-// ParameterServiceTier is the Parameters key a catalog sets when it knows
-// whether a model can run on its provider's fast service tier.
+// ParameterServiceTier is the Parameters key for support of at least one
+// requestable service tier. It does not identify which tier is supported.
 const ParameterServiceTier = "service_tier"
 
+// ModelCapabilities contains advertised facts; nil means unknown, not false.
+// A non-nil modalities list is authoritative; ParametersComplete marks an
+// authoritative parameter set.
 type ModelCapabilities struct {
 	Chat                    *bool    `json:"chat,omitempty"`
 	InputModalities         []string `json:"inputModalities"`
@@ -33,6 +34,16 @@ type ModelCapabilities struct {
 	RuntimeContextTokens     *int            `json:"runtimeContextTokens,omitempty"`
 	UnlimitedLimits          map[string]bool `json:"unlimitedLimits,omitempty"`
 	MaxImages                *int            `json:"maxImages,omitempty"`
+	// ServiceTiers lists advertised wire IDs. Nil is unknown; an empty list
+	// explicitly rules out every tier. Preserve that distinction in caches.
+	ServiceTiers []string `json:"serviceTiers"`
+}
+
+// ServiceTierRuledOut reports a known negative catalog entry. Unknown tier
+// support is resolved by the provider and model policy, not by absence.
+func (c ModelCapabilities) ServiceTierRuledOut() bool {
+	supported, known := c.Parameters[ParameterServiceTier]
+	return known && !supported
 }
 
 // ContextWindow returns the smallest advertised context limit, or zero when

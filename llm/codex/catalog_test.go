@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -94,19 +95,31 @@ func TestListModelsDecodesTheBackendCatalog(t *testing.T) {
 	}
 }
 
-func TestFastTierReadsBothCatalogShapes(t *testing.T) {
+func TestDecodeModelServiceTiers(t *testing.T) {
 	for _, tc := range []struct {
-		record      map[string]any
-		fast, known bool
+		record    map[string]any
+		tiers     []string
+		supported bool
 	}{
-		{map[string]any{"service_tiers": []any{map[string]any{"id": "priority"}}}, true, true},
-		{map[string]any{"service_tiers": []any{map[string]any{"id": "flex"}}}, false, true},
-		{map[string]any{"additional_speed_tiers": []any{"fast"}}, true, true},
-		{map[string]any{"service_tiers": []any{}, "additional_speed_tiers": []any{}}, false, true},
-		{map[string]any{"slug": "gpt-5.5"}, false, false},
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "priority"}}}, []string{"priority"}, true},
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "ultrafast"}}}, []string{"ultrafast"}, true},
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "flex", "name": "Fast"}}}, []string{"flex"}, false},
+		{map[string]any{"additional_speed_tiers": []any{"fast"}}, []string{"priority"}, true},
+		{map[string]any{"additional_speed_tiers": []any{"ultrafast"}}, []string{"ultrafast"}, true},
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "ultrafast"}}, "additional_speed_tiers": []any{"fast", "ultrafast"}}, []string{"priority", "ultrafast"}, true},
+		{map[string]any{"service_tiers": []any{}}, []string{}, false},
+		{map[string]any{"additional_speed_tiers": []any{}}, []string{}, false},
+		{map[string]any{"service_tiers": nil}, []string{}, false},
+		{map[string]any{"service_tiers": nil, "additional_speed_tiers": []any{"fast"}}, []string{"priority"}, true},
+		{map[string]any{"service_tiers": nil, "additional_speed_tiers": []any{"priority", "turbo", nil}}, []string{}, false},
+		{map[string]any{}, nil, false},
 	} {
-		if fast, known := fastTier(tc.record); fast != tc.fast || known != tc.known {
-			t.Errorf("fastTier(%v) = %v, %v; want %v, %v", tc.record, fast, known, tc.fast, tc.known)
+		m := decodeModel(tc.record)
+		if got := m.ServiceTiers; !reflect.DeepEqual(got, tc.tiers) {
+			t.Errorf("%v: tiers = %#v, want %#v", tc.record, got, tc.tiers)
+		}
+		if supported, known := m.Parameters[contract.ParameterServiceTier]; supported != tc.supported || known != (tc.tiers != nil) {
+			t.Errorf("%v: supported = %t, known = %t", tc.record, supported, known)
 		}
 	}
 }
@@ -121,6 +134,9 @@ func TestListModelsFallsBackToKnownModels(t *testing.T) {
 	for i, m := range knownModels {
 		if cat.Models[i].ID != m.id || *cat.Models[i].ContextTokens != knownContextTokens || cat.Models[i].OutputTokens != nil {
 			t.Fatalf("model %d = %+v, want %+v", i, cat.Models[i], m)
+		}
+		if tiers := cat.Models[i].ServiceTiers; tiers != nil {
+			t.Fatalf("fallback %s advertises tiers %#v", m.id, tiers)
 		}
 	}
 	target.Model = "gpt-5.5"

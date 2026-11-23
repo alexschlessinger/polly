@@ -1,38 +1,64 @@
 package llm
 
 import (
-	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 )
 
-// fastUnavailable explains why fast mode cannot reach model, or is empty
-// when it can: the provider has no fast tier, or the model's catalog rules
-// the tier out. Nil capabilities are unknown and let the request through,
-// so the provider can answer for itself.
-func fastUnavailable(model string, c *ModelCapabilities) string {
-	provider, _, ok := strings.Cut(model, "/")
+const (
+	// ServiceTierPriority selects priority processing (Codex fast mode).
+	ServiceTierPriority = contract.ServiceTierPriority
+	// ServiceTierUltrafast selects ultrafast processing on supported OpenAI models.
+	ServiceTierUltrafast = contract.ServiceTierUltrafast
+)
+
+// tierUnavailable explains why a tier cannot reach the target, or returns
+// empty when the request can pass. Codex Ultrafast requires catalog confirmation.
+func tierUnavailable(providers map[string]providerSpec, model, baseURL string, c ModelCapabilities, tier string) string {
+	switch tier {
+	case "":
+		return ""
+	case ServiceTierPriority, ServiceTierUltrafast:
+	default:
+		return fmt.Sprintf("unknown service tier %q", tier)
+	}
+	provider, slug, ok := strings.Cut(model, "/")
 	if !ok {
 		return "not available for " + model
 	}
-	if !providerFor(provider).fastTier {
-		return "not available for " + strings.ToLower(provider) + "/ models"
+	provider = strings.ToLower(provider)
+	spec := providers[provider]
+	if spec.supportsTier == nil {
+		return "not available for " + provider + "/ models"
 	}
-	if c != nil {
-		if supported, known := c.Parameters[contract.ParameterServiceTier]; known && !supported {
-			return "not available for " + model
+	if tier == ServiceTierUltrafast && strings.TrimSpace(spec.scopeBaseURL(baseURL)) != "" {
+		return "not available on Chat Completions endpoints"
+	}
+	if !spec.supportsTier(slug, tier, c) {
+		if spec.signIn && tier == ServiceTierUltrafast {
+			return "not advertised for " + model + " in the signed-in account's model catalog"
 		}
+		return "not available for " + model
 	}
 	return ""
 }
 
-// FastModeFor reports whether fast mode reaches model, as an error saying
-// why not, for settings display and the forms that save the setting. What
-// the catalog does not rule out passes.
-func FastModeFor(model string, c ModelCapabilities) error {
-	if why := fastUnavailable(model, &c); why != "" {
-		return errors.New("fast mode is " + why)
+// ServiceTierFor validates a service tier for model (provider/name) at
+// baseURL. Empty baseURL uses the native endpoint; an empty tier is always
+// valid and leaves the provider's default unchanged.
+func ServiceTierFor(model, baseURL string, c ModelCapabilities, tier string) error {
+	if why := tierUnavailable(providerTable(), model, baseURL, c, tier); why != "" {
+		if tier == ServiceTierPriority {
+			return fmt.Errorf("fast mode is %s", why)
+		}
+		return fmt.Errorf("cannot use service tier %q: %s", tier, why)
 	}
 	return nil
+}
+
+// FastModeFor reports whether model can use the priority service tier.
+func FastModeFor(model string, c ModelCapabilities) error {
+	return ServiceTierFor(model, "", c, ServiceTierPriority)
 }

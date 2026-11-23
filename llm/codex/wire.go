@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"slices"
+
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 )
@@ -28,16 +30,35 @@ func (r *request) Streaming(on bool) openai.ResponsesBody {
 	return &body
 }
 
+// SupportsServiceTier checks the signed-in account's model record. Priority
+// retains its legacy behavior when tiers are unknown; Ultrafast is opt-in
+// only when the selected model explicitly advertises it.
+func SupportsServiceTier(tier string, caps contract.ModelCapabilities) bool {
+	if caps.ServiceTierRuledOut() {
+		return false
+	}
+	switch tier {
+	case contract.ServiceTierPriority:
+		return caps.ServiceTiers == nil || slices.Contains(caps.ServiceTiers, tier)
+	case contract.ServiceTierUltrafast:
+		return slices.Contains(caps.ServiceTiers, tier)
+	}
+	return false
+}
+
 // buildRequest converts a completion request into the backend's body. The
 // backend serves a plan, not metered tokens, and refuses sampling and
 // output-length knobs ("Unsupported parameter"); it expects a reasoning
 // block on every request, and its models reason at levels up to max, so
 // that level goes through where api.openai.com would fold it into xhigh.
-// Fast mode rides in the service tier the shared builder sets, paired with
-// the routing hint the transport sends.
+// The selected tier is also used by the transport's routing hint.
 func buildRequest(req *contract.CompletionRequest) *request {
 	base := openai.BuildResponsesRequestWith(req, ReplayReasoningItems)
 	out := &request{ResponsesRequest: *base}
+	out.ServiceTier = ""
+	if tier := req.RequestedServiceTier(); SupportsServiceTier(tier, req.KnownCapabilities()) {
+		out.ServiceTier = tier
+	}
 	out.Temperature = nil
 	out.MaxOutputTokens = nil
 	if out.Reasoning == nil {

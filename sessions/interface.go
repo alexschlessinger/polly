@@ -174,7 +174,8 @@ type Metadata struct {
 	AutoMaxContext   bool                   `json:"autoMaxContext,omitempty"`
 	CompactModel     string                 `json:"compactModel,omitempty"`
 	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
-	Fast             bool                   `json:"fast,omitempty"`
+	Fast             bool                   `json:"fast,omitempty"`        // legacy representation for priority
+	ServiceTier      string                 `json:"serviceTier,omitempty"` // named tier; takes precedence over Fast
 	SystemPrompt     string                 `json:"systemPrompt,omitempty"`
 	ActiveTools      []tools.ToolLoaderInfo `json:"activeTools,omitempty"`
 	ActiveSkills     []string               `json:"activeSkills,omitempty"`

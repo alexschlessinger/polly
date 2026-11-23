@@ -90,10 +90,11 @@ type CompletionRequest struct {
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *schema.Schema         // Optional schema for structured output
 	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	// Fast asks for the provider's faster, costlier service tier when the
-	// model has one: OpenAI's priority processing, which the Codex backend
-	// calls fast mode. Preparation drops it, with a note, where no such
-	// tier exists.
+	// ServiceTier requests priority or ultrafast processing where supported.
+	// Empty leaves the tier unset unless Fast is true. Preparation omits an
+	// unavailable tier with a note; it never substitutes a different tier.
+	ServiceTier string
+	// Fast requests priority processing when ServiceTier is empty.
 	Fast       bool
 	StreamMode StreamMode      // Streaming (zero value) or Buffered
 	Skills     *skills.Catalog // Optional skill catalog for automatic system prompt augmentation
@@ -101,6 +102,20 @@ type CompletionRequest struct {
 	// Replay memoizes provider-side message conversions for one run. Agent.Run
 	// shares one across its requests; nil converts without memoizing.
 	Replay *ReplayCache
+}
+
+const (
+	ServiceTierPriority  = "priority"
+	ServiceTierUltrafast = "ultrafast"
+)
+
+// RequestedServiceTier resolves the legacy Fast shorthand before validation.
+// An explicit value, even an unknown one, always takes precedence.
+func (r *CompletionRequest) RequestedServiceTier() string {
+	if r.ServiceTier == "" && r.Fast {
+		return ServiceTierPriority
+	}
+	return r.ServiceTier
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.

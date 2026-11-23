@@ -909,6 +909,34 @@ func TestResponsesRequestAsksForEncryptedReasoning(t *testing.T) {
 	}
 }
 
+func TestWireServiceTierRespectsCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, tier       string
+		tiers                   []string
+		wantResponses, wantChat string
+	}{
+		{"no advertised tiers", "gpt-6.2-astra", "", []string{}, "", ""},
+		{"advertised priority with legacy Fast", "gpt-6.2-astra", "", []string{"priority"}, "priority", "priority"},
+		{"priority is not a fallback", "gpt-6.2-astra", "ultrafast", []string{"priority"}, "", ""},
+		{"ultrafast does not imply priority", "gpt-6.2-astra", "priority", []string{"ultrafast"}, "", ""},
+		{"advertised ultrafast is native only", "gpt-6.2-astra", "ultrafast", []string{"ultrafast"}, "ultrafast", ""},
+		{"catalog cannot override the model allowlist", "gpt-6-sol", "ultrafast", []string{"ultrafast"}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &contract.CompletionRequest{Model: tc.model, ServiceTier: tc.tier, Fast: true, Capabilities: &contract.ModelCapabilities{ServiceTiers: tc.tiers}}
+			if got := BuildResponsesRequest(req).ServiceTier; got != tc.wantResponses {
+				t.Errorf("Responses service tier = %q, want %q", got, tc.wantResponses)
+			}
+			if got := BuildChatCompletionRequest(req).ServiceTier; got != tc.wantChat {
+				t.Errorf("Chat Completions service tier = %q, want %q", got, tc.wantChat)
+			}
+			if got := BuildResponsesRequestWith(req, ReplayReasoningItems).ServiceTier; got != tc.wantChat {
+				t.Errorf("gateway Responses service tier = %q, want %q", got, tc.wantChat)
+			}
+		})
+	}
+}
+
 func TestFastModeAsksForPriorityProcessing(t *testing.T) {
 	req := &contract.CompletionRequest{Model: "gpt-5.4", Messages: messages.User("hi")}
 	if got := BuildResponsesRequest(req).ServiceTier; got != "" {

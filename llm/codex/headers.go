@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-	"github.com/alexschlessinger/pollytool/llm/openai"
 )
 
 // The backend reads four things off a completion besides the bearer
@@ -18,13 +17,10 @@ const (
 	routingHintHeader = "x-codex-routing-hint"
 )
 
-// routingHint is the value the Codex client sends the backend for model:
-// the model alone, or the model and the priority tier in fast mode. The
-// backend's reply echoes its tier as "default" either way; the request is
-// what decides, as the Codex client and pi both take it.
-func routingHint(model string, fast bool) string {
-	if fast {
-		return "model=" + model + ";tier=" + openai.ServiceTierPriority
+// routingHint uses the tier from the validated request body, if any.
+func routingHint(model, tier string) string {
+	if tier != "" {
+		return "model=" + model + ";tier=" + tier
 	}
 	return "model=" + model
 }

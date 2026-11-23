@@ -126,9 +126,7 @@ func BuildChatCompletionRequest(req *contract.CompletionRequest) *ChatCompletion
 	if effort, ok := reasoningEffortFromThinking(req.ThinkingEffort); ok {
 		params.ReasoningEffort = effort
 	}
-	if req.Fast {
-		params.ServiceTier = ServiceTierPriority
-	}
+	params.ServiceTier = wireServiceTier(req, false)
 	if req.ResponseSchema != nil {
 		params.ResponseFormat = chatResponseFormatFromSchema(req.ResponseSchema)
 	}
@@ -168,12 +166,43 @@ type ReasoningReplay func(msg messages.ChatMessage, model string) []ResponseInpu
 // BuildResponsesRequest converts a completion request into the Responses API
 // wire shape, replaying OpenAI's encrypted reasoning items.
 func BuildResponsesRequest(req *contract.CompletionRequest) *ResponsesRequest {
-	return BuildResponsesRequestWith(req, ReplayReasoningItems)
+	return buildResponsesRequest(req, ReplayReasoningItems, wireServiceTier(req, true))
 }
 
-// BuildResponsesRequestWith is BuildResponsesRequest with the reasoning
-// replay a gateway supplies.
+// BuildResponsesRequestWith builds a gateway Responses body with its own
+// reasoning replay. Native-only tiers must not reach these endpoints.
 func BuildResponsesRequestWith(req *contract.CompletionRequest, replay ReasoningReplay) *ResponsesRequest {
+	return buildResponsesRequest(req, replay, wireServiceTier(req, false))
+}
+
+// SupportsUltrafast reports whether the exact model slug is documented for
+// ultrafast processing on the native OpenAI Responses API.
+func SupportsUltrafast(model string) bool {
+	switch model {
+	case "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol":
+		return true
+	}
+	return false
+}
+
+func wireServiceTier(req *contract.CompletionRequest, nativeResponses bool) string {
+	tier := req.RequestedServiceTier()
+	if (nativeResponses || tier != contract.ServiceTierUltrafast) && SupportsServiceTier(req.Model, tier, req.KnownCapabilities()) {
+		return tier
+	}
+	return ""
+}
+
+// SupportsServiceTier checks model and catalog policy for the native OpenAI
+// Responses endpoint. A compatible endpoint further restricts the tiers.
+func SupportsServiceTier(model, tier string, caps contract.ModelCapabilities) bool {
+	if caps.ServiceTierRuledOut() || (caps.ServiceTiers != nil && !slices.Contains(caps.ServiceTiers, tier)) {
+		return false
+	}
+	return tier == ServiceTierPriority || (tier == contract.ServiceTierUltrafast && SupportsUltrafast(model))
+}
+
+func buildResponsesRequest(req *contract.CompletionRequest, replay ReasoningReplay, tier string) *ResponsesRequest {
 	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model, replay)
 
 	// Reasoning models emit reasoning items whether or not an effort was
@@ -199,9 +228,7 @@ func BuildResponsesRequestWith(req *contract.CompletionRequest, replay Reasoning
 		params.MaxOutputTokens = &maxTokens
 	}
 	params.Reasoning = responsesReasoning(req)
-	if req.Fast {
-		params.ServiceTier = ServiceTierPriority
-	}
+	params.ServiceTier = tier
 	if req.ResponseSchema != nil {
 		params.Text = responsesTextConfigFromSchema(req.ResponseSchema)
 	}

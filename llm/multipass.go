@@ -76,9 +76,9 @@ type providerSpec struct {
 	// that save an effort. nil means the provider clamps whatever it is
 	// given, so there is nothing to report and nothing to refuse.
 	resolveThinking func(ThinkingEffort, ModelCapabilities) (string, error)
-	// fastTier marks a provider whose API has a faster, costlier service
-	// tier that a request can ask for.
-	fastTier bool
+	// supportsTier checks the same model and catalog policy as the wire builder.
+	// Nil means this provider has no selectable service tier.
+	supportsTier func(model, tier string, caps ModelCapabilities) bool
 	// inputWindow marks a provider whose models' context window bounds their
 	// input alone, their output having a limit of its own: requests keep no
 	// room in the window for the reply.
@@ -325,8 +325,8 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return openai.NewProvider(apiKey, baseURL, openai.WithHTTPClient(httpClient)), nil
 			},
-			keyless:  customEndpointKeyless,
-			fastTier: true,
+			keyless:      customEndpointKeyless,
+			supportsTier: openai.SupportsServiceTier,
 			reasoningTokens: func(msg messages.ChatMessage, target ModelTarget) int {
 				// A custom endpoint uses Chat Completions, not Responses.
 				if strings.TrimSpace(target.BaseURL) != "" {
@@ -425,9 +425,12 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			inputWindow:    true,
 			keyless:        alwaysKeyless,
 			keylessCatalog: true,
-			fastTier:       true,
-			signIn:         true,
-			login:          deps.logins["codex"],
+			catalogVersion: "service-tiers-v2",
+			supportsTier: func(_ string, tier string, caps ModelCapabilities) bool {
+				return codex.SupportsServiceTier(tier, caps)
+			},
+			signIn: true,
+			login:  deps.logins["codex"],
 			reasoningTokens: func(msg messages.ChatMessage, target ModelTarget) int {
 				return responsesReasoningTokens(codex.ReplayReasoningItems(msg, target.Model))
 			},
@@ -462,9 +465,9 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 }
 
 // ChatCompletionStream routes the request to the provider named by its model
-// prefix: it scopes the base URL, fills the API key, strips the prefix and
-// delegates. It does not adapt the request to the model; Agent.Run does that
-// each iteration, and direct callers use Prepare.
+// prefix: it scopes the base URL, enforces service-tier eligibility, strips
+// the prefix and fills the API key before delegating. Agent.Run prepares each
+// iteration and direct callers use Prepare for other model adaptations.
 func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	// Work on a copy so we don't mutate the caller's request
 	localReq := *req
@@ -484,7 +487,9 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	if req.ModelHost != "" && !spec.hostRouting {
 		return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
 	}
-	// Update the request with the actual model name (without prefix)
+	// Shared wire builders do not know which provider prefix selected them.
+	// Enforce tier eligibility before stripping it, even without Prepare.
+	omitServiceTier(m.providers, req, req.KnownCapabilities())
 	req.Model = actualModel
 
 	// Populate or validate the API key; the provider table says which

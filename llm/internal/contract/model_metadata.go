@@ -183,6 +183,7 @@ func overlayCapabilities(model, endpoint ModelCapabilities, sharedLimits bool) M
 	model.Tools = nil
 	model.StructuredOutput = nil
 	model.Reasoning = nil
+	model.ServiceTiers = nil
 	model.Parameters = nil
 	model.ParametersComplete = false
 	if !model.ReasoningPolicy {

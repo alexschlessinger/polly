@@ -836,7 +836,8 @@ func summaryRequest(req *CompletionRequest, model, transcript string, target int
 	}
 	if summary.Model == req.Model {
 		summary.ModelHost, summary.APIKey, summary.Capabilities, summary.CacheSessionID = req.ModelHost, req.APIKey, req.Capabilities, req.CacheSessionID
-		summary.MaxTokens, summary.ThinkingEffort, summary.Temperature, summary.Fast = req.MaxTokens, req.ThinkingEffort, req.Temperature, req.Fast
+		summary.MaxTokens, summary.ThinkingEffort, summary.Temperature = req.MaxTokens, req.ThinkingEffort, req.Temperature
+		summary.Fast, summary.ServiceTier = req.Fast, req.ServiceTier
 	}
 	return summary
 }

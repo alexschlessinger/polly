@@ -11,13 +11,13 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm/internal/catalog"
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-	"github.com/alexschlessinger/pollytool/llm/openai"
 )
 
 // ProtocolVersion is the Codex CLI protocol release this package follows.
 // The catalog request states it, since the backend lists a model only to
 // clients at or above the version that first carried it.
-const ProtocolVersion = "0.157.0"
+// The GPT-6.2 Astra and Sol catalog entries require at least 0.166.0.
+const ProtocolVersion = "0.166.0"
 
 // ListModels reads the models the account's plan serves, or one model's
 // record when t.Model names it. The read needs the sign-in; without one
@@ -107,8 +107,10 @@ func decodeModel(r map[string]any) contract.ModelInfo {
 	if d := catalog.Str(r["default_reasoning_level"]); d != "" {
 		info.ReasoningDefaultEffort = &d
 	}
-	if fast, known := fastTier(r); known {
-		info.Parameters = map[string]bool{contract.ParameterServiceTier: fast}
+	if tiers := serviceTiers(r); tiers != nil {
+		info.ServiceTiers = tiers
+		supported := slices.Contains(tiers, contract.ServiceTierPriority) || slices.Contains(tiers, contract.ServiceTierUltrafast)
+		info.Parameters = map[string]bool{contract.ParameterServiceTier: supported}
 	}
 	if upgrade := catalog.Obj(r["upgrade"]); upgrade != nil {
 		if at := catalog.Str(upgrade["retirement_at"]); at != "" {
@@ -121,26 +123,32 @@ func decodeModel(r map[string]any) contract.ModelInfo {
 	return info
 }
 
-// fastTier reads whether a record's service tiers include the priority
-// tier, which the backend presents as fast mode, and whether the record
-// says anything about tiers: the current shape lists tier objects, the
-// older one bare speed words.
-func fastTier(r map[string]any) (fast, known bool) {
-	if tiers, ok := r["service_tiers"]; ok {
-		known = true
-		for _, entry := range catalog.Array(tiers) {
-			if catalog.Str(catalog.Obj(entry)["id"]) == openai.ServiceTierPriority {
-				return true, true
-			}
+// serviceTiers combines current wire IDs with the legacy speed words
+// that have a known wire equivalent. Null declares no current tiers;
+// only a missing service_tiers field without a legacy list leaves tiers unknown.
+func serviceTiers(r map[string]any) []string {
+	raw, present := r["service_tiers"]
+	entries := catalog.Array(raw)
+	speeds := catalog.Array(r["additional_speed_tiers"])
+	if !present && speeds == nil {
+		return nil
+	}
+	tiers := make([]string, 0, len(entries)+len(speeds))
+	for _, entry := range entries {
+		if id := catalog.Str(catalog.Obj(entry)["id"]); id != "" {
+			tiers = append(tiers, id)
 		}
 	}
-	if speeds := catalog.Strings(r, "additional_speed_tiers"); speeds != nil {
-		known = true
-		if slices.Contains(speeds, "fast") {
-			return true, true
+	for _, speed := range speeds {
+		switch catalog.Str(speed) {
+		case "fast":
+			tiers = append(tiers, contract.ServiceTierPriority)
+		case "ultrafast":
+			tiers = append(tiers, contract.ServiceTierUltrafast)
 		}
 	}
-	return false, known
+	slices.Sort(tiers)
+	return slices.Compact(tiers)
 }
 
 // reasoningLevels reads the efforts a record lists, as bare words or as

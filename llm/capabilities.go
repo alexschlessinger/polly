@@ -28,7 +28,7 @@ func Prepare(ctx context.Context, client LLM, req *CompletionRequest, requireToo
 		}
 		prepared.Capabilities = caps
 		out, notes = *prepared, adapted
-	} else if note, omitted := omitFast(&out, nil); omitted {
+	} else if note, omitted := omitServiceTier(providerTable(), &out, ModelCapabilities{}); omitted {
 		notes = append(notes, note)
 	}
 	if out.Skills != nil && !out.Skills.IsEmpty() {
@@ -42,6 +42,7 @@ func Prepare(ctx context.Context, client LLM, req *CompletionRequest, requireToo
 // optional features. Durable messages, tools and caller settings are untouched.
 func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireTools bool) (*CompletionRequest, []RequestAdaptation, error) {
 	out := *req
+	out.Capabilities = &c // Wire builders must see the same advertised tiers and policy.
 	// A model refuses an output limit over its own as an invalid request, not
 	// an overflow a rejection could teach.
 	if c.OutputTokens != nil && *c.OutputTokens > 0 && out.MaxTokens > *c.OutputTokens {
@@ -99,7 +100,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		out.Temperature = nil
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
-	if note, omitted := omitFast(&out, &c); omitted {
+	if note, omitted := omitServiceTier(providerTable(), &out, c); omitted {
 		notes = append(notes, note)
 	}
 	if req.IsOpenRouter() {
@@ -124,19 +125,20 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 	return &out, notes, nil
 }
 
-// omitFast clears a fast-mode request that cannot reach the model and says
-// so, for a model whose provider has no fast tier or whose catalog rules the
-// tier out. Nil capabilities are unknown.
-func omitFast(out *CompletionRequest, c *ModelCapabilities) (RequestAdaptation, bool) {
-	if !out.Fast {
-		return RequestAdaptation{}, false
-	}
-	why := fastUnavailable(out.Model, c)
+// omitServiceTier clears both representations when a tier cannot reach the
+// target: leaving Fast set would silently substitute priority.
+func omitServiceTier(providers map[string]providerSpec, out *CompletionRequest, c ModelCapabilities) (RequestAdaptation, bool) {
+	tier := out.RequestedServiceTier()
+	why := tierUnavailable(providers, out.Model, out.BaseURL, c, tier)
 	if why == "" {
 		return RequestAdaptation{}, false
 	}
-	out.Fast = false
-	return RequestAdaptation{Feature: "fast", Count: 1, Message: "Fast mode omitted: " + why}, true
+	message := "Fast mode omitted: " + why
+	if tier != ServiceTierPriority {
+		message = fmt.Sprintf("Service tier %q omitted: %s", tier, why)
+	}
+	out.ServiceTier, out.Fast = "", false
+	return RequestAdaptation{Feature: "fast", Count: 1, Message: message}, true
 }
 
 // omittedImageText is the request text replacing an unsupported image.

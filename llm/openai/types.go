@@ -13,6 +13,7 @@ package openai
 import (
 	"encoding/json"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -393,7 +394,7 @@ type ResponsesRequest struct {
 
 // ServiceTierPriority is priority processing: OpenAI's faster, costlier
 // tier, which the Codex backend calls fast mode.
-const ServiceTierPriority = "priority"
+const ServiceTierPriority = contract.ServiceTierPriority
 
 // IncludeReasoningEncryptedContent asks the Responses API for the encrypted
 // reasoning state that a stateless client replays on its next request.

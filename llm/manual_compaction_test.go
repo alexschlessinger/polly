@@ -210,7 +210,7 @@ func TestAgentCompactModelFallbackAndSettings(t *testing.T) {
 			req := &CompletionRequest{
 				Model: "openai/main", ModelHost: "host", BaseURL: "https://example.test", APIKey: "request key",
 				Timeout: 3 * time.Second, Deadline: 9 * time.Second, StreamMode: Buffered,
-				MaxTokens: 1_000, MaxContextTokens: 50_000, ThinkingEffort: EffortLevel(LevelHigh), Temperature: Float32Ptr(.3), Fast: true,
+				MaxTokens: 1_000, MaxContextTokens: 50_000, ThinkingEffort: EffortLevel(LevelHigh), Temperature: Float32Ptr(.3), Fast: true, ServiceTier: ServiceTierPriority,
 				Capabilities: caps, CacheSessionID: "session", ResponseSchema: MustSchemaFor(struct{ Answer string }{}),
 				Messages: messages.User(strings.Repeat("whole conversation ", 100)),
 			}
@@ -221,7 +221,7 @@ func TestAgentCompactModelFallbackAndSettings(t *testing.T) {
 					t.Errorf("summary endpoint or shape = %+v", ask)
 				}
 				if call == 0 {
-					if ask.Model != "cheap/summary" || ask.APIKey != "" || ask.ModelHost != "" || ask.Capabilities != nil || ask.MaxTokens != 0 || ask.ThinkingEffort.IsEnabled() || ask.Temperature != nil || ask.Fast || ask.CacheSessionID != "" {
+					if ask.Model != "cheap/summary" || ask.APIKey != "" || ask.ModelHost != "" || ask.Capabilities != nil || ask.MaxTokens != 0 || ask.ThinkingEffort.IsEnabled() || ask.Temperature != nil || ask.Fast || ask.ServiceTier != "" || ask.CacheSessionID != "" {
 						t.Errorf("compaction model inherited request-specific settings: %+v", ask)
 					}
 					if refused {
@@ -229,7 +229,7 @@ func TestAgentCompactModelFallbackAndSettings(t *testing.T) {
 					}
 					return messages.ChatMessage{}, errors.New("compaction model unavailable")
 				}
-				if ask.Model != req.Model || ask.APIKey != req.APIKey || ask.ModelHost != req.ModelHost || ask.Capabilities != caps || ask.MaxTokens != req.MaxTokens || ask.ThinkingEffort != req.ThinkingEffort || ask.Temperature != req.Temperature || !ask.Fast || ask.CacheSessionID != req.CacheSessionID {
+				if ask.Model != req.Model || ask.APIKey != req.APIKey || ask.ModelHost != req.ModelHost || ask.Capabilities != caps || ask.MaxTokens != req.MaxTokens || ask.ThinkingEffort != req.ThinkingEffort || ask.Temperature != req.Temperature || !ask.Fast || ask.ServiceTier != req.ServiceTier || ask.CacheSessionID != req.CacheSessionID {
 					t.Errorf("fallback lost request settings: %+v", ask)
 				}
 				return reply("fallback summary", 200), nil

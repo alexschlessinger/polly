@@ -77,6 +77,9 @@ func (m *MultiPass) metadataTarget(t ModelTarget) (ModelTarget, providerSpec, er
 			return t, spec, ErrModelMetadataUnknown
 		}
 		t.APIKey = acct.ID
+		// A global compatible endpoint must not change the signed-in catalog
+		// or split its cache from the one used to prepare requests.
+		t.BaseURL = spec.scopeBaseURL(t.BaseURL)
 	} else if t.APIKey == "" {
 		if t.UseConfiguredKey {
 			m.apiKeyMu.RLock()

@@ -114,7 +114,8 @@ These are the `llm.CompletionRequest` fields you'll use most:
 | `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
 | `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
 | `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
-| `Fast` | Ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode); `Prepare` drops it with a note where none exists, and `llm.FastModeFor` says beforehand whether a model has one |
+| `ServiceTier` | Set `llm.ServiceTierUltrafast` for a [supported OpenAI Responses model or a Codex model whose account catalog offers Ultrafast](CLI.md#processing-speed), or `llm.ServiceTierPriority` for OpenAI priority processing or Codex fast mode. `Prepare` omits unsupported tiers with a note; use `llm.ServiceTierFor` to check before selection. |
+| `Fast` | Shorthand for priority processing when `ServiceTier` is empty. Leave both unset to use the provider default. |
 | `StreamMode` | `llm.Streaming` (zero value) or `llm.Buffered` |
 | `Tools`, `ResponseSchema`, `Skills` | Tool definitions, output contract, and skill catalog |
 | `Capabilities` | Optional authoritative model facts; otherwise discovered |
@@ -486,7 +487,7 @@ incomplete tool batch), and makes no continuation request. Its summary requests
 carry a text transcript without tools or a response schema. Endpoint, timeout,
 deadline and stream-mode settings are retained; the request's own model also
 retains its model host, key, capabilities, cache-session identity, output limit,
-reasoning, temperature and fast-mode settings. Another compaction model uses
+reasoning, temperature and service tier. Another compaction model uses
 its own model-specific defaults instead. Serialize calls with `Run`, other
 `Compact` calls and configuration changes on the same agent.
 

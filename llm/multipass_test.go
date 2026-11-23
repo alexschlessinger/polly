@@ -219,6 +219,36 @@ func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 	}
 }
 
+func TestMultiPassChecksServiceTierOnTheSelectedProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name, tier string
+		wantFast   bool
+	}{
+		{"allowed legacy Fast", "", true},
+		{"unsupported ultrafast cannot fall back to Fast", ServiceTierUltrafast, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotReq *CompletionRequest
+			m := newMultiPass(nil, map[string]providerSpec{
+				"fixture": {
+					supportsTier: func(_, tier string, _ ModelCapabilities) bool { return tier == ServiceTierPriority },
+					new: func(_, _ string) (LLM, error) {
+						return &recordingLLM{onCall: func(req *CompletionRequest) { gotReq = req }}, nil
+					},
+				},
+			})
+			req := &CompletionRequest{Model: "fixture/m", APIKey: "key", ServiceTier: tc.tier, Fast: true}
+			drainEvents(m.ChatCompletionStream(t.Context(), req, messages.NewStreamProcessor()))
+			if gotReq == nil || gotReq.ServiceTier != "" || gotReq.Fast != tc.wantFast {
+				t.Fatalf("delegated request = %+v; want no explicit tier and Fast=%t", gotReq, tc.wantFast)
+			}
+			if req.ServiceTier != tc.tier || !req.Fast {
+				t.Fatal("routing mutated the caller's tier settings")
+			}
+		})
+	}
+}
+
 func TestMultiPass_OpenAIBaseURLAllowsMissingAPIKey(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string
