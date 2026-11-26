@@ -72,7 +72,7 @@ func tmuxRun(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &complaint
 	if err := cmd.Run(); err != nil {
 		if text := strings.TrimSpace(complaint.String()); text != "" {
-			return "", errors.New(text)
+			return "", fmt.Errorf("%s: %w", text, err)
 		}
 		return "", fmt.Errorf("tmux %s: %w", args[0], err)
 	}
@@ -221,7 +221,7 @@ func (h *tmuxPanes) place(ctx context.Context, pane string) (tmuxPlace, error) {
 	var cells [6]int
 	for n, field := range fields[1:] {
 		if cells[n], err = strconv.Atoi(field); err != nil {
-			return place, fmt.Errorf("tmux described pane %s as %q", pane, out)
+			return place, fmt.Errorf("tmux described pane %s as %q: %w", pane, out, err)
 		}
 	}
 	for n := range place.at {
@@ -247,8 +247,12 @@ func (h *tmuxPanes) float(ctx context.Context, argv []string, label string, spot
 	x, y, width, height := tmuxCells(home.at, spot)
 	// A new pane takes the keys, and they go straight back to the pane that
 	// had them. -A keeps the pane in sight while polly's is zoomed.
-	command := []string{"new-pane", "-A", "-t", h.anchor, "-T", label, "-x", width, "-y", height, "-X", x, "-Y", y}
-	id, err := h.run(ctx, append(append(command, "-P", "-F", "#{pane_id}", "--"), append(argv, ";", "last-pane", "-t", h.anchor)...)...)
+	command := []string{"new-pane", "-A", "-t", h.anchor, "-T", label, "-x", width, "-y", height, "-X", x, "-Y", y, "-P", "-F", "#{pane_id}", "--"}
+	args := make([]string, 0, len(command)+len(argv)+3)
+	args = append(args, command...)
+	args = append(args, argv...)
+	args = append(args, ";", "last-pane", "-t", h.anchor)
+	id, err := h.run(ctx, args...)
 	if err != nil {
 		return "", err
 	}

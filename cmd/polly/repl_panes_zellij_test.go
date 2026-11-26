@@ -71,7 +71,7 @@ func TestZellijFloatsAPinnedPaneOverPollysOwn(t *testing.T) {
 		t.Fatalf("float = %q, %v", id, err)
 	}
 	// Over polly's own pane, in the tab's cells, pinned and without the keys.
-	want := append([]string{"new-pane", "--close-on-exit", "--no-focus", "--floating", "--pinned", "true", "--name", "polly todo", "--x", "150", "--y", "6", "--width", "50", "--height", "10", "--"}, argv...)
+	want := append([]string{"new-pane", "--close-on-exit", "--no-focus", "--floating", "--pinned", "true", "--name=polly todo", "--x", "150", "--y", "6", "--width", "50", "--height", "10", "--"}, argv...)
 	if got := fake.ran("new-pane"); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("zellij was asked for %v\nwant %v", got, want)
 	}
@@ -134,7 +134,7 @@ func TestZellijDocksPanesAndOpensTabs(t *testing.T) {
 	if id, err := host.dock(ctx, argv, "polly view", "", 0.4); err != nil || id != "terminal_11" {
 		t.Fatalf("dock = %q, %v", id, err)
 	}
-	want := append([]string{"new-pane", "--close-on-exit", "--no-focus", "--direction", "right", "--name", "polly view", "--"}, argv...)
+	want := append([]string{"new-pane", "--close-on-exit", "--no-focus", "--direction", "right", "--name=polly view", "--"}, argv...)
 	if got := fake.ran("new-pane"); !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("zellij split with %v\nwant %v", got[0], want)
 	}
@@ -143,7 +143,7 @@ func TestZellijDocksPanesAndOpensTabs(t *testing.T) {
 	if id, err := host.open(ctx, argv, paneTab, "notes"); err != nil || id != "terminal_12" {
 		t.Fatalf("open = %q, %v", id, err)
 	}
-	if got := fake.ran("new-tab"); len(got) != 1 || !reflect.DeepEqual(got[0], append([]string{"new-tab", "--name", "notes", "--close-on-exit", "--"}, argv...)) {
+	if got := fake.ran("new-tab"); len(got) != 1 || !reflect.DeepEqual(got[0], append([]string{"new-tab", "--name=notes", "--close-on-exit", "--"}, argv...)) {
 		t.Fatalf("zellij opened a tab with %v", got)
 	}
 
@@ -182,9 +182,10 @@ func TestZellijNamesOnlyATabNobodyNamed(t *testing.T) {
 		about, name, was, now string
 		want                  []string
 	}{
-		{"Zellij's own name gives way", "Tab #4", "", "notes", []string{"rename-tab", "--tab-id", "2", "notes"}},
-		{"polly's last name gives way", "notes", "notes", "plans", []string{"rename-tab", "--tab-id", "2", "plans"}},
-		{"polly's placeholder gives way", "polly", "", "notes", []string{"rename-tab", "--tab-id", "2", "notes"}},
+		{"Zellij's own name gives way", "Tab #4", "", "notes", []string{"rename-tab", "--tab-id", "2", "--", "notes"}},
+		{"hyphen-prefixed title is escaped", "Tab #4", "", "--bad-flag", []string{"rename-tab", "--tab-id", "2", "--", "--bad-flag"}},
+		{"polly's last name gives way", "notes", "notes", "plans", []string{"rename-tab", "--tab-id", "2", "--", "plans"}},
+		{"polly's placeholder gives way", "polly", "", "notes", []string{"rename-tab", "--tab-id", "2", "--", "notes"}},
 		{"the user's name stays", "mine", "notes", "plans", nil},
 		{"the same name is not set twice", "notes", "notes", "notes", nil},
 		{"polly's name is given back", "notes", "notes", "", []string{"undo-rename-tab", "--tab-id", "2"}},
@@ -202,5 +203,28 @@ func TestZellijNamesOnlyATabNobodyNamed(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: zellij was told %v, want %v", tc.about, strings.Join(got, " "), tc.want)
 		}
+	}
+}
+
+func TestZellijArrangeAndDockedPreserveUnrelatedPlacedPanes(t *testing.T) {
+	host, _ := testZellij()
+	ctx := context.Background()
+	// Simulate a pane placed concurrently by float() that is not in this
+	// arrange/docked snapshot yet.
+	host.mu.Lock()
+	host.placed["terminal_99"] = zellijPlaced{at: [4]float64{10, 10, 40, 10}, home: [4]float64{100, 1, 100, 50}}
+	host.mu.Unlock()
+
+	if _, err := host.arrange(ctx, []paneMove{{id: "terminal_11", to: [4]float64{0, 0, 0.5, 0.5}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.docked(ctx, []string{"terminal_11"}); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	_, kept := host.placed["terminal_99"]
+	host.mu.Unlock()
+	if !kept {
+		t.Fatal("arrange/docked wiped an unrelated concurrently placed pane")
 	}
 }

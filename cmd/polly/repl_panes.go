@@ -555,18 +555,11 @@ func (h *rexPanes) arrange(ctx context.Context, moves []paneMove) ([]bool, error
 			floating[layer.Blocks[0].BlockID] = layer
 		}
 	}
-	// Prune tracked IDs that closed or were docked.
-	h.mu.Lock()
-	for id := range h.placed {
-		if _, ok := floating[id]; !ok {
-			delete(h.placed, id)
-		}
-	}
-	h.mu.Unlock()
 	moved := make([]bool, len(moves))
 	for n, move := range moves {
 		layer, ok := floating[move.id]
 		if !ok {
+			h.forgetPlaced(move.id)
 			continue
 		}
 		if left, known := h.getPlaced(move.id); known && !nearSpot(layer.Bounds, left.at) && nearSpot(rect, left.home) {

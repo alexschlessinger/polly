@@ -89,7 +89,7 @@ func zellijRun(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &complaint
 	if err := cmd.Run(); err != nil {
 		if text := strings.TrimSpace(complaint.String()); text != "" {
-			return "", errors.New(text)
+			return "", fmt.Errorf("%s: %w", text, err)
 		}
 		return "", fmt.Errorf("zellij %s: %w", strings.Join(args[:min(2, len(args))], " "), err)
 	}
@@ -154,7 +154,7 @@ func (h *zellijPanes) created(ctx context.Context, argv []string, flags ...strin
 
 // tab opens a tab in front running argv, and reports its ID.
 func (h *zellijPanes) tab(ctx context.Context, label string, argv []string) (int, error) {
-	out, err := h.action(ctx, append([]string{"new-tab", "--name", label, "--close-on-exit", "--"}, argv...)...)
+	out, err := h.action(ctx, append([]string{"new-tab", "--name=" + label, "--close-on-exit", "--"}, argv...)...)
 	if err != nil {
 		return 0, err
 	}
@@ -192,7 +192,7 @@ func (h *zellijPanes) open(ctx context.Context, argv []string, place panePlace, 
 	case paneIfTerminal:
 		// Zellij does not say what a program does to its terminal, so the
 		// command has a pane beside polly, with the keys, whatever it is.
-		out, err := h.action(ctx, append([]string{"new-pane", "--close-on-exit", "--direction", "right", "--name", label, "--"}, argv...)...)
+		out, err := h.action(ctx, append([]string{"new-pane", "--close-on-exit", "--direction", "right", "--name=" + label, "--"}, argv...)...)
 		return zellijPaneID(out), err
 	}
 	return "", fmt.Errorf("zellij opens nothing at place %d", place)
@@ -248,7 +248,7 @@ func (h *zellijPanes) float(ctx context.Context, argv []string, label string, sp
 	}
 	// Pinned, the pane stays in sight while the keys are in the panes under
 	// it, which is where they stay.
-	id, err := h.created(ctx, argv, append([]string{"--floating", "--pinned", "true", "--name", label}, zellijCells(home.at(), spot)...)...)
+	id, err := h.created(ctx, argv, append([]string{"--floating", "--pinned", "true", "--name=" + label}, zellijCells(home.at(), spot)...)...)
 	if err != nil {
 		return "", err
 	}
@@ -259,13 +259,17 @@ func (h *zellijPanes) float(ctx context.Context, argv []string, label string, sp
 // record notes where a floating pane polly placed came to, with polly's own
 // pane at home.
 func (h *zellijPanes) record(ctx context.Context, id string, home [4]float64) {
-	var at [4]float64
-	if panes, err := h.panes(ctx); err == nil {
-		at = panes[id].at()
+	panes, err := h.panes(ctx)
+	if err != nil {
+		return
+	}
+	pane, ok := panes[id]
+	if !ok {
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.placed[id] = zellijPlaced{at: at, home: home}
+	h.placed[id] = zellijPlaced{at: pane.at(), home: home}
 }
 
 // arrange moves the floating panes polly placed. One that is docked now is
@@ -277,18 +281,14 @@ func (h *zellijPanes) arrange(ctx context.Context, moves []paneMove) ([]bool, er
 	if err != nil {
 		return nil, err
 	}
-	h.mu.Lock()
-	for id := range h.placed {
-		if pane, ok := panes[id]; !ok || !pane.Floating {
-			delete(h.placed, id)
-		}
-	}
-	h.mu.Unlock()
 	moved := make([]bool, len(moves))
 	for n, move := range moves {
 		now, listed := panes[move.id]
 		h.mu.Lock()
 		left, known := h.placed[move.id]
+		if !listed || !now.Floating {
+			delete(h.placed, move.id)
+		}
 		h.mu.Unlock()
 		if !listed || !now.Floating || known && now.at() != left.at && home.at() == left.home {
 			continue
@@ -305,7 +305,7 @@ func (h *zellijPanes) arrange(ctx context.Context, moves []paneMove) ([]bool, er
 // dock splits polly's own pane for a pane at its right. Zellij splits only
 // the pane that asks, in half: under and share have no say here.
 func (h *zellijPanes) dock(ctx context.Context, argv []string, label, _ string, _ float64) (string, error) {
-	return h.created(ctx, argv, "--direction", "right", "--name", label)
+	return h.created(ctx, argv, "--direction", "right", "--name="+label)
 }
 
 func (h *zellijPanes) docked(ctx context.Context, ids []string) ([]dockState, error) {
@@ -313,23 +313,22 @@ func (h *zellijPanes) docked(ctx context.Context, ids []string) ([]dockState, er
 	if err != nil {
 		return nil, err
 	}
-	h.mu.Lock()
-	for id := range h.placed {
-		if pane, ok := panes[id]; !ok || !pane.Floating {
-			delete(h.placed, id)
-		}
-	}
-	h.mu.Unlock()
 	states := make([]dockState, len(ids))
 	for n, id := range ids {
 		pane, ok := panes[id]
 		if !ok {
+			h.mu.Lock()
+			delete(h.placed, id)
+			h.mu.Unlock()
 			continue
 		}
 		if pane.Floating {
 			states[n] = dockFloating
 		} else {
 			states[n] = dockDocked
+			h.mu.Lock()
+			delete(h.placed, id)
+			h.mu.Unlock()
 		}
 	}
 	return states, nil
@@ -352,18 +351,22 @@ func (h *zellijPanes) title(ctx context.Context, was, now string) error {
 	case now == "":
 		_, err = h.action(ctx, "undo-rename-tab", "--tab-id", tab)
 	default:
-		_, err = h.action(ctx, "rename-tab", "--tab-id", tab, now)
+		_, err = h.action(ctx, "rename-tab", "--tab-id", tab, "--", now)
 	}
 	return err
 }
 
 func (h *zellijPanes) tile(ctx context.Context, label string, argvs [][]string) ([]string, error) {
+	if len(argvs) == 0 {
+		return nil, nil
+	}
 	tab, err := h.tab(ctx, label, argvs[0])
 	if err != nil {
 		return nil, err
 	}
 	first := h.tabPanes(ctx, tab)
 	if len(first) != 1 {
+		_, _ = h.action(ctx, "close-tab", "--tab-id", strconv.Itoa(tab))
 		return nil, fmt.Errorf("zellij opened a tab with %d panes", len(first))
 	}
 	ids := first
