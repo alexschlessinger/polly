@@ -104,7 +104,7 @@ session name to switch sessions or the model to change it.
 | Key | Action |
 |---|---|
 | `Enter` | Send; input during a turn queues for later |
-| `Tab` | Cycle focus through open panels, or accept a completion |
+| `Tab` | Accept an active `@file`/argument completion, complete `/command` (unless the own-screen agent panel is open), or cycle focus through open panels |
 | `Alt-P` | Dock or float the focused panel |
 | `Ctrl-C` | Interrupt; again, or while idle, quit |
 | `Esc` | Dismiss the popup or focused panel; otherwise interrupt |

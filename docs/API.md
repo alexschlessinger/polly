@@ -1384,7 +1384,7 @@ view, err := client.InspectSession(ctx, "")
 | Sessions, tabs & layouts | `Whoami`, `Version`, `Status`, `BlockTypes`, `ListSessions`, `CreateSession`, `InspectSession`, `RenameSession`, `DestroySession`, `NewWindow`, `RenameWindow`, `CloseWindow`, `FocusWindow`, `MoveWindow`, `BlockLayout`, `ShellLayout`, `HorizontalSplit`, `VerticalSplit`, `NewSplit`, `NewBlock`, `MoveBlock`, `SwapBlocks`, `ResizePane`, `ZoomBlock`, `FocusBlock`, `FocusDirection`, `SetBlockLabel`, `DetachBlock`, `CloseBlock`, `FloatBlock`, `NewLayer`, `ResizeLayer`, `SetLayerState`, `RaiseLayer`, `LowerLayer`, `CloseLayer` |
 | Terminals | `Capture` (with automatic `blob_read` pagination), `ReadBlob`, `Write`, `SendKey`, `Process`, `Modes`, `Ports`, `ProgramStatus`, `PWD`, `Title`, `Size`, `Resize`, `Clear`, `Reset`, `ClipboardRead` |
 | Clients & actions | `ListClients`, `InspectClient`, `ListActions`, `PerformClientAction`, `InvokeAction` |
-| Prompts & navigation | `HasAction`, `Pick`, `Input`, `AskActionLua`, `SelectWindow`, `PromptError`, `PickRequest`, `PickItem`, `PickAnswer`, `InputRequest` |
+| Prompts & navigation | `HasAction`, `Pick`, `Input`, `AskActionLua`, `SelectWindow`, `PromptError`, `ErrNoAskAction`, `PickRequest`, `PickItem`, `PickAnswer`, `InputRequest` |
 | Hosts & forwards | `ListHosts`, `CheckHosts`, `ListForwards`, `CloseForwards`, `OpenForward`, `ShareForward`, `NewForward` (`*Forward` handle with `Address`, `Wait`, `Close`) |
 | Lua & events | `EvalLua`, `EvalLuaRaw`, `Subscribe` (`*EventStream`), `WaitEvent` |
 
@@ -1394,7 +1394,8 @@ explicitly. CLI and server errors decode into `*rex.APIError` and unwrap to
 typed sentinels (`ErrBinaryNotFound`, `ErrRemoteControlDisabled`,
 `ErrNotFound`, `ErrBadRequest`, `ErrConflict`, `ErrUnreachable`). Prompt
 failures decode into `*rex.PromptError` (`Dismissed()` distinguishes user
-cancellation or timeout from host errors).
+cancellation or timeout from host errors), and missing ask actions return
+`ErrNoAskAction`.
 
 For agent loops, `tools.WithNativeTools()` registers six opt-in native tools
 (`rex_inspect` as a `ReadOnlyTool`, `rex_layout`, `rex_terminal`, `rex_lua`,

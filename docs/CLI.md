@@ -319,11 +319,12 @@ parent conversation.
 
 ### Panels and quick pickers
 
-The TODO panel (`/todo`), agent panel, and context popover (`/context`) open as
-live panels on the right side of the screen so you can keep working while
-watching them update. Inside [Rex, tmux, or Zellij](#terminal-multiplexers),
-Polly opens them as native floating windows or split panes; everywhere else,
-Polly draws them inside its own TUI with the same layout and shortcuts.
+The TODO panel (`/todo`), agent panel (**Agents** in the status bar), and
+context popover (`/context`) open as live panels on the right side of the
+screen so you can keep working while watching them update. Inside
+[Rex, tmux, or Zellij](#terminal-multiplexers), Polly opens them as native
+floating windows or split panes; everywhere else, Polly draws them inside its
+own TUI with the same layout and shortcuts.
 
 - **Non-blocking layout.** Open panels stack cleanly in a single right-hand
   column—TODO at the top, agent panel in the middle, context at the bottom—above
@@ -333,9 +334,14 @@ Polly draws them inside its own TUI with the same layout and shortcuts.
   scroll them; typing any regular character or clicking outside returns focus to
   the composer without closing them. `Tab` cycles focus from the composer
   through open panels (TODO → agent panel → context → composer), selecting an
-  in-panel action first when one is available. `Esc` closes the focused panel
-  (after dismissing any active approval prompt or history search), and clicking
-  `×` or running the panel's command again also closes it.
+  in-panel action first when one is available (on Polly's own screen, when TODO
+  or context is the only open panel, `Tab` stays on that panel's action—type or
+  click outside to return; multiplexer-hosted panes cycle back to Polly's
+  terminal). `Esc` closes the focused panel (after dismissing any active
+  approval prompt or history search; on Polly's own screen, a focused framed
+  agent panel first returns focus to the composer and closes on the second
+  `Esc`). Clicking `×`, clicking **Agents** in the status bar, or running
+  `/todo` or `/context` again also closes a panel.
 - **Floating vs. docked.** On terminals at least 120 columns wide, panels float
   over the conversation by default so the transcript keeps its full width
   (below 120 columns, the agent panel uses the full width and docking is
@@ -369,12 +375,14 @@ Across all three hosts, Polly delegates:
 
 - **Panels:** TODO, agent panel, and context open as native floating panes or
   docked splits, controlled with the same `Tab` and `Alt-P` shortcuts and
-  remembered in `POLLYTOOL_PANES`. Moving or resizing a floating pane manually
-  pins it where you put it.
+  remembered in `POLLYTOOL_PANES` (context request history renders in text in
+  hosted panes rather than as an image). Moving or resizing a floating pane
+  manually pins it where you put it.
 - **Sessions as tabs/windows:** `/new` and `/sessions` launch another Polly
   instance in its own tab or window with your current flags and environment.
-  Picking a session already open in another Polly switches directly to its tab
-  or window instead of opening a read-only duplicate.
+  Picking a session already open in another Polly on the same multiplexer host
+  switches directly to its tab or window; if no matching peer is reachable (or
+  outside a multiplexer), it is refused as unavailable rather than opened twice.
 - **Tab/window titles:** Polly names its tab or window after the session title
   (or handle), leaves manually renamed tabs alone, and restores automatic naming
   on exit.
@@ -386,9 +394,8 @@ Across all three hosts, Polly delegates:
 #### Rex
 
 - **Floating windows & docking:** Panels open as floating Rex windows over
-  Polly's pane (context request history renders in text there rather than as an
-  image). Use `Alt-P` or Rex's Float Pane action to dock or re-float a panel;
-  Polly tracks the change and saves it to `POLLYTOOL_PANES`.
+  Polly's pane. Use `Alt-P` or Rex's Float Pane action to dock or re-float a
+  panel; Polly tracks the change and saves it to `POLLYTOOL_PANES`.
 - **Live status (OSC 7501):** Polly emits `OSC 7501` status records for turns,
   pending approvals or questions, and active subagents automatically when
   running inside Rex.
@@ -457,7 +464,7 @@ Across all three hosts, Polly delegates:
 | Key | Action |
 |---|---|
 | `Enter` | Send; accept a completion first if one is open |
-| `Tab` | Cycle focus across open panels (TODO, agent panel, context) and back; otherwise accept a completion |
+| `Tab` | Accept an active `@file`/argument completion; complete `/command` unless the own-screen framed agent panel is open; otherwise cycle focus across open panels (TODO, agent panel, context) |
 | `Alt-P` | Dock or float the focused panel |
 | `Ctrl-C` | Warn, then press again to cancel; again while canceling, quit |
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
