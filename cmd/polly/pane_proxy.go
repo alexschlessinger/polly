@@ -44,6 +44,9 @@ const (
 	paneFrameActivate byte = 'a'
 
 	paneFrameLimit = 64 << 10
+	// paneExecLimit bounds the JSON command payload the owner sends to a
+	// pane proxy becoming another command.
+	paneExecLimit = 1 << 20
 )
 
 // The owner's answer to hello starts with what the pane is for.
@@ -69,10 +72,16 @@ func paneExecEnv(owner, pane []string) []string {
 	terminal := func(entry string) bool {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case "TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TMUX", "TMUX_PANE":
+		case "TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+			"TMUX", "TMUX_PANE",
+			"GHOSTTY_RESOURCES_DIR", "ITERM_SESSION_ID", "TERM_SESSION_ID":
 			return true
 		}
-		return strings.HasPrefix(key, "REX_") || strings.HasPrefix(key, "ZELLIJ")
+		return strings.HasPrefix(key, "REX_") ||
+			strings.HasPrefix(key, "ZELLIJ") ||
+			strings.HasPrefix(key, "KITTY_") ||
+			strings.HasPrefix(key, "WEZTERM_") ||
+			strings.HasPrefix(key, "LC_TERMINAL")
 	}
 	env := make([]string, 0, len(owner))
 	for _, entry := range owner {
@@ -114,8 +123,8 @@ func decodePaneSize(b []byte) (paneSize, bool) {
 	}, true
 }
 
-// writePaneFrame sends one frame in a single Write, so frames from the input
-// and resize goroutines cannot interleave under the caller's lock.
+// writePaneFrame sends one frame in a single Write so the header and payload
+// go out together under the caller's lock.
 func writePaneFrame(w io.Writer, kind byte, payload []byte) error {
 	if len(payload) > paneFrameLimit {
 		return fmt.Errorf("pane frame of %d bytes exceeds %d", len(payload), paneFrameLimit)
@@ -138,8 +147,13 @@ func readPaneFrame(r io.Reader) (kind byte, payload []byte, err error) {
 		return 0, nil, fmt.Errorf("pane frame of %d bytes exceeds %d", n, paneFrameLimit)
 	}
 	payload = make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return 0, nil, err
+	if n > 0 {
+		if _, err := io.ReadFull(r, payload); err != nil {
+			if errors.Is(err, io.EOF) {
+				return 0, nil, io.ErrUnexpectedEOF
+			}
+			return 0, nil, err
+		}
 	}
 	return head[0], payload, nil
 }
@@ -148,10 +162,11 @@ func readPaneFrame(r io.Reader) (kind byte, payload []byte, err error) {
 // opens; it is not something a person runs, so it stays out of the help.
 func paneCommand() *cli.Command {
 	return &cli.Command{
-		Name:      "pane",
-		Usage:     "Serve this terminal to the polly that opened it",
-		ArgsUsage: "<socket> <token>",
-		Hidden:    true,
+		Name:            "pane",
+		Usage:           "Serve this terminal to the polly that opened it",
+		ArgsUsage:       "<socket> <token>",
+		Hidden:          true,
+		SkipFlagParsing: true,
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() != 2 {
 				return errors.New("polly pane is started by polly for a pane it opens")

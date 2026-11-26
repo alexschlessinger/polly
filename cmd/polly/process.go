@@ -86,6 +86,8 @@ func splitSignalError(err error) (int, error, bool) {
 	}
 	code := 1
 	switch shutdown.signal {
+	case syscall.SIGHUP:
+		code = 129
 	case os.Interrupt:
 		code = 130
 	case syscall.SIGTERM:

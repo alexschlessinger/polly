@@ -15,23 +15,39 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "pane" {
+		var err error
+		if len(os.Args) != 4 {
+			err = errors.New("polly pane is started by polly for a pane it opens")
+		} else {
+			err = runPaneProxy(os.Args[2], os.Args[3])
+		}
+		if err != nil {
+			exitMainError(err)
+		}
+		return
+	}
 	command := getCommand()
 	if err := command.Run(context.Background(), normalizeCommandArgs(os.Args)); err != nil {
-		// Signal cancellation travels through the ordinary command return path so
-		// session, store, and terminal defers all run before the process exits.
-		// Do not render that expected shutdown as a generic command error.
-		code, report := 1, err
-		var ee *exitError
-		if signalCode, remaining, ok := splitSignalError(err); ok {
-			code, report = signalCode, remaining
-		} else if errors.As(err, &ee) {
-			code, report = ee.code, ee.err
-		}
-		if report != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", report)
-		}
-		cleanupAndExit(code)
+		exitMainError(err)
 	}
+}
+
+func exitMainError(err error) {
+	// Signal cancellation travels through the ordinary command return path so
+	// session, store, and terminal defers all run before the process exits.
+	// Do not render that expected shutdown as a generic command error.
+	code, report := 1, err
+	var ee *exitError
+	if signalCode, remaining, ok := splitSignalError(err); ok {
+		code, report = signalCode, remaining
+	} else if errors.As(err, &ee) {
+		code, report = ee.code, ee.err
+	}
+	if report != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", report)
+	}
+	cleanupAndExit(code)
 }
 
 // normalizeCommandArgs treats the leading ask command exactly like -p,
