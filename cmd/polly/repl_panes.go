@@ -55,6 +55,10 @@ const (
 // proxy to connect before polly retires the block and falls back.
 var paneConnectTimeout = 3 * time.Second
 
+// paneExecTimeout bounds how long an unclaimed paneExec entry (which carries
+// the owner's environment) remains redeemable before expiring.
+var paneExecTimeout = paneOpenTimeout + paneConnectTimeout
+
 var errPaneConnectTimeout = errors.New("pane proxy did not connect in time")
 
 // panePlace says where a host puts a new terminal.
@@ -766,9 +770,10 @@ type paneHost struct {
 	// repeated IPC probes when the host's ask action is not installed, and
 	// behindTold is set once the user has read why the host leaves new tabs
 	// behind.
-	asked      *hostAsk
-	askRetryAt time.Time
-	behindTold bool
+	asked         *hostAsk
+	askRetryAt    time.Time
+	askLaterUntil time.Time
+	behindTold    bool
 	// arranging is set while the host is moving floating windows, reflow when
 	// polly's own pane changed size, and footerRows tracks the live composer +
 	// status height so external floating windows stay above multi-line prompts
@@ -800,7 +805,12 @@ type paneHost struct {
 	// token. The listener's goroutines read both.
 	mu      sync.Mutex
 	awaited map[string]bool
-	execs   map[string]paneExec
+	execs   map[string]pendingExec
+}
+
+type pendingExec struct {
+	exec  paneExec
+	timer *time.Timer
 }
 
 // windows returns the host's floating/docked window capability, if any.
@@ -1032,12 +1042,21 @@ func (r *managedREPL) closePanes() {
 	r.closePane()
 	r.closeWall()
 	r.closeFloats()
+	if r.panes.asked != nil {
+		r.panes.asked.cancel()
+		r.panes.asked = nil
+	}
 	if timer := r.panes.waking; timer != nil {
 		timer.Stop()
 	}
 	r.untitlePane()
 	r.panes.opener = nil
 	r.panes.mu.Lock()
+	for _, entry := range r.panes.execs {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+	}
 	r.panes.execs = nil
 	r.panes.mu.Unlock()
 	if r.panes.listener != nil {
@@ -1091,18 +1110,34 @@ func (h *paneHost) setExec(token string, x paneExec) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.execs == nil {
-		h.execs = map[string]paneExec{}
+		h.execs = map[string]pendingExec{}
 	}
-	h.execs[token] = x
+	if old, ok := h.execs[token]; ok && old.timer != nil {
+		old.timer.Stop()
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(paneExecTimeout, func() {
+		h.mu.Lock()
+		if cur, ok := h.execs[token]; ok && cur.timer == timer {
+			delete(h.execs, token)
+		}
+		h.mu.Unlock()
+	})
+	h.execs[token] = pendingExec{exec: x, timer: timer}
 }
 
 // takeExec spends the command waiting under token: one pane becomes it.
 func (h *paneHost) takeExec(token string) (paneExec, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	x, ok := h.execs[token]
-	delete(h.execs, token)
-	return x, ok
+	entry, ok := h.execs[token]
+	if ok {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		delete(h.execs, token)
+	}
+	return entry.exec, ok
 }
 
 // claim reports whether token names a pane awaiting its proxy, and spends
@@ -1202,14 +1237,15 @@ func (r *managedREPL) greetPane(conn net.Conn) {
 	if term != "" {
 		opts = append(opts, tcell.OptTerm(term))
 	}
-	screen, err := tcell.NewTerminfoScreenFromTty(newPaneTty(conn, size), opts...)
+	ptty := newPaneTty(conn, size)
+	screen, err := tcell.NewTerminfoScreenFromTty(ptty, opts...)
 	if err == nil {
 		if err = screen.Init(); err != nil {
 			screen = nil
 		}
 	}
 	if err != nil {
-		_ = conn.Close()
+		_ = ptty.Close()
 	}
 	if !r.postUI(r.work.ctx, func() { r.attachPane(token, screen, err) }) && screen != nil {
 		screen.Fini()
@@ -1297,7 +1333,7 @@ func (r *managedREPL) launch(x paneExec, place panePlace, label string, done fun
 	token := hex.EncodeToString(raw[:])
 	h.setExec(token, x)
 	opener, argv := h.opener, []string{exe, "pane", h.socket, token}
-	return r.background(func() {
+	if !r.background(func() {
 		ctx, cancel := context.WithTimeout(r.work.ctx, paneOpenTimeout)
 		defer cancel()
 		_, err := opener.open(ctx, argv, place, label)
@@ -1305,7 +1341,11 @@ func (r *managedREPL) launch(x paneExec, place panePlace, label string, done fun
 			h.takeExec(token)
 		}
 		r.postUI(r.work.ctx, func() { done(err) })
-	})
+	}) {
+		h.takeExec(token)
+		return false
+	}
+	return true
 }
 
 // syncViewPane keeps the pane in step with the visible workspace's view: open

@@ -117,7 +117,7 @@ func (r *managedREPL) inspectedSwarm(target viewTarget) *swarm.Runtime {
 }
 
 func (r *managedREPL) reviewAgentApproval(target viewTarget) {
-	owner, scope, pane := r.visibleTab(), r.viewScope(), r.scoped != nil
+	owner, scope, pane := r.visibleTab(), r.viewScope(), r.scoped != nil || r.viewDetached
 	r.workspaceActions = append(r.workspaceActions, func() {
 		if r.visibleTab() == owner {
 			scope(func() { r.openAgentApproval(target) })

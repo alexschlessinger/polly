@@ -24,6 +24,10 @@ import (
 // the terminal has the keys: long enough to read a command through.
 const hostAskDelay = 15 * time.Second
 
+// askLaterBackoff bounds how soon syncHostAsks retries a host that reported
+// errAskLater (busy or no app connected) so it does not spin every frame.
+var askLaterBackoff = 2 * time.Second
+
 // The rows of the host's questions that are not an option of the model's.
 const (
 	askLater    = "later"
@@ -72,15 +76,23 @@ func (r *managedREPL) syncHostAsks() {
 		}
 		return
 	}
-	if time.Now().Before(h.askRetryAt) {
-		// The host has no list to ask in for now (see askHost): a question
-		// left unmarked is brought to it once it may be asked again.
+	now := time.Now()
+	retryAt := h.askRetryAt
+	if h.askLaterUntil.After(retryAt) {
+		retryAt = h.askLaterUntil
+	}
+	if now.Before(retryAt) {
+		// The host has no list to ask in for now (see askHost): wake an idle
+		// REPL when the backoff expires if a question is still waiting.
+		if h.waking == nil && r.hasUnhostedAsk() {
+			h.waking = time.AfterFunc(retryAt.Sub(now), func() { r.postUI(r.work.ctx, func() { h.waking = nil }) })
+		}
 		return
 	}
 	r.model.mu.Lock()
 	away, typed, paneAt := r.model.focusKnown && !r.model.focused, r.keyAt, r.paneInputAt
 	r.model.mu.Unlock()
-	now, soonest := time.Now(), time.Duration(0)
+	soonest := time.Duration(0)
 	// Recent input in a detached pane (such as reading an agent pane in Rex)
 	// shows the user is still actively working with polly.
 	if !paneAt.IsZero() && now.Sub(paneAt) < hostAskDelay {
@@ -110,18 +122,55 @@ func (r *managedREPL) syncHostAsks() {
 		var q paneQuestion
 		var about any
 		var answered func(paneAnswer, bool)
+		var reset func()
 		if a := m.approval; a != nil && a.index < len(a.calls) && a.hosted <= a.index && due(a.waiting) {
 			a.hosted = a.index + 1
 			ask := approvalAsk{model: m, request: a, call: a.index}
-			q, about, answered = approvalQuestion(tab.name, a), ask, func(answer paneAnswer, _ bool) { r.answerApprovalAsk(ask, answer) }
+			reset = func() {
+				m.mu.Lock()
+				if a.hosted == ask.call+1 {
+					a.hosted = ask.call
+				}
+				m.mu.Unlock()
+			}
+			q, about = approvalQuestion(tab.name, a), ask
+			answered = func(answer paneAnswer, asked bool) {
+				if !asked {
+					reset()
+					if !h.listless && !time.Now().Before(h.askRetryAt) {
+						h.askLaterUntil = time.Now().Add(askLaterBackoff)
+					}
+					return
+				}
+				h.askLaterUntil = time.Time{}
+				r.answerApprovalAsk(ask, answer)
+			}
 		} else if d := modelQuestion(m); d != nil && !d.hosted && due(d.shown) {
 			d.hosted = true
 			ask := questionAsk{model: m, dialog: d}
-			q, about, answered = askQuestion(tab.name, d.req), ask, func(answer paneAnswer, _ bool) { r.answerQuestionAsk(ask, answer) }
+			reset = func() {
+				m.mu.Lock()
+				d.hosted = false
+				m.mu.Unlock()
+			}
+			q, about = askQuestion(tab.name, d.req), ask
+			answered = func(answer paneAnswer, asked bool) {
+				if !asked {
+					reset()
+					if !h.listless && !time.Now().Before(h.askRetryAt) {
+						h.askLaterUntil = time.Now().Add(askLaterBackoff)
+					}
+					return
+				}
+				h.askLaterUntil = time.Time{}
+				r.answerQuestionAsk(ask, answer)
+			}
 		}
 		m.mu.Unlock()
 		if about != nil {
-			r.askHost(q, about, answered)
+			if !r.askHost(q, about, answered) {
+				reset()
+			}
 			return
 		}
 	}
@@ -129,6 +178,22 @@ func (r *managedREPL) syncHostAsks() {
 		// Nothing else may paint before the question is due.
 		h.waking = time.AfterFunc(soonest, func() { r.postUI(r.work.ctx, func() { h.waking = nil }) })
 	}
+}
+
+// hasUnhostedAsk reports whether any tab holds an approval or model question
+// that has not been presented to the host yet.
+func (r *managedREPL) hasUnhostedAsk() bool {
+	for _, tab := range r.tabs {
+		m := tab.model
+		m.mu.Lock()
+		pending := (m.approval != nil && m.approval.index < len(m.approval.calls) && m.approval.hosted <= m.approval.index) ||
+			(modelQuestion(m) != nil && !modelQuestion(m).hosted)
+		m.mu.Unlock()
+		if pending {
+			return true
+		}
+	}
+	return false
 }
 
 // modelQuestion is the question m's turn waits on, shown or parked behind

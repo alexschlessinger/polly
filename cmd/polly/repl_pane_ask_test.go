@@ -404,3 +404,42 @@ func TestWorkingInAPaneIsBeingHere(t *testing.T) {
 		t.Fatalf("the host's answer was %v", got)
 	}
 }
+
+func TestSyncHostAsksRetriesAfterRetryableFailureAndArmsBackoffWakeup(t *testing.T) {
+	wasBackoff := askUnconfiguredBackoff
+	askUnconfiguredBackoff = 30 * time.Millisecond
+	t.Cleanup(func() { askUnconfiguredBackoff = wasBackoff })
+
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	fake := hostPanes(t, r)
+	a := awaitingApproval(r, "go test ./...")
+	focus(r, false)
+
+	// First attempt returns errAskUnconfigured: approval must NOT be dropped,
+	// and syncHostAsks during backoff must arm h.waking so an idle REPL wakes up.
+	fake.setAnswer(func(context.Context, paneQuestion) (paneAnswer, error) { return paneAnswer{}, errAskUnconfigured })
+	r.syncHostAsks()
+	pumpUI(t, r, func() bool { return r.panes.asked == nil })
+	r.model.mu.Lock()
+	hosted := a.hosted
+	r.model.mu.Unlock()
+	if hosted != 0 {
+		t.Fatalf("approval remained marked hosted (%d) after errAskUnconfigured", hosted)
+	}
+
+	r.syncHostAsks()
+	if r.panes.waking == nil {
+		t.Fatal("syncHostAsks did not arm wakeup timer while waiting on askRetryAt")
+	}
+
+	// Wait for the wakeup timer to clear h.waking on the event loop, then allow
+	// the retry to succeed.
+	fake.setAnswer(nil)
+	answering(fake, approveYes)
+	pumpUI(t, r, func() bool { return r.panes.waking == nil })
+	r.syncHostAsks()
+	pumpUI(t, r, func() bool { return fake.listed() == 2 && r.panes.asked == nil })
+	if got := <-a.reply; len(got) != 1 || !got[0] {
+		t.Fatalf("approval after backoff retry = %v, want [true]", got)
+	}
+}

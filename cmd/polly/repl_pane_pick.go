@@ -28,7 +28,7 @@ func (r *managedREPL) pickSessionInHost() bool {
 	if r.hostAsking(askSessions) {
 		return true // The list is up already.
 	}
-	if h := &r.panes; h.asked != nil {
+	if h := &r.panes; h.asked != nil || (!h.askRetryAt.IsZero() && time.Now().Before(h.askRetryAt)) {
 		return false
 	} else if _, ok := h.prompts(); !ok {
 		return false

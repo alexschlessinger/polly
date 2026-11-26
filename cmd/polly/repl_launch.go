@@ -72,9 +72,13 @@ func (r *managedREPL) launchSession(target sessions.ViewTarget, here func()) boo
 // options, with the ones that chose this session or ran once at startup
 // dropped, and name selected when given.
 func relaunchArgs(args []string, name string) []string {
-	var out []string
+	var out, tail []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			tail = args[i:]
+			break
+		}
 		if flag, ok := strings.CutPrefix(arg, "-"); ok && flag != "" {
 			flag, _, attached := strings.Cut(strings.TrimPrefix(flag, "-"), "=")
 			switch flag {
@@ -92,7 +96,7 @@ func relaunchArgs(args []string, name string) []string {
 	if name != "" {
 		out = append(out, "--context", name)
 	}
-	return out
+	return append(out, tail...)
 }
 
 // openEditor opens path in the user's editor: $VISUAL, else $EDITOR, run in a

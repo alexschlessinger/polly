@@ -24,6 +24,11 @@ func TestRelaunchArgsKeepOptionsAndReplaceTheSession(t *testing.T) {
 	if got, want := relaunchArgs(args, "next"), append(slices.Clone(kept), "--context", "next"); !slices.Equal(got, want) {
 		t.Fatalf("a named session relaunches with %q, want %q", got, want)
 	}
+	// Arguments after -- are left untouched, and --context goes before --.
+	withDash := []string{"--model", "x/y", "--", "-c", "not-a-flag", "--last"}
+	if got, want := relaunchArgs(withDash, "next"), []string{"--model", "x/y", "--context", "next", "--", "-c", "not-a-flag", "--last"}; !slices.Equal(got, want) {
+		t.Fatalf("args after -- = %q, want %q", got, want)
+	}
 }
 
 func TestPaneCommandRunsInThePanesOwnTerminal(t *testing.T) {
@@ -200,4 +205,24 @@ func TestEditorRunsThroughTheHost(t *testing.T) {
 	if x := becomePane(t, fake); !slices.Equal(x.Argv, want) {
 		t.Fatalf("the editor runs as %q, want %q", x.Argv, want)
 	}
+}
+
+func TestUnclaimedPaneExecExpiresAndCleansUp(t *testing.T) {
+	was := paneExecTimeout
+	paneExecTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { paneExecTimeout = was })
+
+	var h paneHost
+	h.setExec("tok", paneExec{Argv: []string{"/bin/true"}, Env: []string{"SECRET=1"}})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		_, still := h.execs["tok"]
+		h.mu.Unlock()
+		if !still {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("unclaimed paneExec entry did not expire")
 }
