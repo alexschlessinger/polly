@@ -307,6 +307,84 @@ func (f *fakePanes) opens() int {
 	return len(f.opened)
 }
 
+func (f *fakePanes) setErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
+func (f *fakePanes) setAnswer(fn func(context.Context, paneQuestion) (paneAnswer, error)) {
+	f.mu.Lock()
+	f.answer = fn
+	f.mu.Unlock()
+}
+
+func (f *fakePanes) setChoose(fn func([]paneChoice) (string, error)) {
+	f.mu.Lock()
+	f.choose = fn
+	f.mu.Unlock()
+}
+
+func (f *fakePanes) setNamed(name string) {
+	f.mu.Lock()
+	f.named = name
+	f.mu.Unlock()
+}
+
+func (f *fakePanes) getNamed() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.named
+}
+
+func (f *fakePanes) setHeld(held map[string]bool) {
+	f.mu.Lock()
+	f.held = held
+	f.mu.Unlock()
+}
+
+func (f *fakePanes) getOpened() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.opened)
+}
+
+func (f *fakePanes) getPlaces() []panePlace {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.places)
+}
+
+func (f *fakePanes) getFloats() [][4]float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.floats)
+}
+
+func (f *fakePanes) getLists() [][]paneChoice {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.lists)
+}
+
+func (f *fakePanes) getTitles() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.titles)
+}
+
+func (f *fakePanes) getTiled() [][][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.tiled)
+}
+
+func (f *fakePanes) getGrown() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.grown)
+}
+
 // hostPanes gives r a pane host that records what it is asked for, with the
 // socket in a scratch root short enough for a Unix socket path, which the
 // test's own temp directory is not.
@@ -402,7 +480,7 @@ func paneKey(r *managedREPL, p *satellitePane, id string) {
 func TestViewOpensInAPaneAndTakesItsInput(t *testing.T) {
 	r, fake, ids := paneTestREPL(t)
 	p, pane := openTestPane(t, r, fake)
-	if argv := fake.opened[0]; len(argv) != 4 || argv[1] != "pane" || argv[2] != r.panes.socket || argv[3] != p.token {
+	if argv := fake.getOpened()[0]; len(argv) != 4 || argv[1] != "pane" || argv[2] != r.panes.socket || argv[3] != p.token {
 		t.Fatalf("the host was asked to run %q", argv)
 	}
 	i := &r.workspace().inspector
@@ -475,7 +553,7 @@ func TestPaneFollowsTheView(t *testing.T) {
 
 func TestViewFallsBackToTheFrameWhenNoPaneOpens(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
-	fake.err = errors.New("no rex here")
+	fake.setErr(errors.New("no rex here"))
 	r.openAttention()
 	r.render()
 	// Only the host's floating windows are given up: it may still open tabs.

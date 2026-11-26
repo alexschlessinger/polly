@@ -38,7 +38,7 @@ func TestHelpListsTheCommandsInTheHost(t *testing.T) {
 	if r.model.modal != nil || r.model.ed.text() != "/rename " {
 		t.Fatalf("choosing /rename left the composer at %q, modal %v", r.model.ed.text(), r.model.modal != nil)
 	}
-	list := fake.lists[0]
+	list := fake.getLists()[0]
 	spawn, ok := choiceTitled(list, "/spawn [--read-only] [--review] <brief>")
 	if !ok || spawn.id != "/spawn" || spawn.icon != paneIconCommand || spawn.subtitle == "" {
 		t.Fatalf("the host listed /spawn as %+v", spawn)
@@ -75,7 +75,7 @@ func TestHelpListsTheCommandsInTheHost(t *testing.T) {
 	r.model.mu.Lock()
 	r.closeModal()
 	r.model.mu.Unlock()
-	fake.choose = nil
+	fake.setChoose(nil)
 	hostCommand(t, r, "/help")
 	if m := r.model.modal; m == nil || m.title != "Polly commands" || !strings.Contains(listLabels(m), "/new") || r.panes.listless {
 		t.Fatal("a busy host did not leave the list to polly's own screen")
@@ -96,9 +96,9 @@ func TestHelpListsTheCommandsInTheHost(t *testing.T) {
 func TestTitleIsAskedForInTheHost(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	fake := hostPanes(t, r)
-	fake.answer = func(context.Context, paneQuestion) (paneAnswer, error) {
+	fake.setAnswer(func(context.Context, paneQuestion) (paneAnswer, error) {
 		return paneAnswer{given: true, text: "Ranking fixes"}, nil
-	}
+	})
 	hostCommand(t, r, "/title")
 	if q := fake.asked(); !q.text || q.title != "Session title" || len(q.choices) != 0 {
 		t.Fatalf("the host was asked %+v", q)
@@ -110,14 +110,14 @@ func TestTitleIsAskedForInTheHost(t *testing.T) {
 
 	// The next question starts from the title there is, and one closed
 	// changes nothing.
-	fake.answer = func(context.Context, paneQuestion) (paneAnswer, error) { return paneAnswer{}, nil }
+	fake.setAnswer(func(context.Context, paneQuestion) (paneAnswer, error) { return paneAnswer{}, nil })
 	hostCommand(t, r, "/title")
 	if fake.asked().value != "Ranking fixes" || r.model.status.title != "Ranking fixes" || r.model.modal != nil {
 		t.Fatalf("a closed question left title %q", r.model.status.title)
 	}
 
 	// A host that cannot ask leaves it to polly's own field.
-	fake.answer = nil
+	fake.setAnswer(nil)
 	hostCommand(t, r, "/title")
 	m := r.model.modal
 	if m == nil || !m.inputMode || m.input.text() != "Ranking fixes" {
@@ -329,7 +329,7 @@ func TestAQuestionFromTheModelIsAskedInTheHost(t *testing.T) {
 func TestAHostNotSetUpToAskIsLeftAloneForAWhile(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	fake := hostPanes(t, r)
-	fake.answer = func(context.Context, paneQuestion) (paneAnswer, error) { return paneAnswer{}, errAskUnconfigured }
+	fake.setAnswer(func(context.Context, paneQuestion) (paneAnswer, error) { return paneAnswer{}, errAskUnconfigured })
 	ask := func() (started, asked bool) {
 		t.Helper()
 		done := false

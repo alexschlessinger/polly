@@ -67,7 +67,7 @@ func TestTheChecklistFloatsInTheHost(t *testing.T) {
 		t.Fatal("the checklist opened over polly's own screen")
 	}
 	p, screen := floatScreen(t, r, floatChecklist, 44, 10)
-	if spot := fake.floats[0]; !inTab(spot) || spot[1] > 0.1 {
+	if spot := fake.getFloats()[0]; !inTab(spot) || spot[1] > 0.1 {
 		t.Fatalf("the window was put at %v, want the tab's top right", spot)
 	}
 	text := screenText(t, screen)
@@ -120,7 +120,7 @@ func TestTheChecklistFloatsInTheHost(t *testing.T) {
 	}
 
 	// A host that cannot float one leaves the checklist to polly's screen.
-	fake.err = errors.New("no floating layers")
+	fake.setErr(errors.New("no floating layers"))
 	open()
 	pumpUI(t, r, func() bool { return r.panes.floatless })
 	if p := r.panes.floatOf(floatChecklist); p == nil || !p.own || len(r.panes.floats) != 1 || !strings.Contains(notices(r), "showing it here · no floating layers") {
@@ -150,7 +150,7 @@ func TestTheContextPopoverFloatsInTheHost(t *testing.T) {
 		t.Fatal("the context popover opened over polly's own screen")
 	}
 	p, screen := floatScreen(t, r, floatContext, 50, 30)
-	if spot := fake.floats[0]; !inTab(spot) || spot[1]+spot[3] > 0.9 {
+	if spot := fake.getFloats()[0]; !inTab(spot) || spot[1]+spot[3] > 0.9 {
 		t.Fatalf("the window was put at %v, want the tab's right, above the status row", spot)
 	}
 	text := screenText(t, screen)
@@ -204,10 +204,13 @@ func TestTheContextPopoverFloatsInTheHost(t *testing.T) {
 	if r.panes.floatOf(floatContext) == nil || r.panes.floatOf(floatChecklist) == nil || len(r.panes.floats) != 2 {
 		t.Fatalf("%d windows are open, want the context and the checklist", len(r.panes.floats))
 	}
+	pumpUI(t, r, func() bool {
+		return r.panes.floatOf(floatContext).blockID != "" && r.panes.floatOf(floatChecklist).blockID != ""
+	})
 
 	// A host that cannot float leaves the popover built for it to polly's screen.
 	r.closeFloats()
-	fake.err = errors.New("no floating layers")
+	fake.setErr(errors.New("no floating layers"))
 	open()
 	built := r.panes.floatOf(floatContext).panel.modal
 	pumpUI(t, r, func() bool { return r.panes.floatless })
@@ -219,11 +222,11 @@ func TestTheContextPopoverFloatsInTheHost(t *testing.T) {
 func TestTheViewFloatsOverTheTab(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
 	openTestPane(t, r, fake)
-	if fake.floated() != 1 || len(fake.places) != 0 {
-		t.Fatalf("the view opened in %d floating windows and at places %v", fake.floated(), fake.places)
+	if fake.floated() != 1 || len(fake.getPlaces()) != 0 {
+		t.Fatalf("the view opened in %d floating windows and at places %v", fake.floated(), fake.getPlaces())
 	}
 	// On a 140x40 terminal: the right of the tab, clear of the composer.
-	spot := fake.floats[0]
+	spot := fake.getFloats()[0]
 	if !inTab(spot) || spot[2] != 0.6 || spot[1]+spot[3] > 1-5.0/40+1e-9 || spot[3] < 0.8 {
 		t.Fatalf("the view's window was put at %v", spot)
 	}
@@ -322,8 +325,8 @@ func TestWindowsMakeRoomForEachOther(t *testing.T) {
 	settle()
 	view := r.panes.pane
 	alone := view.spot
-	if len(fake.moves) != 0 || alone[3] < 0.8 {
-		t.Fatalf("the view alone is at %v after %d moves", alone, len(fake.moves))
+	if moves := fake.moved(); len(moves) != 0 || alone[3] < 0.8 {
+		t.Fatalf("the view alone is at %v after %d moves", alone, len(moves))
 	}
 
 	// The checklist opens above it, and the view is moved down to make room.
@@ -333,10 +336,10 @@ func TestWindowsMakeRoomForEachOther(t *testing.T) {
 	settle()
 	todo := r.panes.floatOf(floatChecklist)
 	clear()
-	if len(fake.moves) != 1 || fake.moves[0].id != view.blockID || fake.moves[0].to != view.spot || view.spot[1] <= todo.spot[1] {
-		t.Fatalf("the view was not moved under the checklist: %+v", fake.moves)
+	if moves := fake.moved(); len(moves) != 1 || moves[0].id != view.blockID || moves[0].to != view.spot || view.spot[1] <= todo.spot[1] {
+		t.Fatalf("the view was not moved under the checklist: %+v", moves)
 	}
-	if got := fake.floats[1]; got != todo.spot || got[1] > floatInset+1e-9 {
+	if got := fake.getFloats()[1]; got != todo.spot || got[1] > floatInset+1e-9 {
 		t.Fatalf("the checklist opened at %v, want the tab's top", got)
 	}
 
@@ -347,8 +350,8 @@ func TestWindowsMakeRoomForEachOther(t *testing.T) {
 	settle()
 	popover := r.panes.floatOf(floatContext)
 	clear()
-	if last := fake.moves[len(fake.moves)-1]; len(fake.moves) < 2 || last.id != view.blockID || popover.spot[1] <= view.spot[1] {
-		t.Fatalf("the view was not moved over the popover: %+v", fake.moves)
+	if moves := fake.moved(); len(moves) < 2 || moves[len(moves)-1].id != view.blockID || popover.spot[1] <= view.spot[1] {
+		t.Fatalf("the view was not moved over the popover: %+v", moves)
 	}
 
 	// A window that closes gives its room back.
@@ -358,14 +361,12 @@ func TestWindowsMakeRoomForEachOther(t *testing.T) {
 	settle()
 	clear()
 	if view.spot[1] > floatInset+1e-9 {
-		t.Fatalf("the view did not take the checklist's room: %v after %+v", view.spot, fake.moves)
+		t.Fatalf("the view did not take the checklist's room: %v after %+v", view.spot, fake.moved())
 	}
 
 	// One the user has taken hold of is left where they put it, for good,
 	// and the others no longer plan around it.
-	fake.mu.Lock()
-	fake.held = map[string]bool{view.blockID: true}
-	fake.mu.Unlock()
+	fake.setHeld(map[string]bool{view.blockID: true})
 	r.model.mu.Lock()
 	r.openTodoPanel()
 	r.model.mu.Unlock()
@@ -373,12 +374,12 @@ func TestWindowsMakeRoomForEachOther(t *testing.T) {
 	if !view.loose {
 		t.Fatal("a window the user moved is still polly's to place")
 	}
-	asked := len(fake.moves)
+	asked := len(fake.moved())
 	r.model.mu.Lock()
 	r.openContextPopover()
 	r.model.mu.Unlock()
 	settle()
-	for _, move := range fake.moves[asked:] {
+	for _, move := range fake.moved()[asked:] {
 		if move.id == view.blockID {
 			t.Fatalf("a window the user moved was moved again: %+v", move)
 		}

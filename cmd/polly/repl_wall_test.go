@@ -66,11 +66,12 @@ func TestWallShowsEachRunningAgentInItsOwnPane(t *testing.T) {
 	r, fake, ids := paneTestREPL(t)
 	screens := openTestWall(t, r, fake)
 	wall := r.panes.wall
-	if fake.walls() != 1 || len(fake.tiled[0]) != 2 || len(wall.panes) != 2 {
-		t.Fatalf("the host tiled %d walls of %v panes", fake.walls(), fake.tiled)
+	tiled := fake.getTiled()
+	if fake.walls() != 1 || len(tiled[0]) != 2 || len(wall.panes) != 2 {
+		t.Fatalf("the host tiled %d walls of %v panes", fake.walls(), tiled)
 	}
 	for n, p := range wall.panes {
-		argv := fake.tiled[0][n]
+		argv := tiled[0][n]
 		if len(argv) != 4 || argv[1] != "pane" || argv[2] != r.panes.socket || argv[3] != p.token {
 			t.Fatalf("pane %d runs %q", n, argv)
 		}
@@ -134,8 +135,8 @@ func TestWallFollowsTheAgentsThatRun(t *testing.T) {
 	}
 	third := wall.panes[2]
 	pumpUI(t, r, func() bool { return third.blockID != "" })
-	if len(fake.grown) != 1 || !strings.HasPrefix(fake.grown[0], "wall-1-") || third.member != "member-tester" {
-		t.Fatalf("grown beside %q for %q", fake.grown, third.member)
+	if grown := fake.getGrown(); len(grown) != 1 || !strings.HasPrefix(grown[0], "wall-1-") || third.member != "member-tester" {
+		t.Fatalf("grown beside %q for %q", grown, third.member)
 	}
 	attachTestScreen(t, r, third)
 	r.render()
@@ -150,8 +151,8 @@ func TestWallFollowsTheAgentsThatRun(t *testing.T) {
 	}
 	startTestAgent(r, "member-writer", "Writer")
 	r.render()
-	if got := wallMembers(r); len(got) != 3 || got[1] != "member-writer" || len(fake.grown) != 1 {
-		t.Fatalf("the wall holds %q after growing %d times, want the finished pane reused", got, len(fake.grown))
+	if got, grown := wallMembers(r), fake.getGrown(); len(got) != 3 || got[1] != "member-writer" || len(grown) != 1 {
+		t.Fatalf("the wall holds %q after growing %d times, want the finished pane reused", got, len(grown))
 	}
 	if i := &wall.panes[1].view.inspector; i.target.session.ID != "member-writer" || len(i.history) != 1 {
 		t.Fatalf("the reused pane shows %+v with %d views behind it", i.target, len(i.history))
@@ -190,7 +191,7 @@ func TestWallWithoutAHostShowsTheAgentsHere(t *testing.T) {
 
 func TestWallFallsBackWhenTheHostFails(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
-	fake.err = errors.New("no rex here")
+	fake.setErr(errors.New("no rex here"))
 	r.runCommand("/wall")
 	r.render()
 	pumpUI(t, r, func() bool { return r.panes.wallless })

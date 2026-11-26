@@ -12,8 +12,8 @@ func TestTabIsNamedAfterTheSession(t *testing.T) {
 	label := r.model.status.displayLabel()
 	r.render()
 	pumpUI(t, r, func() bool { return r.panes.titled != "" })
-	if !slices.Equal(fake.titles, []string{label}) || label == "" {
-		t.Fatalf("the tab was named %q, want %q", fake.titles, label)
+	if titles := fake.getTitles(); !slices.Equal(titles, []string{label}) || label == "" {
+		t.Fatalf("the tab was named %q, want %q", titles, label)
 	}
 	// Nothing changed, so the host is not asked again.
 	r.render()
@@ -23,34 +23,34 @@ func TestTabIsNamedAfterTheSession(t *testing.T) {
 	// A new title replaces the one polly gave.
 	r.titlePane("Second title", "calm-otter")
 	pumpUI(t, r, func() bool { return r.panes.titled == "Second title" })
-	if fake.named != "Second title" {
-		t.Fatalf("the tab is named %q after a title change", fake.named)
+	if named := fake.getNamed(); named != "Second title" {
+		t.Fatalf("the tab is named %q after a title change", named)
 	}
 	// The tab gets its own name back when polly leaves.
 	r.closePanes()
-	if fake.named != "" || r.panes.titled != "" {
-		t.Fatalf("the tab kept the name %q after the run", fake.named)
+	if named := fake.getNamed(); named != "" || r.panes.titled != "" {
+		t.Fatalf("the tab kept the name %q after the run", named)
 	}
 }
 
 func TestTabNamedByItsOwnerKeepsThatName(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
-	fake.named = "server"
+	fake.setNamed("server")
 	r.titlePane("Fix the login redirect", "calm-otter")
 	pumpUI(t, r, func() bool { return r.panes.titled != "" })
 	r.closePanes()
-	if fake.named != "server" || len(fake.titles) != 0 {
-		t.Fatalf("a tab someone named was renamed: %q %q", fake.named, fake.titles)
+	if named, titles := fake.getNamed(), fake.getTitles(); named != "server" || len(titles) != 0 {
+		t.Fatalf("a tab someone named was renamed: %q %q", named, titles)
 	}
 }
 
 func TestTabLaunchedForASessionTakesItsTitle(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
 	// A tab polly was launched into carries the session's name until then.
-	fake.named = "calm-otter"
+	fake.setNamed("calm-otter")
 	r.titlePane("Fix the login redirect", "calm-otter")
 	pumpUI(t, r, func() bool { return r.panes.titled != "" })
-	if fake.named != "Fix the login redirect" {
-		t.Fatalf("the launched tab is named %q", fake.named)
+	if named := fake.getNamed(); named != "Fix the login redirect" {
+		t.Fatalf("the launched tab is named %q", named)
 	}
 }

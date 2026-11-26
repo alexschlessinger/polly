@@ -41,7 +41,8 @@ func TestPaneCommandRunsInThePanesOwnTerminal(t *testing.T) {
 // become.
 func becomePane(t *testing.T, fake *fakePanes) paneExec {
 	t.Helper()
-	argv := fake.opened[len(fake.opened)-1]
+	opened := fake.getOpened()
+	argv := opened[len(opened)-1]
 	conn, err := net.Dial("unix", argv[2])
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +88,8 @@ func TestSessionsOpenAsTabsOfTheHost(t *testing.T) {
 	if len(r.tabs) != 1 || r.opening != "" {
 		t.Fatalf("sessions opened inside this polly: tabs=%d opening=%q", len(r.tabs), r.opening)
 	}
-	if !slices.Equal(fake.places, []panePlace{paneTab, paneTab}) {
-		t.Fatalf("sessions were placed at %v, want tabs", fake.places)
+	if places := fake.getPlaces(); !slices.Equal(places, []panePlace{paneTab, paneTab}) {
+		t.Fatalf("sessions were placed at %v, want tabs", places)
 	}
 	// The second pane is told to become polly on the named session, with this
 	// process's environment less the variable that chose its own session.
@@ -103,7 +104,7 @@ func TestSessionsOpenAsTabsOfTheHost(t *testing.T) {
 		t.Fatalf("the tab starts in %q, want %q", x.Dir, dir)
 	}
 	// A token is spent by the pane that used it.
-	if _, ok := r.panes.takeExec(fake.opened[1][3]); ok {
+	if _, ok := r.panes.takeExec(fake.getOpened()[1][3]); ok {
 		t.Fatal("a pane's command outlived the pane that became it")
 	}
 
@@ -120,7 +121,7 @@ func TestSessionOpensHereWhenTheHostFails(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	fake := hostPanes(t, r)
-	fake.err = errors.New("no rex here")
+	fake.setErr(errors.New("no rex here"))
 	r.model.mu.Lock()
 	r.requestNewTabLocked()
 	r.model.mu.Unlock()
@@ -191,8 +192,8 @@ func TestEditorRunsThroughTheHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	pumpUI(t, r, func() bool { return fake.opens() == 1 })
-	if fake.places[0] != paneIfTerminal {
-		t.Fatalf("the editor was placed at %v: only a terminal editor wants a pane", fake.places[0])
+	if places := fake.getPlaces(); places[0] != paneIfTerminal {
+		t.Fatalf("the editor was placed at %v: only a terminal editor wants a pane", places[0])
 	}
 	// The shell splits the editor's arguments; the path stays one word.
 	want := []string{"/bin/sh", "-c", `myedit --wait "$@"`, "sh", "/plans/draft one.md"}

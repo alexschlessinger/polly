@@ -484,9 +484,9 @@ func (r *managedREPL) renderFloats() {
 		if notice := strings.TrimSpace(m.titleNotice); notice != "" {
 			title += " " + style.Styled(notice, m.titleNoticeRole, "")
 		}
-		r.model.mu.Unlock()
 		m.bounds = image.Rect(0, 0, width, height)
 		m.listBounds = image.Rect(0, 1, width, min(height, 1+m.visible))
+		r.model.mu.Unlock()
 		page := panel.page
 		page.refreshRoles()
 		page.Text = title + "\n" + text

@@ -39,10 +39,10 @@ func TestSessionsAreListedByTheHost(t *testing.T) {
 	r := newTabTestREPL(t, store, "root", "beside")
 	fake := hostPanes(t, r)
 	saveTestSession(t, r, "saved")
-	fake.choose = func(choices []paneChoice) (string, error) {
+	fake.setChoose(func(choices []paneChoice) (string, error) {
 		saved, _ := choiceTitled(choices, "saved")
 		return saved.id, nil
-	}
+	})
 
 	r.model.mu.Lock()
 	r.openSessionsPicker()
@@ -54,7 +54,7 @@ func TestSessionsAreListedByTheHost(t *testing.T) {
 	pumpUI(t, r, func() bool { return fake.opens() == 1 })
 
 	// The list is every root session but the one on screen.
-	list := fake.lists[0]
+	list := fake.getLists()[0]
 	if _, listed := choiceTitled(list, r.visibleTab().name); listed || len(list) != 2 {
 		t.Fatalf("the host listed %+v, want the two sessions not on screen", list)
 	}
@@ -71,15 +71,15 @@ func TestSessionsAreListedByTheHost(t *testing.T) {
 	if x := becomePane(t, fake); !slices.Equal(x.Argv[len(x.Argv)-2:], []string{"--context", "saved"}) {
 		t.Fatalf("the chosen session's tab runs %q", x.Argv)
 	}
-	if !slices.Equal(fake.places, []panePlace{paneTab}) || len(r.tabs) != 2 || r.panes.asked != nil {
-		t.Fatalf("the choice was placed at %v with %d tabs here", fake.places, len(r.tabs))
+	if places := fake.getPlaces(); !slices.Equal(places, []panePlace{paneTab}) || len(r.tabs) != 2 || r.panes.asked != nil {
+		t.Fatalf("the choice was placed at %v with %d tabs here", places, len(r.tabs))
 	}
 
 	// A session open here is shown, not launched.
-	fake.choose = func(choices []paneChoice) (string, error) {
+	fake.setChoose(func(choices []paneChoice) (string, error) {
 		here, _ := choiceTitled(choices, other)
 		return here.id, nil
-	}
+	})
 	r.model.mu.Lock()
 	r.openSessionsPicker()
 	r.model.mu.Unlock()
@@ -95,7 +95,7 @@ func TestClosingTheHostsListChoosesNothing(t *testing.T) {
 	fake := hostPanes(t, r)
 	saveTestSession(t, r, "saved")
 	answer := make(chan string)
-	fake.choose = func([]paneChoice) (string, error) { return <-answer, nil }
+	fake.setChoose(func([]paneChoice) (string, error) { return <-answer, nil })
 
 	r.model.mu.Lock()
 	r.openSessionsPicker()
@@ -138,7 +138,7 @@ func TestPollysOwnPickerTakesOverFromAHostThatCannotList(t *testing.T) {
 	if r.model.modal.title != "Sessions" || r.panes.listless || strings.Contains(notices(r), "unavailable") {
 		t.Fatalf("a busy host left modal %q, listless %v:\n%s", r.model.modal.title, r.panes.listless, notices(r))
 	}
-	fake.choose = func([]paneChoice) (string, error) { return "", errors.New("no app can show lists") }
+	fake.setChoose(func([]paneChoice) (string, error) { return "", errors.New("no app can show lists") })
 	open()
 	pumpUI(t, r, func() bool { return r.model.modal != nil })
 	if fake.listed() != 2 || !r.panes.listless || !strings.Contains(notices(r), "Rex could not ask, asking here from now on · no app can show lists") {
@@ -154,13 +154,13 @@ func TestPollysOwnPickerTakesOverFromAHostThatCannotList(t *testing.T) {
 
 func TestChoosingAHeldSessionInTheHostsListBringsItsPollyForward(t *testing.T) {
 	asker, fake := peerPollys(t)
-	fake.choose = func(choices []paneChoice) (string, error) {
+	fake.setChoose(func(choices []paneChoice) (string, error) {
 		held, ok := choiceTitled(choices, "held")
 		if !ok || held.icon != paneIconLive || !strings.Contains(held.subtitle, "open in another polly") {
 			t.Errorf("a session another polly holds is listed as %+v", held)
 		}
 		return held.id, nil
-	}
+	})
 	asker.model.mu.Lock()
 	asker.openSessionsPicker()
 	asker.model.mu.Unlock()
@@ -184,7 +184,7 @@ func TestATabTheHostLeavesBehindIsPointedOut(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	fake := hostPanes(t, r)
-	fake.err = &paneBehindError{cause: errors.New("turn on Remote Control")}
+	fake.setErr(&paneBehindError{cause: errors.New("turn on Remote Control")})
 
 	r.model.mu.Lock()
 	r.requestOpenLocked("saved")
@@ -216,7 +216,7 @@ func TestATabTheHostLeavesBehindIsPointedOut(t *testing.T) {
 
 func TestAHolderTheHostLeavesBehindIsStillFound(t *testing.T) {
 	asker, fake := peerPollys(t)
-	fake.err = &paneBehindError{cause: errors.New("turn on Remote Control")}
+	fake.setErr(&paneBehindError{cause: errors.New("turn on Remote Control")})
 	asker.model.mu.Lock()
 	asker.requestOpenLocked("held")
 	asker.model.mu.Unlock()
@@ -231,7 +231,7 @@ func TestAHolderTheHostLeavesBehindIsStillFound(t *testing.T) {
 
 func TestAWallTheHostLeavesBehindStaysUp(t *testing.T) {
 	r, fake, _ := paneTestREPL(t)
-	fake.err = &paneBehindError{cause: errors.New("turn on Remote Control")}
+	fake.setErr(&paneBehindError{cause: errors.New("turn on Remote Control")})
 	openTestWall(t, r, fake)
 	pumpUI(t, r, func() bool { return strings.Contains(notices(r), "behind this one") })
 	if wall := r.panes.wall; wall == nil || len(wall.panes) != 2 || r.panes.wallless || r.workspace().inspector.open {
