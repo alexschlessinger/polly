@@ -25,6 +25,7 @@ go get github.com/alexschlessinger/pollytool
 - [Integration](#integration)
 - [JavaScript API](#javascript-api)
 - [Sessions and artifacts](#sessions)
+- [Rex](#rex)
 - [Errors, concurrency, and ownership](#errors-concurrency-and-ownership)
 
 [Documentation index](README.md) · [Sandbox policy](SANDBOX.md) ·
@@ -1361,6 +1362,40 @@ same publication. Publication failures expose no partial handoff. Workspace
 release removes scratch, not the published bytes; session/family reset and
 deletion still govern retention. See [durable file handoff](WORKFLOWS.md#durable-file-handoff)
 for the capture/restore protocol and verification guidance.
+
+## Rex
+
+Package `github.com/alexschlessinger/pollytool/rex` drives a local or remote
+Rex multiplexer server through Rex's official CLI JSON RPC (`rex api call`),
+Lua scripting (`rex do`), NDJSON event streaming (`rex events --json`), and
+managed port forwards (`rex forward`).
+
+```go
+client := rex.NewClient(
+    rex.WithTimeout(10 * time.Second),
+)
+view, err := client.InspectSession(ctx, "")
+```
+
+| Surface | API |
+|---|---|
+| Client & scoping | `NewClient(opts...)`, `WithBinary`, `WithServer`, `WithClient`, `WithSession`, `WithBlock`, `WithTimeout`, `WithAutoStart`, `WithCommandRunner`, `ForServer`, `ForSession`, `ForBlock`, `ForClient` |
+| Generic RPC & schemas | `ListMethods`, `DescribeMethod`, `Call`, `CallSession`, `CallRaw`, `CallBlock` |
+| Sessions, tabs & layouts | `Whoami`, `Version`, `Status`, `BlockTypes`, `ListSessions`, `CreateSession`, `InspectSession`, `RenameSession`, `DestroySession`, `NewWindow`, `RenameWindow`, `CloseWindow`, `FocusWindow`, `MoveWindow`, `BlockLayout`, `ShellLayout`, `HorizontalSplit`, `VerticalSplit`, `NewSplit`, `NewBlock`, `MoveBlock`, `SwapBlocks`, `ResizePane`, `ZoomBlock`, `FocusBlock`, `FocusDirection`, `SetBlockLabel`, `DetachBlock`, `CloseBlock`, `FloatBlock`, `NewLayer`, `ResizeLayer`, `SetLayerState`, `RaiseLayer`, `LowerLayer`, `CloseLayer` |
+| Terminals | `Capture` (with automatic `blob_read` pagination), `ReadBlob`, `Write`, `SendKey`, `Process`, `Modes`, `Ports`, `ProgramStatus`, `PWD`, `Title`, `Size`, `Resize`, `Clear`, `Reset`, `ClipboardRead` |
+| Clients & actions | `ListClients`, `InspectClient`, `ListActions`, `PerformClientAction`, `InvokeAction` |
+| Hosts & forwards | `ListHosts`, `CheckHosts`, `ListForwards`, `CloseForwards`, `OpenForward`, `ShareForward`, `NewForward` (`*Forward` handle with `Address`, `Wait`, `Close`) |
+| Lua & events | `EvalLua`, `EvalLuaRaw`, `Subscribe` (`*EventStream`), `WaitEvent` |
+
+When `WithServer` / `ForServer` is set, ambient `REX_SESSION` and `REX_BLOCK`
+environment variables are ignored unless `WithSession` or `WithBlock` is passed
+explicitly. CLI/server errors decode into `*rex.APIError` and unwrap to typed
+sentinels (`ErrBinaryNotFound`, `ErrRemoteControlDisabled`, `ErrNotFound`,
+`ErrBadRequest`, `ErrConflict`, `ErrUnreachable`).
+
+For agent loops, `tools.WithNativeTools()` registers six opt-in native tools
+(`rex_inspect` as a `ReadOnlyTool`, `rex_layout`, `rex_terminal`, `rex_lua`,
+`rex_api`, and `rex_client`) routed through the registry's sandbox factory.
 
 ## Errors, concurrency, and ownership
 

@@ -26,3 +26,7 @@ func rejectPlatformBroadWorkspace(string) error {
 func gitHostWritablePath(string) bool {
 	return true
 }
+
+func defaultRexSocketCandidates() []string {
+	return nil
+}

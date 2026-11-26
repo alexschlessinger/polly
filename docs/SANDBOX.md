@@ -76,6 +76,7 @@ Join names with `+`. Order does not matter.
 | `private-home` | Hide home except explicitly granted paths and discovered toolchains/configuration |
 | `ssh` | Expose the SSH agent socket, SSH config, and `known_hosts`; keep private keys masked |
 | `sshkeys` | Expose all of `~/.ssh`, including private keys; grant no writes |
+| `rex` | Pass `REX_SESSION`, `REX_BLOCK`, and `REX_RUNTIME_DIR` through and expose the live local Rex server Unix socket; never enabled by default |
 
 `git` requires `workspace`. `readonly+net` allows networking while denying writes.
 The `workspace` preset rejects filesystem roots, home itself, mounted-volume
@@ -387,6 +388,11 @@ loading instead of reverting to the default environment filter.
   but not writes. `denyWritePaths` keeps read access and blocks writes.
 - Grants freeze filesystem identities during policy preparation. Missing grants
   are dropped; replacing the object or its route does not grant new authority.
+- The `rex` preset grants only the single resolved live Rex server Unix socket
+  (from `REX_SERVER`, `REX_RUNTIME_DIR`, or the platform default socket path)
+  plus `REX_SESSION`, `REX_BLOCK`, and `REX_RUNTIME_DIR` environment
+  passthrough. It is never part of `default` and child presets cannot escalate
+  to it unless the parent also granted it.
 - `denyPaths` masks are reevaluated for commands. On Linux, a nonexistent denied
   path outside a private root is covered only once it exists for a later command.
 - Removing/replacing a named layer rebuilds affected tools transactionally. A
@@ -409,7 +415,7 @@ but the same program fails as an MCP server.
 
 | Path | Enforcement |
 |---|---|
-| Built-in Bash and shell tools | Native process sandbox |
+| Built-in Bash, Rex, and shell tools | Native process sandbox |
 | Stdio MCP | The server process is sandboxed for its lifetime |
 | Remote HTTP/SSE MCP | The remote process is outside local containment |
 | Native file/image tools and automatic `AGENTS.md` reads | In-process path checks |

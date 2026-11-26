@@ -76,6 +76,7 @@ func installNativeTools(r *ToolRegistry) {
 	r.nativeTools["view_image"] = func(registry *ToolRegistry) (Tool, error) {
 		return NewViewImageTool(registry), nil
 	}
+	registerRexNativeTools(r)
 
 	// view_image is present on every native registry, whatever a selection
 	// names: it reads under the same policy as the file tools and is how the

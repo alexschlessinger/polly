@@ -397,7 +397,7 @@ func sandboxConfigFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:      "sandbox",
-			Usage:     "Sandbox tool commands under this preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. " + defaultSandboxPreset + "); git requires workspace. Unset runs them unsandboxed",
+			Usage:     "Sandbox tool commands under this preset: base, readonly, workspace, git, net, ssh, sshkeys, rex, private-home — join with + (e.g. " + defaultSandboxPreset + "); git requires workspace. Unset runs them unsandboxed",
 			Sources:   envDefault(envVarSandbox),
 			Validator: validateSandboxPresetSpec,
 		},

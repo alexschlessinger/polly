@@ -18,7 +18,7 @@ import (
 
 // PresetNames lists the valid components of a sandbox preset spec, for help
 // text and error messages.
-var PresetNames = []string{"default", "base", "readonly", "workspace", "git", "net", "ssh", "sshkeys", "private-home"}
+var PresetNames = []string{"default", "base", "readonly", "workspace", "git", "net", "ssh", "sshkeys", "rex", "private-home"}
 
 // DefaultPresetSpec is what the "default" preset name stands for: the policy
 // a workspace usually wants, and the one a caller gets by asking for a
@@ -61,6 +61,9 @@ const (
 //	            keys stay masked and ~/.ssh stays unwritable
 //	sshkeys   — exempt all of ~/.ssh from the credential deny list, private
 //	            keys included, for agentless setups; writes stay denied
+//	rex       — expose the live local Rex server Unix socket and pass
+//	            REX_SESSION, REX_BLOCK, and REX_RUNTIME_DIR through; never
+//	            enabled by default
 //
 // An empty spec is the base config. Unknown names error so a typo fails
 // closed instead of silently running with a different policy. Every spec
@@ -168,6 +171,14 @@ func parsePresetWithGitMode(spec, root string, leafMode gitProtectMode) (Config,
 			}
 		case "sshkeys":
 			cfg.ReadPaths = append(cfg.ReadPaths, "~/.ssh")
+		case "rex":
+			// Passing the ambient Rex identifiers through is harmless when
+			// unset; the Unix socket grant itself requires a live socket at
+			// construction time so missing paths never activate later.
+			cfg.PassEnv = append(cfg.PassEnv, "REX_SESSION", "REX_BLOCK", "REX_RUNTIME_DIR")
+			if sock := resolveRexSocketPath(); sock != "" {
+				cfg.AllowUnixSockets = append(cfg.AllowUnixSockets, sock)
+			}
 		}
 	}
 	if cfg.PrivateHome {

@@ -42,3 +42,13 @@ func rejectPlatformBroadWorkspace(dir string) error {
 func gitHostWritablePath(string) bool {
 	return true
 }
+
+func defaultRexSocketCandidates() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, "Library", "Application Support", "rex", "server.sock"),
+	}
+}

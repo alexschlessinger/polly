@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ const commandDrainTimeout = time.Second
 type finiteCommand struct {
 	name        string
 	args        []string
+	stdin       []byte
 	dir         string
 	env         map[string]string // Explicit target environment.
 	groups      *processGroups    // Records the command's process group when set.
@@ -53,6 +55,9 @@ func runFiniteCommand(ctx context.Context, sb sandbox.Sandbox, spec finiteComman
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, spec.name, spec.args...)
 	cmd.Dir = spec.dir
+	if len(spec.stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(spec.stdin)
+	}
 	cmd.WaitDelay = commandDrainTimeout
 	capture, err := newCommandCapture(cmd, spec.stdout, spec.stderr, spec.report, spec.acknowledge)
 	if err != nil {

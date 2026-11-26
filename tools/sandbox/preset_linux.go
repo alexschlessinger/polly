@@ -97,3 +97,17 @@ func decodeLinuxMountInfoPath(value string) (string, error) {
 func gitHostWritablePath(path string) bool {
 	return !pathEqualsAny(path, allPrivateLinuxRoots(Config{PrivateHome: true}))
 }
+
+func defaultRexSocketCandidates() []string {
+	var out []string
+	if runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); runtimeDir != "" && filepath.IsAbs(runtimeDir) {
+		out = append(out, filepath.Join(filepath.Clean(runtimeDir), "rex", "server.sock"))
+	}
+	if stateHome := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); stateHome != "" && filepath.IsAbs(stateHome) {
+		out = append(out, filepath.Join(filepath.Clean(stateHome), "rex", "run", "server.sock"))
+	} else if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		out = append(out, filepath.Join(home, ".local", "state", "rex", "run", "server.sock"))
+	}
+	out = append(out, "/run/rex/server.sock")
+	return out
+}
