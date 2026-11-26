@@ -780,7 +780,7 @@ func TestComposerHoldsInputWhileOpening(t *testing.T) {
 	r.model.ed.clear()
 	r.model.insertEditorText("/help")
 	r.submitComposerLocked()
-	if m := r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "/resume") {
+	if m := r.model.modal; m == nil || !strings.Contains(listLabels(m), "/sessions") {
 		t.Fatal("busy-safe help did not open during the session load")
 	}
 }

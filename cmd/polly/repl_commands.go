@@ -91,6 +91,12 @@ type replCommandContext struct {
 	openTodoPanel      func()
 	openContextPopover func()
 	openHelp           func([]string, string)
+	// pickCommand lists the commands where the terminal's host has a list of
+	// its own, and reports whether it did; pickModel does the same for the
+	// provider's models, and editTitle asks for the session's title.
+	pickCommand        func() bool
+	pickModel          func() bool
+	editTitle          func()
 	openKeyManager     func()
 	openSetup          func()
 	openSessionsPicker func()
@@ -102,6 +108,8 @@ type replCommandContext struct {
 	newTab     func()
 	closeTab   func()
 	spawnAgent func(subagent.Request)
+	// toggleWall opens or closes the agent wall.
+	toggleWall func()
 	openSwarm  func(string)
 	// Maintenance may wait for automatic release; the TUI runs it off-screen.
 	swarmMaintenance func(label, success string, run func(context.Context) error) error
@@ -247,7 +255,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replRenameCommand,
 	})
 	r.register(replCommand{
-		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
+		name: "/title", usage: "/title [text]", summary: "edit the current session title", run: replTitleCommand,
 	})
 	r.register(replCommand{
 		name:    "/sandbox-init",
@@ -306,6 +314,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "start a background swarm member; inspect with /sessions",
 		busySafe: true,
 		run:      replSpawnCommand,
+	})
+	r.register(replCommand{
+		name:     "/wall",
+		usage:    "/wall",
+		summary:  "watch the running agents side by side, a pane each",
+		busySafe: true,
+		run:      replWallCommand,
 	})
 	r.register(replCommand{
 		name:         "/tools",
@@ -475,10 +490,13 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		planBusy:            r.planBusy,
 		planChanged:         r.model.setPlanProgress,
 		openTodoPanel:       r.openTodoPanel,
-		openPlanEditor:      openExternal,
+		openPlanEditor:      r.openEditor,
 		startTurn:           r.submitCommandTurnLocked,
 		openContextPopover:  r.openContextPopover,
 		openHelp:            r.openHelp,
+		pickCommand:         r.pickCommandInHost,
+		pickModel:           r.pickModelInHost,
+		editTitle:           r.editTitle,
 		openKeyManager:      r.openKeyManager,
 		openLogin:           r.openLogin,
 		openSetup:           r.openSetupForm,
@@ -486,6 +504,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		newTab:              r.requestNewTabLocked,
 		closeTab:            r.requestCloseTabLocked,
 		spawnAgent:          r.requestSpawnLocked,
+		toggleWall:          func() { r.wallRequested = true },
 		openSwarm: func(section string) {
 			target := tabViewTarget(r.visibleTab())
 			target.kind = swarmViewKind
@@ -550,6 +569,9 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 		return replCommandResult{}
 	}
 	if ctx.openHelp != nil {
+		if len(args) == 1 && ctx.pickCommand != nil && ctx.pickCommand() {
+			return replCommandResult{}
+		}
 		lines, title := ctx.registry.helpLines(), "Help"
 		if len(args) > 1 {
 			lines, title = ctx.registry.helpFor(args[1]), "Help · "+args[1]
@@ -722,6 +744,10 @@ func replRenameCommand(ctx *replCommandContext, args []string) replCommandResult
 
 func replTitleCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) < 2 {
+		if ctx != nil && ctx.editTitle != nil {
+			ctx.editTitle()
+			return replCommandResult{}
+		}
 		return replCommandResult{err: ctx.replyLine("usage: /title <text>")}
 	}
 	if ctx.state == nil || ctx.state.session == nil {
@@ -771,9 +797,16 @@ func uiCommand(ctx *replCommandContext, args []string, usage, unavailable string
 	return replCommandResult{}
 }
 
+func replWallCommand(ctx *replCommandContext, args []string) replCommandResult {
+	return uiCommand(ctx, args, "/wall", "the agent wall is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.toggleWall })
+}
+
 const setupFormUnavailable = "setup form is available only in the managed TUI; edit " + userConfigDisplayPath + " or set POLLYTOOL_* variables"
 
 func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) == 1 && ctx != nil && ctx.pickModel != nil && ctx.pickModel() {
+		return replCommandResult{}
+	}
 	return uiCommand(ctx, args, "/model", setupFormUnavailable+"; use /set model provider/model for this session", func(ctx *replCommandContext) func() { return ctx.openSetup })
 }
 

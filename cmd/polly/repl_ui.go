@@ -30,21 +30,22 @@ type managedREPL struct {
 	// supplies the input (see repl_headless.go). Nil for an interactive run.
 	headless *headlessRun
 
-	transcriptW                        *transcriptParagraph
-	dividerW                           *style.LiteralParagraph
-	inputW                             *style.LiteralParagraph
-	statusW                            *style.LiteralParagraph
-	modalW                             *modalParagraph
-	dockW                              *modalParagraph
-	rootFlex                           ui.Drawable
-	painter                            framePainter
-	wheelPaintTimer                    *time.Timer
-	wheelPaintC                        <-chan time.Time
-	chrome                             chromeGeometry
-	border                             inspectorBorder
-	inspectorScrollbar, modalScrollbar scrollbar
-	scrollDrag                         scrollDragState
-	chromeHoverChanged                 bool
+	transcriptW        *transcriptParagraph
+	dividerW           *style.LiteralParagraph
+	inputW             *style.LiteralParagraph
+	statusW            *style.LiteralParagraph
+	modalW             *modalParagraph
+	dockW              *modalParagraph
+	rootFlex           ui.Drawable
+	painter            framePainter
+	wheelPaintTimer    *time.Timer
+	wheelPaintC        <-chan time.Time
+	chrome             chromeGeometry
+	border             inspectorBorder
+	modalScrollbar     scrollbar
+	panelScrollbar     scrollbar
+	scrollDrag         scrollDragState
+	chromeHoverChanged bool
 	// shotPath is where a /screenshot parked for the next painted frame goes;
 	// empty when none is parked (see repl_screenshot.go).
 	shotPath string
@@ -83,16 +84,20 @@ type managedREPL struct {
 	childViewRequest *childViewNavigation
 	// replacingTab is the last workspace a /close is replacing; finishOpen
 	// closes it once the fresh session holds the screen.
-	replacingTab        *replTab
-	inspectorRatio      float64
-	inspectorRefreshAt  time.Time
-	inspectorW          *transcriptParagraph
-	inspectorHeaderW    *style.LiteralParagraph
-	inspectorHeaderRows int
-	inspectorButtons    []inspectorButton
-	inspectorDragging   bool
-	mousePosition       image.Point
-	mousePositionKnown  bool
+	replacingTab   *replTab
+	inspectorRatio float64
+	// surface is where the inspected view paints and takes its clicks.
+	// viewDetached says something other than the main screen's frame shows
+	// it (see framed in repl_chrome.go).
+	viewDetached bool
+	surface      viewSurface
+	// scoped is the wall pane whose view is the inspected one right now, nil
+	// for the visible workspace's (see within).
+	scoped             *satellitePane
+	wallRequested      bool
+	inspectorDragging  bool
+	mousePosition      image.Point
+	mousePositionKnown bool
 	// hover is the target under the pointer as of the last paint, and
 	// hoverCells the screen cells its underline occupies; see repl_hover.go.
 	hover            hoverTarget
@@ -142,6 +147,14 @@ type managedREPL struct {
 	opening    string
 	openCancel context.CancelFunc
 	openDone   chan openResult
+
+	// panes hosts the view shown in a Rex pane (see repl_panes.go).
+	panes paneHost
+	// keyAt is when a key was last pressed in polly's own terminal, and
+	// paneInputAt when the user last interacted with one of polly's detached
+	// panes (see repl_pane_approve.go).
+	keyAt       time.Time
+	paneInputAt time.Time
 }
 
 // sessionSettings returns the live session's settings, or nil when no
@@ -186,6 +199,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		openImage:      openImageInViewer,
 		openURL:        openURL,
 		suspendProcess: suspendCurrentProcessGroup,
+		panes:          paneHost{events: make(chan paneEvent)},
 	}
 }
 

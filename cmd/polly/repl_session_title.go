@@ -61,11 +61,8 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 			tab.childView = &copy
 		}
 	}
-	for _, w := range r.workspaceTabs() {
-		if w.workspace == nil {
-			continue
-		}
-		v := w.workspace.inspector.current
+	for _, w := range r.viewWorkspaces() {
+		v := w.inspector.current
 		if v != nil && v.info != nil && v.info.ID == id {
 			copy := *v.info
 			copy.Metadata = md

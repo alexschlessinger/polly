@@ -27,7 +27,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 	var actions []inspectorKeyboardAction
 	seen := map[string]bool{}
 	addMarked := func(key string, rect, mark image.Rectangle) {
-		rect = rect.Intersect(r.chrome.inner)
+		rect = rect.Intersect(r.surface.inner)
 		if seen[key] || rect.Empty() {
 			return
 		}
@@ -38,10 +38,10 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 				return
 			}
 		}
-		actions = append(actions, inspectorKeyboardAction{key, rect, mark.Intersect(r.chrome.inner)})
+		actions = append(actions, inspectorKeyboardAction{key, rect, mark.Intersect(r.surface.inner)})
 	}
 	add := func(key string, rect image.Rectangle) { addMarked(key, rect, rect) }
-	for _, b := range r.inspectorButtons {
+	for _, b := range r.surface.buttons {
 		add("button:"+b.action, b.rect)
 	}
 	if i.current != nil && i.current.model != nil && i.current.target.key() == i.target.key() {
@@ -54,14 +54,14 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 		}
 		for _, kind := range disclosureKinds {
 			for _, p := range m.disclosurePlacements[kind] {
-				x := r.chrome.inner.Min.X
+				x := r.surface.inner.Min.X
 				addMarked(p.keyboardKey(), p.rect(x), p.mark(x))
 			}
 		}
 		for _, p := range m.imagePlacements {
 			if p.Path != "" {
-				body := r.chrome.inner
-				body.Min.Y += r.inspectorHeaderRows
+				body := r.surface.inner
+				body.Min.Y += r.surface.headerRows
 				add("image:"+p.Key, image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).Intersect(body))
 			}
 		}
@@ -77,7 +77,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 
 func (r *managedREPL) selectedInspectorAction() (inspectorKeyboardAction, bool) {
 	i := &r.workspace().inspector
-	if !r.inspectorFocused() || i.searching || i.keyboardTarget != i.target.key() || i.keyboardAction == "" {
+	if !r.viewHasKeys() || i.searching || i.keyboardTarget != i.target.key() || i.keyboardAction == "" {
 		return inspectorKeyboardAction{}, false
 	}
 	for _, action := range r.inspectorKeyboardActions() {

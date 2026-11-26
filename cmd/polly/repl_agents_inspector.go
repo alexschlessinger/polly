@@ -107,9 +107,9 @@ func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspect
 
 func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	width := geometry.width
-	r.inspectorRefreshAt = time.Now()
 	w := r.workspace()
 	i := &w.inspector
+	i.refreshAt = time.Now()
 	state := w.viewState(i.target)
 	if state.agents == nil {
 		state.agents = &agentsInspectorState{}
@@ -355,7 +355,7 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 			pos = -1
 		}
 	}
-	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
+	height := max(1, r.surface.bodyHeight())
 	switch key {
 	case "<Up>":
 		pos--

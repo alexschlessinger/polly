@@ -43,8 +43,8 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	click := mouseEvent("<MouseLeft>", point)
 	r.handleEvent(click)
 	r.render()
-	modal := m.modal
-	if modal == nil || modal.title != "Context" {
+	modal := r.focusedPanelModal()
+	if modal == nil || modal.title != "Context" || m.modal != nil {
 		t.Fatal("context click did not open its popover")
 	}
 	if got := strings.Join(strings.Fields(strings.Join(modal.details, "\n")), " "); !strings.Contains(got, "user 1 · ~") || !strings.Contains(got, "system 1 · ~") || !strings.Contains(got, "session cache: unknown") {
@@ -55,26 +55,37 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 			t.Fatalf("missing %q in %v", want, modal.details)
 		}
 	}
-	if modal.bounds.Max != image.Pt(100, height-1) {
-		t.Fatalf("popover is not anchored above the status row: %v", modal.bounds)
+	if modal.bounds.Max != image.Pt(100, r.frameLayoutFor(100, height).transcriptHeight) {
+		t.Fatalf("popover is not anchored above the composer: %v", modal.bounds)
 	}
+	// It stands beside the conversation: typing goes on in the composer, and
+	// a click on the popover brings the keys back to it.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "x"})
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatContext) == nil || m.ed.text() != "unfinished draftx" {
+		t.Fatalf("typing did not go on in the composer beside the popover: focused %v, draft %q", r.focusedPanelModal(), m.ed.text())
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Backspace>"})
 	r.handleEvent(mouseEvent("<MouseLeft>", modal.listBounds.Min))
-	if m.modal != modal {
-		t.Fatal("clicking detail text dismissed the popover")
+	if r.focusedPanelModal() != modal {
+		t.Fatal("clicking detail text did not give the popover the keys")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
-	if m.modal != nil {
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatContext) != nil {
 		t.Fatal("Escape did not close the popover")
 	}
 	r.handleEvent(click)
 	r.render()
-	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(m.status.sessionField.X, height-1)))
-	if m.modal != nil {
-		t.Fatal("outside click did not close the popover or leaked into the session picker")
+	// A click elsewhere is for what is clicked, and leaves the popover up.
+	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(0, 0)))
+	if r.panes.floatOf(floatContext) == nil || r.focusedPanelModal() != nil {
+		t.Fatalf("a click on the conversation closed the popover or left it the keys: %v", r.focusedPanelModal())
+	}
+	r.handleEvent(click)
+	if r.panes.floatOf(floatContext) != nil {
+		t.Fatal("clicking the readout again did not close the popover")
 	}
 	if m.ed.text() != "unfinished draft" || m.fullTranscript() != before || !m.busy || len(testSessionHistory(t, session)) != 2 {
-		t.Fatal("popover changed the draft, transcript, active turn, or durable conversation")
+		t.Fatalf("popover changed the draft (%q), transcript (%t), active turn (%t), or durable conversation", m.ed.text(), m.fullTranscript() == before, m.busy)
 	}
 	m.statusRow(8)
 	if m.status.contextField.Cols != 0 {
@@ -92,9 +103,9 @@ func TestContextPopoverScrollsOnShortTerminal(t *testing.T) {
 	r.render()
 	screen.SetSize(28, 10)
 	r.render()
-	m := r.model.modal
-	if !m.bounds.In(image.Rect(0, 0, 28, 9)) || r.modalScrollbar.thumb.Empty() {
-		t.Fatalf("resized popover bounds=%v scrollbar=%v", m.bounds, r.modalScrollbar)
+	m := r.focusedPanelModal()
+	if !m.bounds.In(image.Rect(0, 0, 28, 9)) || r.panelScrollbar.thumb.Empty() {
+		t.Fatalf("resized popover bounds=%v scrollbar=%v", m.bounds, r.panelScrollbar)
 	}
 	for _, item := range m.items {
 		if rw.StringWidth(item.label) > m.bounds.Dx()-2 {
@@ -103,11 +114,11 @@ func TestContextPopoverScrollsOnShortTerminal(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	r.render()
-	if m.top == 0 || !strings.Contains(plainStyledText(r.modalW.Text), "stored") {
-		t.Fatalf("cannot scroll to the final detail: %q", r.modalW.Text)
+	if m.top == 0 || !strings.Contains(plainStyledText(panelPage(r, floatContext).Text), "stored") {
+		t.Fatalf("cannot scroll to the final detail: %q", panelPage(r, floatContext).Text)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if r.model.modal != nil {
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatContext) != nil {
 		t.Fatal("Enter did not dismiss the popover")
 	}
 }

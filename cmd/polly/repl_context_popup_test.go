@@ -36,28 +36,25 @@ func contextDashboardREPL(t *testing.T, native bool) *managedREPL {
 		t.Cleanup(r.images.Shutdown)
 	}
 	r.openContextPopover()
-	t.Cleanup(func() {
-		if r.model.modal != nil {
-			r.closeModal()
-		}
-	})
+	t.Cleanup(r.closeFloats)
 	r.render()
 	return r
 }
 
 func TestContextDashboardPresentationAndFallback(t *testing.T) {
 	r := contextDashboardREPL(t, false)
-	d := r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	d.animatedAt, d.chartAt = time.Now().Add(-time.Second), time.Now().Add(-time.Second)
 	r.render()
-	got := plainStyledText(r.modalW.Text)
+	got := plainStyledText(panelPage(r, floatContext).Text)
 	for _, want := range []string{"24.0k / 100k input", "24%", "Compact at 90.0k", "Assistant", "Last 2 requests", "peak 60.0k", "↓ compaction", "Session usage", "↑ input", "↓ output", "Parent", "Subagents", "Total", "84.0k", "Cache hit", "60%", "1 compaction", "Window 110k", "Output 10.0k", "4 messages", "stored"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, got)
 		}
 	}
-	if r.model.modal.titleNotice != "" {
-		t.Fatalf("dashboard retained title notice: %q", r.model.modal.titleNotice)
+	if m.titleNotice != "" {
+		t.Fatalf("dashboard retained title notice: %q", m.titleNotice)
 	}
 	for _, unwanted := range []string{"MESSAGE MIX", "estimated tokens", "provider count", "Cumulative tokens", "recorded requests"} {
 		if strings.Contains(got, unwanted) {
@@ -74,8 +71,8 @@ func TestContextDashboardPresentationAndFallback(t *testing.T) {
 	if !strings.ContainsAny(got, "▁▂▃▄▅▆▇█") || !strings.Contains(got, "│") {
 		t.Fatalf("missing fallback chart or compaction gauge marker:\n%s", got)
 	}
-	if r.model.modal.bounds.Max != image.Pt(100, 39) || r.model.modal.bounds.Dx() != 50 {
-		t.Fatalf("dashboard no longer compact and anchored: %v", r.model.modal.bounds)
+	if m.bounds.Max != image.Pt(100, 37) || m.bounds.Dx() != 50 {
+		t.Fatalf("dashboard no longer compact and anchored: %v", m.bounds)
 	}
 	if d.wantsTick(time.Now()) {
 		t.Fatal("settled dashboard requested continuous animation")
@@ -84,7 +81,7 @@ func TestContextDashboardPresentationAndFallback(t *testing.T) {
 
 func TestContextDashboardRefreshAndAnimation(t *testing.T) {
 	r := contextDashboardREPL(t, false)
-	m, now := r.model.modal, time.Now()
+	m, now := r.focusedPanelModal(), time.Now()
 	d := m.context
 	d.animatedAt = now.Add(-time.Second)
 	d.chartAt = d.animatedAt
@@ -115,7 +112,7 @@ func TestContextDashboardRefreshAndAnimation(t *testing.T) {
 	if !strings.Contains(strings.Join(m.details, "\n"), "request: 50.0k") {
 		t.Fatalf("request readout did not refresh: %v", m.details)
 	}
-	r.closeModal()
+	r.closeFloats()
 	select {
 	case <-d.ctx.Done():
 	default:
@@ -123,23 +120,26 @@ func TestContextDashboardRefreshAndAnimation(t *testing.T) {
 	}
 }
 
-func TestContextDashboardReplacementCancelsReads(t *testing.T) {
+func TestContextDashboardStaysBehindADialog(t *testing.T) {
 	r := contextDashboardREPL(t, false)
-	d := r.model.modal.context
+	d := r.focusedPanelModal().context
 	r.openModal(&replModal{title: "Approval"})
-	select {
-	case <-d.ctx.Done():
-	default:
-		t.Fatal("replacing dashboard left its reader alive")
+	if r.model.modal.title != "Approval" || r.model.pendingModal != nil || r.focusedPanelModal() != nil {
+		t.Fatal("read-only dashboard displaced an approval or kept focus")
 	}
-	if r.model.modal.title != "Approval" || r.model.pendingModal != nil {
-		t.Fatal("read-only dashboard displaced an approval")
+	if r.panes.floatOf(floatContext) == nil || d.ctx.Err() != nil {
+		t.Fatal("a dialog opening closed the dashboard beside it, or stopped its reads")
+	}
+	r.closeModal()
+	r.openContextPopover()
+	if r.panes.floatOf(floatContext) != nil || d.ctx.Err() == nil {
+		t.Fatal("closing the dashboard left it up, or its reader alive")
 	}
 }
 
 func TestContextDashboardNativeChartClipsAndClears(t *testing.T) {
 	r := contextDashboardREPL(t, true)
-	m := r.model.modal
+	m := r.focusedPanelModal()
 	d := m.context
 	if overlays := r.images.Placements(); len(overlays) != 1 || !overlays[0].Visible.In(m.bounds) {
 		t.Fatalf("native chart missing or escaped modal: %+v", overlays)
@@ -165,7 +165,7 @@ func TestContextDashboardNativeChartClipsAndClears(t *testing.T) {
 	if got := d.placement(m, image.Rect(10, 10, 60, 16), 8, 16); len(got) != 0 {
 		t.Fatalf("offscreen chart retained a placement: %+v", got)
 	}
-	r.closeModal()
+	r.closeFloats()
 	r.render()
 	if got := r.images.Placements(); len(got) != 0 {
 		t.Fatalf("closed dashboard retained native images: %+v", got)
@@ -180,7 +180,7 @@ func TestContextDashboardChartProtocolAndBackground(t *testing.T) {
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 100, Height: 40, PixelWidth: 800, PixelHeight: 640}}
 			r.images = termimg.NewManagerFor(ui.DefaultBackend.Screen, tty, protocol)
 			t.Cleanup(r.images.Shutdown)
-			m := r.model.modal
+			m := r.focusedPanelModal()
 			d := m.context
 			d.animatedAt, d.chartAt = time.Now().Add(-time.Second), time.Now().Add(-time.Second)
 			d.nextRead = time.Now().Add(time.Hour)
@@ -197,7 +197,7 @@ func TestContextDashboardChartProtocolAndBackground(t *testing.T) {
 				if d.native != wantNative {
 					t.Fatalf("background %s: native = %t, want %t", background, d.native, wantNative)
 				}
-				rows := strings.Split(plainStyledText(r.modalW.Text), "\n")
+				rows := strings.Split(plainStyledText(panelPage(r, floatContext).Text), "\n")
 				chartStart := d.chartRow - m.top
 				if chartStart < 0 || chartStart+contextChartRows > len(rows) {
 					t.Fatalf("chart rows outside popup: start=%d rows=%d", chartStart, len(rows))
@@ -213,7 +213,7 @@ func TestContextDashboardChartProtocolAndBackground(t *testing.T) {
 							t.Fatalf("fallback row %d = %q, want %q", y, chartRows[y], want)
 						}
 					}
-					if !strings.Contains(plainStyledText(r.modalW.Text), "↓ compaction") {
+					if !strings.Contains(plainStyledText(panelPage(r, floatContext).Text), "↓ compaction") {
 						t.Fatal("Unicode fallback lost its compaction caption")
 					}
 					continue
@@ -403,7 +403,7 @@ func TestContextDashboardCountCaptions(t *testing.T) {
 
 func TestContextDashboardNarrowRowsAndThemeInvalidation(t *testing.T) {
 	r := contextDashboardREPL(t, true)
-	d := r.model.modal.context
+	d := r.focusedPanelModal().context
 	for _, width := range []int{10, 24, 28, 50} {
 		for _, item := range d.items(width) {
 			if got := rw.StringWidth(item.label); got > width-2 {
@@ -423,7 +423,7 @@ func TestContextDashboardNarrowRowsAndThemeInvalidation(t *testing.T) {
 		t.Fatal("chart did not invalidate after theme change")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if r.model.modal != nil {
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatContext) != nil {
 		t.Fatal("Enter did not close the read-only dashboard")
 	}
 }

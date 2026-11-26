@@ -72,7 +72,7 @@ func TestLiveToolsJoinTheActivityLine(t *testing.T) {
 	a := root.swarmActivities[id]
 	a.Tools = nil
 	root.swarmActivities[id] = a
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	if text := inspectorRowsText(v, 100); strings.Contains(text, "go test ./llm/...") {
 		t.Fatalf("settled call lingered without a transcript record: %q", text)

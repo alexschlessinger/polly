@@ -75,30 +75,15 @@ func (r *managedREPL) inspectorAction(action string) {
 			}
 		}
 	case "stop":
-		target := i.target
-		r.workspaceActions = append(r.workspaceActions, func() { r.stopInspectedAgent(target) })
+		target, scope := i.target, r.viewScope()
+		r.workspaceActions = append(r.workspaceActions, func() { scope(func() { r.stopInspectedAgent(target) }) })
 	case "resume":
-		target := i.target
-		r.workspaceActions = append(r.workspaceActions, func() { r.resumeInspectedAgent(target) })
+		target, scope := i.target, r.viewScope()
+		r.workspaceActions = append(r.workspaceActions, func() { scope(func() { r.resumeInspectedAgent(target) }) })
 	case "review":
 		r.reviewAgentApproval(i.target)
 
 	}
-}
-
-func (r *managedREPL) resizeInspector(direction int) {
-	i := &r.workspace().inspector
-	width := r.paintedWidth()
-	if !i.open || i.maximized || width < splitThreshold {
-		return
-	}
-	// Start from the displayed divider, including after a drag or terminal
-	// resize clamps a pane to its minimum. A width control must never reverse.
-	lo, hi := splitLimits(width)
-	left := max(lo, min(hi, r.splitColumn(width)-direction*max(1, (width-1)/20)))
-	// Store the middle of this column's interval so float rounding does not
-	// place the divider one column short when geometry converts back to int.
-	r.inspectorRatio = (float64(left) + .5) / float64(width-1)
 }
 
 func (r *managedREPL) inspectorScroll(delta int) {
@@ -108,7 +93,7 @@ func (r *managedREPL) inspectorScroll(delta int) {
 		return
 	}
 	s := w.viewState(i.target)
-	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
+	height := max(1, r.surface.bodyHeight())
 	rows := len(i.current.model.visual.rows)
 	if s.follow {
 		s.top = max(0, rows-height)
@@ -146,120 +131,77 @@ func (r *managedREPL) inspectorFind() {
 
 // Main model is locked by the event dispatcher. Inspector projections are
 // loop-owned; events cannot redirect root input merely by changing a view.
+//
+// These are the main screen's events. A framed view takes the ones that are
+// its own (see handleFramedEvent); a view shown elsewhere gets its events from
+// that screen, and here only the conversation's own links remain.
 func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
-	w := r.workspace()
-	i := &w.inspector
 	if e.ID == "<C-c>" || e.ID == "<C-z>" || r.model.pasting || e.ID == pasteStartID || e.ID == pasteEndID {
 		return false
 	}
-	if i.open && i.searching && e.Type == ui.KeyboardEvent {
-		switch e.ID {
-		case "<Escape>":
-			i.searching = false
-		case "<Enter>":
-			r.inspectorFind()
-		case "<Backspace>":
-			text := i.searchInput.text()
-			if text != "" {
-				_, size := utf8.DecodeLastRuneInString(text)
-				i.searchInput.setText(text[:len(text)-size])
-			}
-		default:
-			if !strings.HasPrefix(e.ID, "<") {
-				i.searchInput.setText(i.searchInput.text() + e.ID)
-			}
-		}
+	if r.framed() && r.handleFramedEvent(e) {
 		return true
 	}
-	// Search and approval own Escape first: cancel the search, deny the call.
-	// A focused inspector gives the keys back before it closes.
-	if i.open && e.ID == "<Escape>" && !r.model.hist.searching && r.model.approval == nil {
-		if i.focused {
-			i.focused = false
-			i.keyboardAction = ""
-			return true
-		}
-		r.closeInspector()
-		return true
-	}
-	if r.inspectorFocused() && e.Type == ui.KeyboardEvent {
-		if e.ID == "<Tab>" {
-			i.focused = false
-			i.keyboardAction = ""
-			return true
-		}
-		// Typing means the composer: hand the keys back and let the rune land.
-		if _, ok := printableRune(e); ok {
-			i.keyboardAction = ""
-			i.focused = false
-		}
-	}
-	if r.handleFocusedNavigation(e) {
-		return true
-	}
-	if e.Type == ui.MouseEvent {
+	if e.Type == ui.MouseEvent && e.ID == "<MouseLeft>" {
 		mouse, ok := e.Payload.(ui.Mouse)
 		if !ok {
 			return false
 		}
 		point := image.Pt(mouse.X, mouse.Y)
-		if e.ID == "<MouseLeft>" && point.In(r.chrome.divider) {
-			r.inspectorDragging = true
+		// Links beside the inspector retarget it, and tool rows toggle
+		// their inline output. Other outside clicks reach the surrounding
+		// UI without dismissing the pane.
+		if r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point) {
 			return true
 		}
-		if r.inspectorDragging {
-			if e.ID == "<MouseRelease>" {
-				r.inspectorDragging = false
-				return true
-			}
-			if e.ID == "<MouseLeft>" {
-				r.inspectorRatio = float64(mouse.X) / float64(max(1, r.paintedWidth()-1))
-				return true
-			}
-		}
-		if i.open && point.In(r.chrome.frame) && !point.In(r.chrome.inner) {
-			// The frame belongs to the inspector, including in full-width
-			// mode; clicks must not reach the hidden conversation underneath.
-			switch e.ID {
-			case "<MouseWheelUp>":
-				r.inspectorScroll(-3)
-			case "<MouseWheelDown>":
-				r.inspectorScroll(3)
-			case "<MouseLeft>":
-				if point.In(r.model.todoLink) {
-					return false // The task marks belong to the composer, not the frame.
-				}
-				if point.In(r.chrome.close) {
-					r.inspectorAction("close")
-				}
-			}
+		if r.toggleToolOutputAt(r.model, point, nil) {
 			return true
 		}
-		if i.open && point.In(r.chrome.inner) {
-			switch e.ID {
-			case "<MouseWheelUp>":
-				r.inspectorScroll(-3)
-				return true
-			case "<MouseWheelDown>":
-				r.inspectorScroll(3)
-				return true
-			case "<MouseLeft>":
-				i.keyboardAction = ""
-				r.activateInspectorPoint(point)
-				return true
-			}
+	}
+	return false
+}
+
+// viewSearchKey feeds a key to the view's open search prompt.
+func (r *managedREPL) viewSearchKey(e ui.Event) bool {
+	i := &r.workspace().inspector
+	if !i.searching || e.Type != ui.KeyboardEvent {
+		return false
+	}
+	switch e.ID {
+	case "<Escape>":
+		i.searching = false
+	case "<Enter>":
+		r.inspectorFind()
+	case "<Backspace>":
+		text := i.searchInput.text()
+		if text != "" {
+			_, size := utf8.DecodeLastRuneInString(text)
+			i.searchInput.setText(text[:len(text)-size])
 		}
-		if e.ID == "<MouseLeft>" {
-			// Links beside the inspector retarget it, and tool rows toggle
-			// their inline output. Other outside clicks reach the surrounding
-			// UI without dismissing the pane.
-			if r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point) {
-				return true
-			}
-			if r.toggleToolOutputAt(r.model, point, nil) {
-				return true
-			}
+	default:
+		if !strings.HasPrefix(e.ID, "<") {
+			i.searchInput.setText(i.searchInput.text() + e.ID)
 		}
+	}
+	return true
+}
+
+// viewContentMouse applies a wheel turn or a click inside the view's surface.
+func (r *managedREPL) viewContentMouse(e ui.Event, point image.Point) bool {
+	if !point.In(r.surface.inner) {
+		return false
+	}
+	switch e.ID {
+	case "<MouseWheelUp>":
+		r.inspectorScroll(-3)
+		return true
+	case "<MouseWheelDown>":
+		r.inspectorScroll(3)
+		return true
+	case "<MouseLeft>":
+		r.workspace().inspector.keyboardAction = ""
+		r.activateInspectorPoint(point)
+		return true
 	}
 	return false
 }
@@ -287,35 +229,31 @@ func (r *managedREPL) mutateInspectedView(toggle func(*replModel) bool) bool {
 	return true
 }
 
-// followPointerFocus moves the keys to the pane under the pointer: the
-// inspector while the pointer is over its frame, the composer otherwise.
-// Tab and Escape still move focus by hand until the pointer moves again. A
-// divider or scrollbar drag, a dialog, and an inspector search hold focus
-// where it is, and a frame that has not been painted yet cannot be pointed
-// at. Caller must hold r.model.mu.
-func (r *managedREPL) followPointerFocus(p image.Point) {
-	i := &r.workspace().inspector
-	if !i.open || i.searching || r.model.modal != nil || r.inspectorDragging || r.scrollDrag.pane != "" || r.chrome.frame.Empty() {
-		return
-	}
-	if focused := p.In(r.chrome.frame) && !p.In(r.model.todoLink); focused != i.focused {
-		i.focused = focused
-		// The frame brightens and the composer cursor hides with focus.
-		r.chromeHoverChanged = true
-	}
-}
-
 // inspectorFocused reports whether the navigation keys address the inspector.
+// Focus is the frame's: a view on a screen of its own has that screen's keys.
 func (r *managedREPL) inspectorFocused() bool {
-	i := &r.workspace().inspector
-	return i.open && i.focused
+	return r.framed() && r.workspace().inspector.focused
 }
 
 // Plain navigation keys address the focused inspector; otherwise they stay
 // with the composer, whose history recall and paging they drive. Control-key
 // editor shortcuts and text input always address the composer.
 func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
-	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching {
+	if !r.inspectorFocused() || r.model.hist.searching {
+		return false
+	}
+	return r.navigateView(e)
+}
+
+// viewHasKeys reports whether navigation keys reach the inspected view: a
+// focused frame, or a screen of its own.
+func (r *managedREPL) viewHasKeys() bool {
+	return r.inspectorFocused() || r.viewDetached && r.workspace().inspector.open
+}
+
+// navigateView applies a navigation key to the inspected view.
+func (r *managedREPL) navigateView(e ui.Event) bool {
+	if e.Type != ui.KeyboardEvent {
 		return false
 	}
 	i := &r.workspace().inspector
@@ -336,7 +274,7 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
 		return true
 	}
-	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
+	height := r.surface.bodyHeight()
 	delta := 0
 	switch e.ID {
 	case "<Left>", "<Right>":
@@ -385,13 +323,13 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 // activateInspectorPoint is shared by mouse and keyboard action activation.
 func (r *managedREPL) activateInspectorPoint(point image.Point) {
 	i := &r.workspace().inspector
-	for _, b := range r.inspectorButtons {
+	for _, b := range r.surface.buttons {
 		if point.In(b.rect) {
 			r.inspectorAction(b.action)
 			return
 		}
 	}
-	if point.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
+	if point.Y < r.surface.inner.Min.Y+r.surface.headerRows {
 		return
 	}
 	if i.current != nil && i.current.model != nil {
@@ -399,8 +337,8 @@ func (r *managedREPL) activateInspectorPoint(point image.Point) {
 		if r.inspectViewAt(m, i.target, point) {
 			return
 		}
-		x := point.X - r.chrome.inner.Min.X
-		if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, point.Y, r.chrome.inner.Dx()) }) {
+		x := point.X - r.surface.inner.Min.X
+		if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, point.Y, r.surface.inner.Dx()) }) {
 			return
 		}
 		if r.toggleToolOutputAt(m, point, &i.target) {

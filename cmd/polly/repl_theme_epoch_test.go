@@ -168,7 +168,7 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 		pt   image.Point
 	}{
 		{"frame", r.chrome.frame.Min},
-		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
+		{"scrollbar thumb", r.surface.scrollbar.thumb.Min},
 	} {
 		_, cellStyle, _ := frame.Get(surface.pt.X, surface.pt.Y)
 		if got := cellStyle.GetForeground(); got != newMuted {

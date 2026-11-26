@@ -42,21 +42,12 @@ type chromeGeometry struct {
 	// joined marks a frame whose bottom border sits on the composer rule, so
 	// the interior keeps the transcript region's last row.
 	joined bool
-}
-
-// split divides the interior into the header, the body beneath it, and the
-// scrollbar track beside the body.
-func (g chromeGeometry) split(headerRows int) (header, body, track image.Rectangle) {
-	if g.inner.Empty() {
-		return
-	}
-	rows := max(0, min(headerRows, g.inner.Dy()))
-	header = image.Rect(g.inner.Min.X, g.inner.Min.Y, g.inner.Max.X, g.inner.Min.Y+rows)
-	body = image.Rect(g.inner.Min.X, header.Max.Y, g.inner.Max.X, g.inner.Max.Y)
-	if !g.edge.Empty() {
-		track = image.Rect(g.edge.Min.X, body.Min.Y, g.edge.Max.X, body.Max.Y)
-	}
-	return header, body, track
+	// floating marks a frame that stands over the conversation instead of
+	// beside it (see repl_pane_own.go): main is then the whole region.
+	floating bool
+	// pin is the mark on the frame's top border that docks a floating frame
+	// beside the conversation, or floats a docked one.
+	pin image.Rectangle
 }
 
 // splitLimits bounds the divider column so both panes keep inspectorMinWidth
@@ -75,6 +66,136 @@ func (r *managedREPL) splitColumn(width int) int {
 	return max(lo, min(hi, int(float64(width-1)*ratio)))
 }
 
+// framed reports whether the inspected view is open in the frame polly paints
+// beside the conversation. Everything in this file hangs on it: a view shown
+// on a screen of its own (viewDetached) is open with no frame, and the main
+// screen is laid out, painted and clicked as if it had no inspector.
+func (r *managedREPL) framed() bool {
+	return len(r.tabs) > 0 && r.workspace().inspector.open && !r.viewDetached
+}
+
+// handleFramedEvent applies a main-screen event to the framed view: the keys
+// it holds while focused or searching, the frame's divider and border, and
+// clicks on its content. Caller holds r.model.mu.
+func (r *managedREPL) handleFramedEvent(e ui.Event) bool {
+	i := &r.workspace().inspector
+	if r.viewSearchKey(e) {
+		return true
+	}
+	// Search and approval own Escape first: cancel the search, deny the call.
+	// A focused inspector gives the keys back before it closes.
+	if e.ID == "<Escape>" && !r.model.hist.searching && r.model.approval == nil {
+		if i.focused {
+			i.focused = false
+			i.keyboardAction = ""
+			return true
+		}
+		r.closeInspector()
+		return true
+	}
+	if i.focused && e.Type == ui.KeyboardEvent {
+		if e.ID == "<M-p>" && r.panes.own.pins {
+			r.toggleDock(floatView)
+			return true
+		}
+		if e.ID == "<Tab>" {
+			// On to the panel after this one, or back to the composer.
+			r.tabToNextPanel(floatView, false)
+			return true
+		}
+		// Typing means the composer: hand the keys back and let the rune land.
+		if _, ok := printableRune(e); ok {
+			i.keyboardAction = ""
+			i.focused = false
+		}
+	}
+	if r.handleFocusedNavigation(e) {
+		return true
+	}
+	if e.Type != ui.MouseEvent {
+		return false
+	}
+	mouse, ok := e.Payload.(ui.Mouse)
+	if !ok {
+		return false
+	}
+	point := image.Pt(mouse.X, mouse.Y)
+	if e.ID == "<MouseLeft>" && point.In(r.chrome.divider) {
+		r.inspectorDragging = true
+		return true
+	}
+	if r.inspectorDragging {
+		if e.ID == "<MouseRelease>" {
+			r.inspectorDragging = false
+			return true
+		}
+		if e.ID == "<MouseLeft>" {
+			r.inspectorRatio = float64(mouse.X) / float64(max(1, r.paintedWidth()-1))
+			return true
+		}
+	}
+	if point.In(r.chrome.frame) && !point.In(r.chrome.inner) {
+		// The frame belongs to the inspector, including in full-width
+		// mode; clicks must not reach the hidden conversation underneath.
+		if e.ID == "<MouseLeft>" && point.In(r.chrome.pin) {
+			r.toggleDock(floatView)
+			return true
+		}
+		switch e.ID {
+		case "<MouseWheelUp>":
+			r.inspectorScroll(-3)
+		case "<MouseWheelDown>":
+			r.inspectorScroll(3)
+		case "<MouseLeft>":
+			if point.In(r.model.todoLink) {
+				return false // The task marks belong to the composer, not the frame.
+			}
+			if point.In(r.chrome.close) {
+				r.inspectorAction("close")
+			}
+		}
+		return true
+	}
+	// Nothing under a floating frame is there to be clicked.
+	return r.viewContentMouse(e, point) || r.chrome.floating && point.In(r.chrome.frame)
+}
+
+func (r *managedREPL) resizeInspector(direction int) {
+	i := &r.workspace().inspector
+	width := r.paintedWidth()
+	if !r.framed() || r.chrome.floating || i.maximized || width < splitThreshold {
+		return
+	}
+	// Start from the displayed divider, including after a drag or terminal
+	// resize clamps a pane to its minimum. A width control must never reverse.
+	lo, hi := splitLimits(width)
+	left := max(lo, min(hi, r.splitColumn(width)-direction*max(1, (width-1)/20)))
+	// Store the middle of this column's interval so float rounding does not
+	// place the divider one column short when geometry converts back to int.
+	r.inspectorRatio = (float64(left) + .5) / float64(width-1)
+}
+
+// followPointerFocus moves the keys to the pane under the pointer: the
+// inspector while the pointer is over its frame, the composer otherwise.
+// Tab and Escape still move focus by hand until the pointer moves again. A
+// divider or scrollbar drag, a dialog, and an inspector search hold focus
+// where it is, and a frame that has not been painted yet cannot be pointed
+// at. Caller must hold r.model.mu.
+func (r *managedREPL) followPointerFocus(p image.Point) {
+	i := &r.workspace().inspector
+	if !r.framed() || i.searching || r.model.modal != nil || r.inspectorDragging || r.scrollDrag.pane != "" || r.chrome.frame.Empty() {
+		return
+	}
+	if focused := p.In(r.chrome.frame) && !p.In(r.model.todoLink); focused != i.focused {
+		i.focused = focused
+		if focused {
+			r.yieldPanelKeys()
+		}
+		// The frame brightens and the composer cursor hides with focus.
+		r.chromeHoverChanged = true
+	}
+}
+
 // chromeGeometryFor derives the chrome for a transcript region of the given
 // width that starts at row top and spans rows. When the composer rule sits
 // directly under the region (joined), the frame's bottom border lands on the
@@ -83,13 +204,14 @@ func (r *managedREPL) splitColumn(width int) int {
 func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chromeGeometry {
 	g := chromeGeometry{width: width}
 	region := image.Rect(0, top, width, top+rows)
-	open, maximized := false, false
-	if len(r.tabs) > 0 {
-		i := &r.workspace().inspector
-		open, maximized = i.open, i.maximized
+	open, maximized := r.framed(), false
+	if open {
+		maximized = r.workspace().inspector.maximized
 	}
+	own := r.panes.own
 	if !open {
-		g.main = region
+		// Panels docked beside the conversation narrow it.
+		g.main = image.Rect(0, top, width-own.dock, top+rows)
 		return g
 	}
 	// Two border rows plus at least one content row; anything shorter would
@@ -99,16 +221,42 @@ func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chrom
 		g.plain = true
 		return g
 	}
-	x := 0
+	x, above, below := 0, 0, 0
 	if !maximized && width >= splitThreshold {
+		if r.viewFloats() {
+			// A window over the conversation, between the windows above and
+			// below it in the same column, and beside any docked panels.
+			edge := width - own.dock
+			wide := own.floatWidth
+			if wide <= 0 {
+				wide = viewFloatWidth(edge)
+			}
+			frame := image.Rect(edge-wide, top+own.viewTop, edge, top+rows-own.viewBottom)
+			if frame.Dy() < ownWindowMinRows {
+				frame.Min.Y, frame.Max.Y = top, top+rows
+			}
+			g.main, g.frame, g.floating = image.Rect(0, top, edge, top+rows), frame, true
+			g.inner = image.Rect(frame.Min.X+1, frame.Min.Y+1, frame.Max.X-1, frame.Max.Y-1)
+			g.edge = image.Rect(frame.Max.X-1, g.inner.Min.Y, frame.Max.X, g.inner.Max.Y)
+			g.close = image.Rect(frame.Max.X-2, frame.Min.Y, frame.Max.X-1, frame.Min.Y+1)
+			if own.pins {
+				g.pin = pinRect(g.close)
+			}
+			return g
+		}
 		x = r.splitColumn(width)
 		g.main = image.Rect(0, top, x, top+rows)
+		// Panels docked in the view's column stand above and below it.
+		if rows-own.viewTop-own.viewBottom >= ownWindowMinRows {
+			above, below = own.viewTop, own.viewBottom
+		}
 	}
-	bottom := top + rows
-	if joined {
+	bottom := top + rows - below
+	if joined && below == 0 {
 		g.joined = true
 		bottom++
 	}
+	top += above
 	g.frame = image.Rect(x, top, width, bottom)
 	g.inner = image.Rect(x+1, top+1, width-1, bottom-1)
 	if x > 0 {
@@ -116,6 +264,9 @@ func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chrom
 	}
 	g.edge = image.Rect(width-1, g.inner.Min.Y, width, g.inner.Max.Y)
 	g.close = image.Rect(width-2, top, width-1, top+1)
+	if x > 0 && own.pins {
+		g.pin = pinRect(g.close)
+	}
 	return g
 }
 
@@ -141,6 +292,22 @@ func (r *managedREPL) viewGeometryFor(g chromeGeometry, width int) viewGeometry 
 		vg.nativeImages = true
 	}
 	return vg
+}
+
+// frameSearching reports whether the framed view's search prompt holds the
+// main screen's keys.
+func (r *managedREPL) frameSearching() bool {
+	return r.framed() && r.workspace().inspector.searching
+}
+
+// projectionGeometry is what the inspected view is wrapped for before it is
+// painted: the frame's interior on a terminal of the given width, or the
+// surface a detached view was last placed on.
+func (r *managedREPL) projectionGeometry(terminalWidth int) viewGeometry {
+	if r.viewDetached {
+		return viewGeometry{width: max(1, r.surface.inner.Dx())}
+	}
+	return r.inspectorGeometry(terminalWidth)
 }
 
 // inspectorGeometry is the projection geometry for a terminal of the given
@@ -173,10 +340,23 @@ type chromeLayer struct {
 	r *managedREPL
 	// close is drawn in the accent color, the palette's clickable slot.
 	close image.Rectangle
+	// over is the view's widgets when its frame floats: they are drawn here,
+	// over a conversation that has been drawn whole.
+	over []ui.Drawable
 }
 
 func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	c.Drawable.Draw(buf)
+	if g := c.r.chrome; g.floating {
+		for y := g.frame.Min.Y; y < g.frame.Max.Y; y++ {
+			for x := g.frame.Min.X; x < g.frame.Max.X; x++ {
+				buf.SetCell(ui.Cell{Rune: ' ', Style: ui.StyleClear}, image.Pt(x, y))
+			}
+		}
+		for _, item := range c.over {
+			item.Draw(buf)
+		}
+	}
 	if g := c.r.chrome; g.joined && g.main.Empty() {
 		// A full-width inspector shares the composer's rule row. Keep its
 		// corner glyphs, but preserve the composer's short color cue beneath.
@@ -191,7 +371,14 @@ func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	if !c.close.Empty() {
 		buf.SetCell(ui.Cell{Rune: '×', Style: ui.NewStyle(chromeColor("accent"))}, c.close.Min)
 	}
-	c.r.inspectorScrollbar.draw(buf)
+	if pin := c.r.chrome.pin; !pin.Empty() {
+		mark := pinFloatMark
+		if c.r.chrome.floating {
+			mark = pinDockMark
+		}
+		buf.SetString(mark, ui.NewStyle(chromeColor("accent")), pin.Min)
+	}
+	c.r.surface.scrollbar.draw(buf)
 }
 
 // inspectorAttention reports whether the inspected conversation needs approval.
@@ -251,9 +438,16 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout) ui.Draw
 	}
 	// Keep controls painted into the shared composer rule, including the
 	// spaces that separate the task marks from the rule.
-	r.border.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink, g.close}
+	r.border.masks = []image.Rectangle{r.surface.scrollbar.thumb, r.model.parentLink, g.close}
+	if !g.pin.Empty() {
+		r.border.masks = append(r.border.masks, image.Rect(g.pin.Min.X-1, g.pin.Min.Y, g.pin.Max.X+1, g.pin.Max.Y))
+	}
 	if link := r.model.todoLink; !link.Empty() {
 		r.border.masks = append(r.border.masks, image.Rect(link.Min.X-1, link.Min.Y, link.Max.X+1, link.Max.Y))
 	}
-	return &chromeLayer{Drawable: drawable, r: r, close: g.close}
+	layer := &chromeLayer{Drawable: drawable, r: r, close: g.close}
+	if g.floating {
+		layer.over = r.viewWidgets()
+	}
+	return layer
 }

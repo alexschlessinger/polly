@@ -163,8 +163,8 @@ func TestAgentsInspectorFinishedNavigation(t *testing.T) {
 	r.refreshAgentsInspector(viewGeometry{width: 36})
 	state := r.workspace().viewState(r.workspace().inspector.target)
 	list := state.agents
-	r.chrome.inner = image.Rect(0, 0, 36, 10)
-	r.inspectorHeaderRows = 1
+	r.surface.inner = image.Rect(0, 0, 36, 10)
+	r.surface.headerRows = 1
 	want := []string{"agents-open:" + ids[0], "", "agents-open:" + ids[1], "", agentsFinishedAction}
 	if got := r.workspace().inspector.current.agentsActions; !slices.Equal(got, want) {
 		t.Fatalf("collapsed actions: %v", got)
@@ -272,7 +272,7 @@ func TestAgentsInspectorIdleTick(t *testing.T) {
 	if r.needsTick() {
 		t.Fatal("idle list requested a frame before its refresh interval")
 	}
-	r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
+	r.workspace().inspector.refreshAt = time.Now().Add(-2 * time.Second)
 	if !r.needsTick() {
 		t.Fatal("idle list will never repaint to age finished agents")
 	}

@@ -139,30 +139,47 @@ func (l frameLayout) mainWidth() int {
 	return l.chrome.main.Dx()
 }
 
+// footerRowCounts measures the bottom chrome rows (composer or docked form,
+// divider rule, status row) for a w×h terminal without side effects. Caller
+// holds m.mu.
+func (r *managedREPL) footerRowCounts(w, h int) (inputRows, dividerRows, statusRows int) {
+	m := r.model
+	inputRows = m.inputRows()
+	if !m.quiet {
+		statusRows = 1
+	}
+	// The model form or ask dialog docks in the composer's place.
+	if rows := m.dockedFormRows(w, h, statusRows); rows > 0 {
+		inputRows = rows
+	}
+	if room := h - statusRows; room > 1 {
+		inputRows = min(inputRows, room-1)
+	} else {
+		inputRows = 1
+	}
+	// The rule above the composer separates history from the input in every
+	// session; in agent tabs it also carries the link back to the caller.
+	dividerRows = dividerRowCount(h, inputRows, statusRows, m.quiet)
+	return inputRows, dividerRows, statusRows
+}
+
 // frameLayoutFor splits a w×h terminal. The composer is the only region whose
 // height follows its content, so it is measured first and then capped to what
 // the fixed chrome leaves; the divider and logo drop out when short, and the
 // transcript takes whatever remains. Caller must hold m.mu.
 func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
-	m := r.model
-	l := frameLayout{width: w, height: h, inputRows: m.inputRows()}
-	if !m.quiet {
-		l.statusRows = 1
+	inputRows, dividerRows, statusRows := r.footerRowCounts(w, h)
+	l := frameLayout{
+		width:       w,
+		height:      h,
+		inputRows:   inputRows,
+		dividerRows: dividerRows,
+		statusRows:  statusRows,
 	}
-	// The model form docks in the composer's place.
-	if rows := m.dockedFormRows(w, h, l.statusRows); rows > 0 {
-		l.inputRows = rows
-	}
-	if room := h - l.statusRows; room > 1 {
-		l.inputRows = min(l.inputRows, room-1)
-	} else {
-		l.inputRows = 1
-	}
-	// The rule above the composer separates history from the input in every
-	// session; in agent tabs it also carries the link back to the caller.
-	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, m.quiet)
 	content := h - l.inputRows - l.statusRows - l.dividerRows
 	l.transcriptHeight = max(0, content)
+	r.panes.footerRows = max(floatFooterRows, l.inputRows+l.statusRows+l.dividerRows)
+	r.layoutOwnWindows(w, l.transcriptHeight)
 	l.chrome = r.chromeGeometryFor(w, 0, l.transcriptHeight, l.dividerRows > 0)
 	return l
 }
@@ -201,7 +218,7 @@ func dividerRowCount(h, inputRows, statusRows int, quiet bool) int {
 }
 
 func (r *managedREPL) setupWidgets() {
-	r.setupInspectorWidgets()
+	r.surface = newViewSurface()
 	// gotui paragraphs default their TextStyle to ColorWhite, which forces
 	// unstyled text (primary input, LLM responses) to white and ignores the
 	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
@@ -254,10 +271,15 @@ func (r *managedREPL) layout(l frameLayout) {
 		}
 	}
 	add(r.transcriptW, g.main)
-	if r.workspace().inspector.open {
-		header, body, _ := g.split(r.inspectorHeaderRows)
-		add(r.inspectorHeaderW, header)
-		add(r.inspectorW, body)
+	// The frame decides where the inspected view goes; the view only knows
+	// its surface. A detached view's surface is placed by its own screen.
+	if !r.viewDetached {
+		r.surface.place(g.inner, g.edge)
+	}
+	if r.framed() && !g.floating {
+		header, body, _ := r.surface.split()
+		add(r.surface.header, header)
+		add(r.surface.body, body)
 	}
 	if l.dividerRows > 0 {
 		y := l.transcriptHeight
@@ -321,7 +343,13 @@ func (r *managedREPL) render() {
 	ui.DefaultBackend.Screen = r.painter.track(ui.DefaultBackend.Screen)
 	r.relayTabSignals()
 	r.refreshSwarmActivities()
+	r.syncViewPane()
+	r.syncPanels()
+	r.syncFloatLayout()
+	r.syncHostAsks()
+	r.syncWall()
 	r.refreshInspector(w)
+	r.refreshWall()
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.CellDimensions()
@@ -338,6 +366,7 @@ func (r *managedREPL) render() {
 		r.model.imageCellHeight = imageCellHeight
 		r.model.visual.invalidate()
 	}
+	r.refreshOwnPanels(now)
 	l := r.frameLayoutFor(w, h)
 	mainWidth := l.mainWidth()
 	r.model.refreshActiveTools()
@@ -371,9 +400,10 @@ func (r *managedREPL) render() {
 	}
 	r.refreshStatusSpeed()
 	status := r.model.statusRow(w)
-	inspectorFocus := r.inspectorFocused() || r.workspace().inspector.searching
+	inspectorFocus := r.inspectorFocused() || r.frameSearching()
 	divider := r.model.dividerRow(l, inspectorFocus)
-	modalOpen := r.model.modal != nil
+	// A window that has the keys is drawn with the windows, not as a dialog.
+	modalOpen, keysAway := r.dialogOpen(), r.dialogOpen() || r.focusedOwnWindow() != nil
 	docked := modalOpen && (r.model.modal.modelForm != nil || r.model.modal.ask != nil)
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
@@ -388,7 +418,6 @@ func (r *managedREPL) render() {
 		}
 		modalHeight = min(l.inputRows, strings.Count(modalText, "\n")+1)
 	} else if modalOpen {
-		r.refreshContextPopover(now)
 		if r.model.modal.refresh != nil {
 			r.model.modal.refresh()
 		}
@@ -402,20 +431,12 @@ func (r *managedREPL) render() {
 			// Leave breathing room inside the transcript, above the composer.
 			maxRows = max(1, min(24, l.transcriptHeight*2/3)-5)
 		}
-		if r.model.modal.todo != nil {
-			// Keep the composer visible while inspecting tasks.
-			maxRows = max(1, l.transcriptHeight-3)
-		}
-		if r.model.modal.context != nil {
-			// Anchored inspectors can use the rows above the status bar; the
-			// breathing room reserved for centered pickers would hide details.
-			maxRows = max(1, h-3)
-		}
 		modalText = r.model.modal.text(maxRows, modalWidth)
 		modalTitle = r.model.modal.title
 		modalHeight = min(h, max(3, strings.Count(modalText, "\n")+3))
 	}
 	title := r.model.frameTitle()
+	tabLabel, tabName := r.model.status.displayLabel(), r.model.status.contextName
 	progress := r.model.frameProgress()
 	programStatus := r.model.frameProgramStatus()
 	notices := r.model.takeNotices()
@@ -427,13 +448,14 @@ func (r *managedREPL) render() {
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.toolOutputLinks = r.model.visibleToolOutputLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
-	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
+	idleCursor := r.affordanceW != nil && editable && !r.frameSearching() && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {
 		affordanceSpans = r.model.affordanceSpans(now, viewport, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	referencePopup := r.model.referencePopupWidget(w, curCol, l.composerRow(curRow))
+	windows, windowRects, windowImages := r.frameOwnWindows(imageCellWidth, imageCellHeight)
 	r.model.mu.Unlock()
-	if r.workspace().inspector.open {
+	if r.framed() {
 		if l.chrome.main.Empty() {
 			imagePlacements = nil
 			visible := affordanceSpans[:0]
@@ -444,15 +466,25 @@ func (r *managedREPL) render() {
 			}
 			affordanceSpans = visible
 		}
-		imagePlacements = append(imagePlacements, r.renderInspector(l)...)
+		if l.chrome.floating {
+			// The frame covers the conversation's cells, thumbnails and marks.
+			imagePlacements = occludePlacements(imagePlacements, []image.Rectangle{l.chrome.frame})
+			affordanceSpans = slices.DeleteFunc(affordanceSpans, func(span affordanceSpan) bool {
+				return image.Rect(span.x, span.y, span.x+max(1, span.cols), span.y+1).Overlaps(l.chrome.frame)
+			})
+		}
+		imagePlacements = append(imagePlacements, r.renderInspector(l.chrome.inner, r.viewGeometryFor(l.chrome, l.width))...)
 		// While the inspector owns the keys, the composer shows no cursor.
-		if r.workspace().inspector.searching || r.inspectorFocused() {
+		if r.frameSearching() || r.inspectorFocused() {
 			editable = false
 			idleCursor = false
 		}
 	} else {
-		r.inspectorButtons = nil
 		r.inspectorDragging = false
+		// A detached view's surface belongs to whatever paints it.
+		if !r.viewDetached {
+			r.surface.buttons = nil
+		}
 	}
 	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)
 	// Hitboxes are fresh now; the underline follows this frame's layout.
@@ -461,6 +493,10 @@ func (r *managedREPL) render() {
 	r.model.mu.Unlock()
 
 	imagesChanged := false
+	if len(windowRects) > 0 {
+		// A window covers the thumbnails under it and places its own.
+		imagePlacements = append(occludePlacements(imagePlacements, windowRects), windowImages...)
+	}
 	var modalRect image.Rectangle
 	if modalOpen {
 		x := (w - modalWidth) / 2
@@ -472,9 +508,6 @@ func (r *managedREPL) render() {
 			x = w - modalWidth
 			y = max(0, h-1-modalHeight)
 		}
-		if r.model.modal.todo != nil {
-			x, y = w-modalWidth, max(0, l.transcriptHeight-modalHeight)
-		}
 		if docked {
 			x, y = 0, l.composerRow(0)
 		}
@@ -485,9 +518,6 @@ func (r *managedREPL) render() {
 		imagePlacements = slices.DeleteFunc(slices.Clone(imagePlacements), func(p termimg.Placement) bool {
 			return p.Bounds().Overlaps(modalRect)
 		})
-		if d := r.model.modal.context; d != nil {
-			imagePlacements = append(imagePlacements, d.placement(r.model.modal, modalRect, imageCellWidth, imageCellHeight)...)
-		}
 	}
 	if referencePopup != nil {
 		// The popup is text-layer chrome sized to its rows: images give way
@@ -536,10 +566,12 @@ func (r *managedREPL) render() {
 	r.dividerW.Text = divider
 
 	r.layout(l)
-	r.setInspectorScrollbar(l)
+	if !r.viewDetached {
+		r.setInspectorScrollbar(r.mousePosition, r.mousePositionKnown)
+	}
 	syncThemeSurface()
 	r.refreshWidgetRoles()
-	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
+	r.placeCursor(editable && !keysAway && !idleCursor, curCol, l.composerRow(curRow), w)
 	var drawable ui.Drawable = r.rootFlex
 	if modalOpen {
 		if r.affordanceW != nil {
@@ -555,15 +587,16 @@ func (r *managedREPL) render() {
 		drawable = r.affordanceW
 	}
 	drawable = r.refreshChrome(drawable, l)
+	// The conversation, then the windows over it, then whatever owns the input.
+	layers := append([]ui.Drawable{drawable}, windows...)
 	if docked {
-		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.dockW)
+		layers = append(layers, r.dockW)
 	} else if modalOpen {
-		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.modalW)
+		layers = append(layers, r.modalW)
 	} else if referencePopup != nil {
-		r.painter.draw(ui.DefaultBackend.Screen, drawable, referencePopup)
-	} else {
-		r.painter.draw(ui.DefaultBackend.Screen, drawable)
+		layers = append(layers, referencePopup)
 	}
+	r.painter.draw(ui.DefaultBackend.Screen, layers...)
 	r.paintHover(ui.DefaultBackend.Screen)
 	// Present the widget styles and underline together. Flushing the plain
 	// frame first briefly erases the mark on every inspector refresh.
@@ -582,6 +615,8 @@ func (r *managedREPL) render() {
 			r.fx.notify("polly", body)
 		}
 	}
+	r.titlePane(tabLabel, tabName)
+	r.renderPanes()
 	// A parked /screenshot captures this frame — the first one painted after the
 	// command, which the composer has already left and its notice has not.
 	r.finishPendingScreenshot()

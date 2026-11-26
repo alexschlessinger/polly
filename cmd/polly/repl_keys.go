@@ -22,6 +22,10 @@ func (r *managedREPL) requestSuspend() {
 // quit.
 func (r *managedREPL) handleEvent(e ui.Event) bool {
 	if e.Type == ui.ResizeEvent {
+		// The floating windows sit over polly's pane, wherever that is now,
+		// and a window docked beside polly is what resizes polly most.
+		r.panes.reflow = true
+		r.locateWindows()
 		return false
 	}
 
@@ -48,7 +52,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
 			next := image.Pt(mouse.X, mouse.Y)
 			r.chromeHoverChanged = r.inspectorDragging || r.scrollDrag.pane != ""
-			for _, rect := range []image.Rectangle{r.chrome.divider, r.inspectorScrollbar.track, r.modalScrollbar.track} {
+			for _, rect := range []image.Rectangle{r.chrome.divider, r.surface.scrollbar.track, r.modalScrollbar.track, r.panelScrollbar.track} {
 				r.chromeHoverChanged = r.chromeHoverChanged || next.In(rect) != (r.mousePositionKnown && r.mousePosition.In(rect))
 			}
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
@@ -78,6 +82,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	}
 	if e.Type == ui.KeyboardEvent {
 		m.affordances.inputAt = time.Now()
+		r.keyAt = m.affordances.inputAt
 	}
 
 	// The warning that turns run in other tabs holds for the very next
@@ -86,6 +91,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		r.quitWarned = false
 	}
 
+	// A window of polly's own screen takes the keys with a press and gives
+	// them back to whatever else is pressed or typed.
+	if r.ownWindowEvent(e) {
+		m.cancelKey = ""
+		return false
+	}
 	// Selection and credential modals own all remaining input. In particular,
 	// key material never passes through paste handling or the composer.
 	if m.modal != nil {
@@ -104,7 +115,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			return false
 		}
 	}
-	if r.handleInlineActionKey(e) || r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
+	// A detached view's scrollbar is on its own screen, not under this pointer.
+	if r.handleInlineActionKey(e) || !r.viewDetached && r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
 		m.cancelKey = ""
 		return false
 	}
@@ -340,7 +352,7 @@ func keyBindingGroups() []keyGroup {
 		{title: "Send and edit", bindings: []keyBinding{
 			replKey("Enter", "Send the message", composerPhase, func(r *managedREPL, _ keyContext) bool { return r.submitComposerLocked() }, "<Enter>"),
 			editorKey("Ctrl-J", "Insert a newline", func(ed *lineEditor) { ed.insert('\n') }, "<C-j>"),
-			replKey("Tab", "Complete a reference · focus agent panel", composerPhase, completeOrFocusInspector, "<Tab>"),
+			replKey("Tab", "Complete a reference · focus the next open panel", composerPhase, completeOrFocusInspector, "<Tab>"),
 			action("Ctrl-R", "Search history", composerPhase, func(r *managedREPL) { r.model.hist.startSearch() }, "<C-r>"),
 			action("Ctrl-V", "Attach the clipboard image", composerPhase, func(r *managedREPL) { r.captureClipboardToComposer() }, "<C-v>"),
 			action("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL) { r.model.clearScreen() }, "<C-l>"),
@@ -406,6 +418,7 @@ func keyBindingGroups() []keyGroup {
 			replKey("Ctrl-O", "Collapse or expand all activity", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Navigate agents or switch swarm sections"},
+			{"Alt-P", "Dock the focused panel, or float it again"},
 			{"Shift-Tab", "Inline/panel actions: Left/Right choose, Enter activates"},
 			{"PgUp / PgDn", "Reach offscreen actions · Esc leaves inline selection"},
 			{"Output pages", "Previous/Next reads all recorded output"},
@@ -438,6 +451,13 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
+	r.toggleViewDisclosures()
+	return false
+}
+
+// toggleViewDisclosures collapses or expands every chunk of the inspected
+// view. Caller holds r.model.mu.
+func (r *managedREPL) toggleViewDisclosures() {
 	// The inspector pane wraps its own activity, at the width the click
 	// path lays it out with. The toggle runs on a projection copy whose
 	// state dies with it, so the bulk state is carried back into the view
@@ -445,14 +465,13 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	// re-apply them.
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	r.mutateInspectedView(func(m *replModel) bool {
-		if !m.toggleAllDisclosures(r.chrome.inner.Dx()) {
+		if !m.toggleAllDisclosures(r.surface.inner.Dx()) {
 			return false
 		}
 		s.depth = m.depth
 		r.model.noteDepth(m.depth)
 		return true
 	})
-	return false
 }
 
 // completeOrFocusInspector is Tab: an open inspector receives focus without
@@ -462,9 +481,14 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 // choices go into the popup so Up/Down and another Tab or Enter insert them.
 func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
 	m := r.model
-	if i := &r.workspace().inspector; i.open && !i.searching {
-		i.focused = true
-		return false
+	// The first open panel takes the keys, on polly's own screen or in a
+	// window of the host's, without the draft changing: always beside an
+	// inspector in polly's frame, and otherwise unless a slash command is
+	// being typed, which Tab completes.
+	if r.framed() && !r.workspace().inspector.searching || !strings.HasPrefix(m.ed.text(), "/") {
+		if r.tabToNextPanel(noPanel, false) {
+			return false
+		}
 	}
 	cur := m.ed.text()
 	ctx := newManagedReplCommandContext(r)

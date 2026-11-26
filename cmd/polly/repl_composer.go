@@ -190,6 +190,7 @@ func (m *replModel) answerApprovalRequest(a *approvalState, answer byte) bool {
 		a.out[a.index] = false
 		a.index++
 	}
+	a.waiting = time.Now()
 	if a.index >= len(a.out) {
 		m.resolveApprovalLocked(a, append([]bool(nil), a.out...))
 		return true

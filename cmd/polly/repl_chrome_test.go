@@ -80,11 +80,11 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		waitInspector(t, r, width)
 		r.render()
 		g := r.chrome
-		if r.inspectorW.Inner.Dx() != r.inspectorGeometry(width).width {
+		if r.surface.body.Inner.Dx() != r.inspectorGeometry(width).width {
 			t.Fatal("inspector wrapper differs from body")
 		}
-		if width == 240 && (g.main.Dx() != 143 || r.inspectorW.Inner.Dx() != 95) {
-			t.Fatalf("default split is not 60 percent conversation and 40 percent inspector: %v %v", g.main, r.inspectorW.Inner)
+		if width == 240 && (g.main.Dx() != 143 || r.surface.body.Inner.Dx() != 95) {
+			t.Fatalf("default split is not 60 percent conversation and 40 percent inspector: %v %v", g.main, r.surface.body.Inner)
 		}
 		if g.frame.Empty() {
 			t.Fatalf("no frame at width %d", width)
@@ -95,19 +95,19 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if frame := screenSnapshot(t, screen); screenGlyph(frame, g.frame.Min) != "╭" || screenGlyph(frame, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
 			t.Fatalf("frame corners missing at width %d", width)
 		}
-		checkInspectorHeaderGeometry(t, r.inspectorHeader(r.inspectorHeaderW.Inner.Dx(), r.chrome.inner.Dy(), r.inspectorHeaderW.Inner.Min.X, r.inspectorHeaderW.Inner.Min.Y), r.inspectorHeaderW.Inner)
+		checkInspectorHeaderGeometry(t, r.inspectorHeader(r.surface.header.Inner.Dx(), r.chrome.inner.Dy(), r.surface.header.Inner.Min.X, r.surface.header.Inner.Min.Y), r.surface.header.Inner)
 		if width >= splitThreshold {
 			for _, ratio := range []float64{.01, .99, .5} {
 				r.inspectorRatio = ratio
 				r.render()
-				if r.chrome.main.Dx() < inspectorMinWidth || r.inspectorW.Inner.Dx() < inspectorMinWidth {
+				if r.chrome.main.Dx() < inspectorMinWidth || r.surface.body.Inner.Dx() < inspectorMinWidth {
 					t.Fatal("resize violated readable minimum")
 				}
 			}
 		} else if !g.main.Empty() {
 			t.Fatal("narrow inspector overlaps root")
 		}
-		if !headerButton(r.inspectorButtons, "maximize").Empty() {
+		if !headerButton(r.surface.buttons, "maximize").Empty() {
 			t.Fatal("an item view has no header controls")
 		}
 		g = r.chrome
@@ -115,13 +115,13 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if close := g.close; close != image.Rect(g.frame.Max.X-2, g.frame.Min.Y, g.frame.Max.X-1, g.frame.Min.Y+1) || screenGlyph(frame, close.Min) != "×" || screenGlyph(frame, close.Min.Add(image.Pt(1, 0))) != "╮" {
 			t.Fatalf("close button %v is not on the top border beside the corner", g.close)
 		}
-		if r.inspectorW.Inner.Min.Y != g.inner.Min.Y+r.inspectorHeaderRows {
+		if r.surface.body.Inner.Min.Y != g.inner.Min.Y+r.surface.headerRows {
 			t.Fatal("an item view's body does not start under the frame")
 		}
 	}
 	r.inspectorAction("maximize")
 	r.render()
-	if !r.chrome.main.Empty() || r.inspectorW.Inner.Min.X != 1 || r.chrome.frame.Min.X != 0 {
+	if !r.chrome.main.Empty() || r.surface.body.Inner.Min.X != 1 || r.chrome.frame.Min.X != 0 {
 		t.Fatal("maximize failed")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", r.chrome.close.Min))
@@ -144,13 +144,13 @@ func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	waitInspector(t, r, 100)
 	r.render()
 	state := r.workspace().viewState(r.workspace().inspector.target)
-	b := r.inspectorScrollbar
+	b := r.surface.scrollbar
 	if b.thumb.Empty() {
 		t.Fatal("missing scrollbar")
 	}
 	// The thumb rides the frame's right edge; content owns every column before it.
-	if b.track.Min.X != 99 || r.inspectorW.Inner.Max.X != 99 {
-		t.Fatalf("scrollbar is not on the frame edge: track=%v inner=%v", b.track, r.inspectorW.Inner)
+	if b.track.Min.X != 99 || r.surface.body.Inner.Max.X != 99 {
+		t.Fatalf("scrollbar is not on the frame edge: track=%v inner=%v", b.track, r.surface.body.Inner)
 	}
 	frame := screenSnapshot(t, screen)
 	if glyph := screenGlyph(frame, b.thumb.Min); glyph != "┃" {
@@ -172,7 +172,7 @@ func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	if state.top != 0 || state.follow {
 		t.Fatal("new content stole scroll anchor")
 	}
-	b = r.inspectorScrollbar
+	b = r.surface.scrollbar
 	r.handleEvent(mouseEvent("<MouseLeft>", b.thumb.Min))
 	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(b.track.Min.X, b.track.Max.Y-1)))
 	r.handleEvent(mouseEvent("<MouseRelease>", b.track.Min))
@@ -281,8 +281,8 @@ func TestInspectorBorderUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.render()
-	if r.chrome.frame.Empty() || r.inspectorScrollbar.thumb.Empty() {
-		t.Fatalf("fixture lacks a frame with a thumb: frame=%v thumb=%v", r.chrome.frame, r.inspectorScrollbar.thumb)
+	if r.chrome.frame.Empty() || r.surface.scrollbar.thumb.Empty() {
+		t.Fatalf("fixture lacks a frame with a thumb: frame=%v thumb=%v", r.chrome.frame, r.surface.scrollbar.thumb)
 	}
 	for _, cell := range r.border.cells {
 		if r.border.masked(cell.point) {
@@ -293,7 +293,7 @@ func TestInspectorBorderUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 			t.Fatalf("border at %v lost the terminal palette: %v", cell.point, style)
 		}
 	}
-	if screenGlyph(screenSnapshot(t, screen), r.inspectorScrollbar.thumb.Min) != "┃" {
+	if screenGlyph(screenSnapshot(t, screen), r.surface.scrollbar.thumb.Min) != "┃" {
 		t.Fatal("border painted over the scrollbar thumb")
 	}
 	// The drag grip appears only while the pointer is over the divider.
@@ -331,7 +331,7 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 		}
 	}
 	check(r.chrome.frame.Min, ui.ColorGrey, "frame")
-	check(r.inspectorScrollbar.thumb.Min, ui.ColorGrey, "thumb")
+	check(r.surface.scrollbar.thumb.Min, ui.ColorGrey, "thumb")
 	check(r.chrome.close.Min, ui.ColorBlue, "close button")
 	_, prompt, _ := screen.Get(2, r.inputW.Inner.Min.Y)
 	if prompt.GetForeground() != ui.ColorClear || prompt.GetBackground() != ui.ColorClear {
@@ -425,8 +425,8 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 			t.Fatalf("width %d lost native image: %v", width, placements)
 		}
 		for _, p := range placements {
-			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.inspectorW.Inner) {
-				t.Fatalf("image crosses frame: %+v inner=%v", p, r.inspectorW.Inner)
+			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.surface.body.Inner) {
+				t.Fatalf("image crosses frame: %+v inner=%v", p, r.surface.body.Inner)
 			}
 		}
 		before := append([]termimg.Placement(nil), placements...)
@@ -515,7 +515,7 @@ func TestScrollbarPagingKeepsUnseenOutputBaseline(t *testing.T) {
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	s := r.workspace().viewState(r.workspace().inspector.target)
-	r.inspectorScrollbar = scrollbar{total: 100, visible: 20}
+	r.surface.scrollbar = scrollbar{total: 100, visible: 20}
 	s.follow, s.lastRows = false, 50
 	r.setScrollTop("inspector", 10)
 	if s.top != 10 || s.follow || s.lastRows != 50 {
@@ -561,8 +561,8 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 	}
 	r.render()
 	bottom := l.transcriptHeight
-	if !r.chrome.frame.Empty() || !r.inspectorScrollbar.track.Empty() || !r.inspectorScrollbar.thumb.Empty() {
-		t.Fatalf("a frame was laid out with no room for it: chrome=%+v scrollbar=%+v", r.chrome, r.inspectorScrollbar)
+	if !r.chrome.frame.Empty() || !r.surface.scrollbar.track.Empty() || !r.surface.scrollbar.thumb.Empty() {
+		t.Fatalf("a frame was laid out with no room for it: chrome=%+v scrollbar=%+v", r.chrome, r.surface.scrollbar)
 	}
 	if r.chrome.inner.Max.Y > bottom || r.chrome.inner.Min.X != 0 || r.chrome.inner.Dx() != 80 {
 		t.Fatalf("plain inspector does not span the transcript region (%d): %v", bottom, r.chrome.inner)

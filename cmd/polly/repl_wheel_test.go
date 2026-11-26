@@ -62,7 +62,7 @@ func TestWheelBatchRoutesAcrossInspectorAndScrollbar(t *testing.T) {
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow, s.top = false, 60
 	r.render()
-	for _, pt := range []image.Point{r.chrome.main.Min.Add(image.Pt(1, 1)), r.chrome.inner.Min.Add(image.Pt(1, r.inspectorHeaderRows+1)), r.inspectorScrollbar.track.Min, r.inspectorScrollbar.track.Min} {
+	for _, pt := range []image.Point{r.chrome.main.Min.Add(image.Pt(1, 1)), r.chrome.inner.Min.Add(image.Pt(1, r.surface.headerRows+1)), r.surface.scrollbar.track.Min, r.surface.scrollbar.track.Min} {
 		ev := mouseEvent("<MouseWheelUp>", pt)
 		r.handlePaintEvent(ev)
 		r.paintAfterEvent(ev)

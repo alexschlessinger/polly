@@ -17,7 +17,7 @@ deterministic:
 # scenario.txt
 :shot $POLLY_SHOT_DIR/splash.png
 /help
-:wait "Navigate" 5
+:wait "Polly commands" 5
 :shot $POLLY_SHOT_DIR/help.png
 :size 160x50
 :settle

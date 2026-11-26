@@ -24,6 +24,7 @@ import (
 	"image"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -49,6 +50,10 @@ type askDialog struct {
 	answered bool
 	// painted is false until the first frame drew the question.
 	painted bool
+	// shown is when the question went up, and hosted whether the terminal's
+	// host has been asked it too (see repl_pane_approve.go).
+	shown  time.Time
+	hosted bool
 
 	// selected and top window the choice rows; rowsY and rowsShown are where
 	// the last frame drew them, for the mouse.
@@ -469,6 +474,10 @@ func (t *gotuiTurnUI) AskUser(ctx context.Context, req askRequest) askAnswer {
 		m := t.model
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		// A window with the keys gives them to the question.
+		if m == t.repl.model {
+			t.repl.yieldPanelKeys()
+		}
 		switch {
 		case d.answered:
 			// The turn ended before the task ran; the caller has already
@@ -481,7 +490,7 @@ func (t *gotuiTurnUI) AskUser(ctx context.Context, req askRequest) askAnswer {
 			reply <- askAnswer{Outcome: askOutcomeBusy, Why: "a dialog is already open on this tab"}
 			return
 		}
-		m.modal = d.modal
+		m.modal, d.shown = d.modal, time.Now()
 		detail := "question"
 		if req.Requester != "" {
 			detail = "question from " + req.Requester
@@ -507,9 +516,15 @@ func (t *gotuiTurnUI) withdrawAsk(d *askDialog) {
 	m, r := t.model, t.repl
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !d.withdraw() {
-		return
+	if d.withdraw() {
+		r.removeAskLocked(m, d)
 	}
+}
+
+// removeAskLocked takes an answered question's dialog off m, wherever it is:
+// on screen, behind another tab, or parked under another dialog. Caller holds
+// m.mu.
+func (r *managedREPL) removeAskLocked(m *replModel, d *askDialog) {
 	switch {
 	case m.pendingModal == d.modal:
 		m.pendingModal = nil

@@ -55,7 +55,19 @@ type contextPopover struct {
 	contextIdentity             string
 }
 
+// openContextPopover shows the context popover in a window (see
+// repl_pane_float.go), which opening it again closes. Caller holds the
+// visible model's lock.
 func (r *managedREPL) openContextPopover() {
+	if r.closeFloat(floatContext) {
+		return
+	}
+	m := r.newContextModal()
+	// Above the status row it is opened from, at the tab's right.
+	r.floatModal(floatContext, m, panelSpecs[floatContext].label, contextWant)
+}
+
+func (r *managedREPL) newContextModal() *replModal {
 	m := &replModal{title: "Context", width: 50, details: []string{"no active session"}}
 	if r.state != nil && r.state.session != nil {
 		now := time.Now()
@@ -72,25 +84,18 @@ func (r *managedREPL) openContextPopover() {
 		d.updateStatus(&r.model.status, r.state, now)
 		d.updateDetails(m)
 	}
-	r.openModal(m)
+	return m
 }
 
 func (d *contextPopover) wantsTick(now time.Time) bool {
 	return len(d.pending) > 0 || !d.usageOpen && (now.Sub(d.animatedAt) < contextAnimationDuration || now.Sub(d.chartAt) < contextAnimationDuration) || d.pending == nil && !now.Before(d.nextRead)
 }
 
-func (r *managedREPL) refreshContextPopover(now time.Time) {
-	m := r.model.modal
-	if m == nil || m.context == nil {
-		return
-	}
+// refreshContext brings a context popover up to now, wherever it is shown:
+// native says whether its chart can be drawn as an image there.
+func (r *managedREPL) refreshContext(m *replModal, now time.Time, native bool) {
 	d := m.context
-	d.now = now
-	// Sixel cannot composite the chart's partial alpha onto an unknown
-	// terminal background. Keep the Unicode chart until the theme supplies
-	// an opaque surface; Kitty and render surfaces preserve the alpha.
-	_, bg := style.Surface()
-	d.native = r.images != nil && (r.images.Protocol() != termimg.ProtocolSixel || bg.Valid())
+	d.now, d.native = now, native
 	d.updateStatus(&r.model.status, r.state, now)
 	if d.pending != nil {
 		select {
@@ -312,14 +317,14 @@ func (d *contextPopover) overviewItems(modalWidth int) []replModalItem {
 		}
 	}
 	add("")
-	for i, row := range d.snapshot.usage.details() {
+	for i, row := range d.snapshot.usage.detailsAt(width) {
 		switch i {
 		case 0, 3: // Heading and combined total.
 			add(style.Styled(row, "", "bold"))
 		case 2:
 			start := len(items)
 			usage := d.snapshot.usage.subagents
-			add(style.Styled(contextUsageRow("Subagents ›", usage.input.text(), usage.output.text()), "accent", ""))
+			add(style.Styled(contextUsageRow("Subagents ›", usage.input.text(), usage.output.text(), width), "accent", ""))
 			for n := start; n < len(items); n++ {
 				items[n].value = contextUsageAction
 				items[n].identity = fmt.Sprintf("%s:%d", contextUsageAction, n-start)

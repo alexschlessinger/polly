@@ -13,7 +13,7 @@ func (r *managedREPL) inspectLaunchedAgent(parent viewTarget, callID string) {
 		return
 	}
 	store := r.state.sessionStore
-	owner, generation := r.visibleTab(), r.workspace().inspector.generation
+	owner, generation, scope := r.visibleTab(), r.workspace().inspector.generation, r.viewScope()
 	r.background(func() {
 		reader, ok := store.(sessions.ViewStore)
 		if !ok {
@@ -30,16 +30,18 @@ func (r *managedREPL) inspectLaunchedAgent(parent viewTarget, callID string) {
 			}
 		}
 		r.postUI(r.work.ctx, func() {
-			if r.visibleTab() != owner || r.workspace().inspector.generation != generation {
-				return
-			}
-			r.model.mu.Lock()
-			defer r.model.mu.Unlock()
-			if err != nil {
-				r.model.appendErrorLine("agent: " + err.Error())
-				return
-			}
-			r.inspect(viewTarget{session: sessions.ViewTarget{ID: info.ID, Name: info.Metadata.Name}})
+			scope(func() {
+				if r.visibleTab() != owner || r.workspace().inspector.generation != generation {
+					return
+				}
+				r.model.mu.Lock()
+				defer r.model.mu.Unlock()
+				if err != nil {
+					r.model.appendErrorLine("agent: " + err.Error())
+					return
+				}
+				r.inspect(viewTarget{session: sessions.ViewTarget{ID: info.ID, Name: info.Metadata.Name}})
+			})
 		})
 	})
 }
@@ -115,15 +117,20 @@ func (r *managedREPL) inspectedSwarm(target viewTarget) *swarm.Runtime {
 }
 
 func (r *managedREPL) reviewAgentApproval(target viewTarget) {
-	owner := r.visibleTab()
+	owner, scope, pane := r.visibleTab(), r.viewScope(), r.scoped != nil
 	r.workspaceActions = append(r.workspaceActions, func() {
 		if r.visibleTab() == owner {
-			r.openAgentApproval(target)
+			scope(func() { r.openAgentApproval(target) })
+			if pane {
+				// The choices open on polly's own screen, which is in another tab.
+				r.comeForward()
+			}
 		}
 	})
 }
 
 func (r *managedREPL) openAgentApproval(target viewTarget) {
+	scope := r.viewScope()
 	tab := r.inspectionTab(target)
 	member := r.inspectedSwarm(target) != nil
 	if member {
@@ -171,7 +178,7 @@ func (r *managedREPL) openAgentApproval(target viewTarget) {
 				m.mu.Unlock()
 				if more {
 					r.model.mu.Lock()
-					r.reviewAgentApproval(target)
+					scope(func() { r.reviewAgentApproval(target) })
 					r.model.mu.Unlock()
 				}
 			})

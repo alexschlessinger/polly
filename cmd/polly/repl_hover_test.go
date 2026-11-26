@@ -147,7 +147,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	if len(r.hoverCells) != 0 {
 		t.Fatalf("divider hover underlined cells: %v", r.hoverCells)
 	}
-	hoverAt(t, r, r.inspectorScrollbar.thumb.Min)
+	hoverAt(t, r, r.surface.scrollbar.thumb.Min)
 	if got := statusText(); !strings.HasPrefix(got, hoverHintScroll) {
 		t.Fatalf("thumb hover status = %q", got)
 	}

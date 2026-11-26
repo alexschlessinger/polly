@@ -607,8 +607,8 @@ func (r *managedREPL) loadInlineToolOutput(m *replModel, link toolOutputLink, ro
 				// The shared cache can transfer the instance to another workspace.
 				// Only its actual current owner may re-anchor or fence an in-flight
 				// projection; a cached instance has no active navigation state.
-				for _, tab := range r.tabs {
-					if w := tab.workspace; w != nil && w.inspector.current == view {
+				for _, w := range r.viewWorkspaces() {
+					if w.inspector.current == view {
 						owner = w.states[w.inspector.target.key()]
 						break
 					}

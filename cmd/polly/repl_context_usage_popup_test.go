@@ -30,7 +30,7 @@ func usagePopupState() *swarm.State {
 }
 
 func seedUsagePopup(r *managedREPL) {
-	d := r.model.modal.context
+	d := r.focusedPanelModal().context
 	d.snapshot.usage = contextSessionUsage{}
 	d.snapshot.usage.addExecutions(usagePopupState())
 	d.nextRead = time.Now().Add(time.Hour)
@@ -41,20 +41,30 @@ func TestContextUsageOverviewColumns(t *testing.T) {
 	seedUsagePopup(r)
 	r.render()
 	var ends []int
-	for _, item := range r.model.modal.items {
+	for _, item := range r.focusedPanelModal().items {
 		line := plainStyledText(item.display)
 		if strings.HasPrefix(strings.TrimSpace(line), "Parent ") || item.value == contextUsageAction || strings.HasPrefix(strings.TrimSpace(line), "Total ") {
 			ends = append(ends, rw.StringWidth(line))
 			fields := strings.Fields(line)
 			output := fields[len(fields)-1]
 			inputEnd := rw.StringWidth(strings.TrimRight(strings.TrimSuffix(line, output), " "))
-			if inputEnd != 29 {
-				t.Fatalf("input column ends at %d, want 29: %q", inputEnd, line)
+			// The table fills the window's 46 columns: the counts end at the
+			// middle and at the right edge of what the labels leave.
+			if inputEnd != 30 {
+				t.Fatalf("input column ends at %d, want 30: %q", inputEnd, line)
 			}
 		}
 	}
-	if !reflect.DeepEqual(ends, []int{44, 44, 44}) {
-		t.Fatalf("usage column ends = %v, want aligned rows", ends)
+	if !reflect.DeepEqual(ends, []int{47, 47, 47}) {
+		t.Fatalf("usage column ends = %v, want rows aligned at the window's edge", ends)
+	}
+	// A wider window stretches the table with it, and the plain report keeps
+	// its own width.
+	if row := contextUsageRow("Total", "1", "2", 90); rw.StringWidth(row) != 90 || !strings.HasSuffix(row, "2") {
+		t.Fatalf("a 90-column row is %d wide: %q", rw.StringWidth(row), row)
+	}
+	if row := r.focusedPanelModal().context.snapshot.usage.details()[1]; rw.StringWidth(row) != contextUsageWidth {
+		t.Fatalf("the plain report's row is %d wide: %q", rw.StringWidth(row), row)
 	}
 }
 
@@ -62,7 +72,8 @@ func TestContextUsagePopupKeepsContextSize(t *testing.T) {
 	for _, count := range []int{0, 1, 12} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			r := contextDashboardREPL(t, false)
-			m, d := r.model.modal, r.model.modal.context
+			m := r.focusedPanelModal()
+			d := m.context
 			d.nextRead = time.Now().Add(time.Hour)
 			for i := 0; i < count; i++ {
 				d.snapshot.usage.agents = append(d.snapshot.usage.agents, contextAgentUsage{id: fmt.Sprint(i), label: fmt.Sprintf("Agent %d", i)})
@@ -79,7 +90,7 @@ func TestContextUsagePopupKeepsContextSize(t *testing.T) {
 				if count == 12 {
 					r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 					r.render()
-					if m.top == 0 || !strings.Contains(r.modalW.Text, "Agent 11") || r.modalScrollbar.thumb.Empty() {
+					if m.top == 0 || !strings.Contains(panelPage(r, floatContext).Text, "Agent 11") || r.panelScrollbar.thumb.Empty() {
 						t.Fatal("overflowing agents did not scroll to the last agent")
 					}
 				}
@@ -96,7 +107,8 @@ func TestContextUsagePopupKeepsContextSize(t *testing.T) {
 func TestContextUsagePopupDetailsMatchRows(t *testing.T) {
 	r := contextDashboardREPL(t, false)
 	seedUsagePopup(r)
-	m, d := r.model.modal, r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	d.snapshot.usage.agents[0].label = strings.Repeat("Named worker ", 6)
 	check := func() {
 		t.Helper()
@@ -165,7 +177,8 @@ func TestContextUsageBars(t *testing.T) {
 func TestContextUsagePopupKeyboardBackAndChart(t *testing.T) {
 	r := contextDashboardREPL(t, true)
 	seedUsagePopup(r)
-	m, d := r.model.modal, r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	r.model.ed.setText("untouched draft")
 	before := transcriptTexts(r.model)
 	key := func(id string) {
@@ -177,10 +190,10 @@ func TestContextUsagePopupKeyboardBackAndChart(t *testing.T) {
 		t.Fatal("Tab did not select Subagents")
 	}
 	top, selected := m.top, m.selected
-	r.scrollDrag = scrollDragState{pane: "modal"}
+	r.scrollDrag = scrollDragState{pane: "panel"}
 	key("<Enter>")
-	if r.model.modal != m || !d.usageOpen || m.title != "Subagent usage" || r.scrollDrag.pane != "" {
-		t.Fatal("usage did not open in the existing modal or retained its drag")
+	if r.focusedPanelModal() != m || !d.usageOpen || m.title != "Subagent usage" || r.scrollDrag.pane != "" {
+		t.Fatal("usage did not open in the existing panel or retained its drag")
 	}
 	if d.ctx.Err() != nil || len(r.images.Placements()) != 0 {
 		t.Fatal("usage canceled its reader or retained the context chart")
@@ -198,7 +211,7 @@ func TestContextUsagePopupKeyboardBackAndChart(t *testing.T) {
 	}
 	key("<End>")
 	key("<Enter>") // A diagnostic row is not a close action.
-	if r.model.modal != m || !d.usageOpen {
+	if r.focusedPanelModal() != m || !d.usageOpen {
 		t.Fatal("Enter on a diagnostic closed the breakdown")
 	}
 	key("<Escape>")
@@ -222,7 +235,7 @@ func TestContextUsagePopupKeyboardBackAndChart(t *testing.T) {
 		t.Fatal("usage navigation changed the draft or transcript")
 	}
 	key("<Escape>")
-	if r.model.modal != nil || d.ctx.Err() == nil {
+	if r.focusedPanelModal() != nil || d.ctx.Err() == nil {
 		t.Fatal("Escape from the overview did not close and cancel its reader")
 	}
 }
@@ -230,7 +243,8 @@ func TestContextUsagePopupKeyboardBackAndChart(t *testing.T) {
 func TestContextUsagePopupMouseAndNarrowRows(t *testing.T) {
 	r := contextDashboardREPL(t, false)
 	seedUsagePopup(r)
-	m, d := r.model.modal, r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	d.snapshot.usage.agents = append(d.snapshot.usage.agents, contextAgentUsage{id: "worker-c", label: "Queued worker"})
 	screen := ui.DefaultBackend.Screen
 	screen.SetSize(28, 12)
@@ -287,7 +301,7 @@ func TestContextUsagePopupMouseAndNarrowRows(t *testing.T) {
 	if m.selected <= 0 {
 		t.Fatal("usage wheel did not scroll")
 	}
-	r.setScrollTop("modal", len(m.items))
+	r.setScrollTop("panel", len(m.items))
 	r.render()
 	if m.top == 0 {
 		t.Fatal("usage scrollbar did not scroll")
@@ -297,9 +311,16 @@ func TestContextUsagePopupMouseAndNarrowRows(t *testing.T) {
 	if !d.usageOpen || m.top+m.visible > len(m.items) {
 		t.Fatal("resize lost the page or left an invalid viewport")
 	}
+	// A click elsewhere takes the keys and leaves the page up; its mark closes it.
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 0, Y: 0}})
-	if r.model.modal != nil || d.ctx.Err() == nil {
-		t.Fatal("outside click did not dismiss and cancel the drilldown")
+	p := r.panes.floatOf(floatContext)
+	if r.focusedPanelModal() != nil || p == nil || !d.usageOpen || d.ctx.Err() != nil {
+		t.Fatal("an outside click did not leave the drilldown standing without the keys")
+	}
+	r.render()
+	r.handleEvent(mouseEvent("<MouseLeft>", p.closeAt.Min))
+	if r.panes.floatOf(floatContext) != nil || d.ctx.Err() == nil {
+		t.Fatal("the close mark did not close and cancel the drilldown")
 	}
 }
 
@@ -307,7 +328,8 @@ func TestContextUsagePopupBackPreservesAction(t *testing.T) {
 	for _, scenario := range []string{"first request arrives", "narrower", "wider"} {
 		t.Run(scenario, func(t *testing.T) {
 			r := contextDashboardREPL(t, false)
-			m, d := r.model.modal, r.model.modal.context
+			m := r.focusedPanelModal()
+			d := m.context
 			d.nextRead = time.Now().Add(time.Hour)
 			if scenario == "first request arrives" {
 				d.snapshot.trend = nil
@@ -341,7 +363,7 @@ func TestContextUsagePopupBackPreservesAction(t *testing.T) {
 				t.Fatalf("Back lost Subagents focus: selected %q", m.items[m.selected].label)
 			}
 			key("<Enter>")
-			if r.model.modal != m || !d.usageOpen {
+			if r.focusedPanelModal() != m || !d.usageOpen {
 				t.Fatal("Enter after Back did not reopen usage")
 			}
 		})
@@ -350,11 +372,12 @@ func TestContextUsagePopupBackPreservesAction(t *testing.T) {
 
 func TestContextUsagePopupEmptyErrorsAndRefresh(t *testing.T) {
 	r := contextDashboardREPL(t, false)
-	m, d := r.model.modal, r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	d.nextRead = time.Now().Add(time.Hour)
 	d.activate(m, contextUsageAction)
 	r.render()
-	if !strings.Contains(r.modalW.Text, "No subagents yet") {
+	if !strings.Contains(panelPage(r, floatContext).Text, "No subagents yet") {
 		t.Fatal("empty state missing")
 	}
 	seedUsagePopup(r)
@@ -408,7 +431,7 @@ func TestContextUsagePopupEmptyErrorsAndRefresh(t *testing.T) {
 		t.Fatal("recovery did not restore the breakdown")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-c>"})
-	if r.model.modal != nil || d.ctx.Err() == nil {
+	if r.focusedPanelModal() != nil || d.ctx.Err() == nil {
 		t.Fatal("Ctrl-C did not dismiss the breakdown")
 	}
 }

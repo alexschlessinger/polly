@@ -186,8 +186,8 @@ func TestAgentsInspectorMessageRowsRefreshAndNavigate(t *testing.T) {
 		t.Fatal("new message changed agent order or hit targets")
 	}
 	// Preview rows are part of one keyboard selection, not extra agents.
-	r.chrome.inner = image.Rect(0, 0, 64, 8)
-	r.inspectorHeaderRows = 1
+	r.surface.inner = image.Rect(0, 0, 64, 8)
+	r.surface.headerRows = 1
 	r.navigateAgentsInspector("<Home>")
 	r.navigateAgentsInspector("<Down>")
 	if state.agents.selected != ids[1] {

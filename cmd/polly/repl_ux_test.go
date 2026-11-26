@@ -535,7 +535,7 @@ func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	if len(r.model.queue) != 0 {
 		t.Fatalf("busy /help was queued instead of executed: %v", r.model.queue)
 	}
-	if m := r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "Send and edit") {
+	if m := r.model.modal; m == nil || !strings.Contains(listLabels(m), "/help") {
 		t.Fatal("busy /help dialog missing")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})

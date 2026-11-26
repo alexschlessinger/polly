@@ -224,16 +224,41 @@ func (p *planProgress) checklistLines() []string {
 	return lines
 }
 
-// todoPanel is an anchored, read-only modal. Its wrapped rows are rebuilt
+// todoPanel is the checklist's read-only dialog. Its wrapped rows are rebuilt
 // only when the projection or width changes, not on every activity tick.
+// plain leaves the letter keys out of its rows: where the panel has no
+// terminal of its own, letters are the composer's.
 type todoPanel struct {
 	model   *replModel
 	painted *planProgress
 	width   int
+	plain   bool
 }
 
+// checklistWantLocked returns the live desired size for the TODO panel based
+// on the current checklist length. Caller holds r.model.mu.
+func (r *managedREPL) checklistWantLocked() floatWant {
+	want := checklistWant
+	want.rows++
+	if p := r.model.planProgress; p != nil {
+		want.rows += len(p.checklistRows()) - 1
+	}
+	return want
+}
+
+// openTodoPanel shows the checklist in a window (see repl_pane_float.go),
+// which opening it again closes. Caller holds the visible model's lock.
 func (r *managedREPL) openTodoPanel() {
-	r.openModal(&replModal{title: "TODO", width: 56, details: []string{}, todo: &todoPanel{model: r.model}})
+	if r.closeFloat(floatChecklist) {
+		return
+	}
+	m := r.newTodoModal()
+	// A row per task and a few to spare, at the tab's top right.
+	r.floatModal(floatChecklist, m, panelSpecs[floatChecklist].label, r.checklistWantLocked())
+}
+
+func (r *managedREPL) newTodoModal() *replModal {
+	return &replModal{title: "TODO", width: 56, details: []string{}, todo: &todoPanel{model: r.model}}
 }
 
 func appendTodoPanelText(items []replModalItem, item replModalItem, role, indent string, width int) []replModalItem {
@@ -327,7 +352,9 @@ func (d *todoPanel) refreshItems(m *replModal, width int) {
 			if row.action == planViewAction {
 				text = "View plan"
 			}
-			text += " · v"
+			if !d.plain {
+				text += " · v"
+			}
 			role, id = "accent", row.action
 		}
 		item := replModalItem{label: text, value: row.action, identity: id}
@@ -373,7 +400,10 @@ func (r *managedREPL) activatePlanAction(action string) bool {
 	if action == "" || action != r.model.planProgress.viewAction() {
 		return false
 	}
-	if r.model.modal != nil {
+	// A window the action was chosen in stays up; a dialog closes.
+	if r.focusedOwnWindow() != nil {
+		r.yieldPanelKeys()
+	} else if r.model.modal != nil {
 		r.closeModal()
 	}
 	r.runCommand(action)

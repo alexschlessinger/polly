@@ -123,8 +123,8 @@ func TestAgentsInspectorNavigationSkipsSpacing(t *testing.T) {
 	state := r.workspace().viewState(r.workspace().inspector.target)
 	// With one visible body row, keeping a trailing spacer on screen would
 	// incorrectly scroll the selected agent's header out of view.
-	r.chrome.inner = image.Rect(0, 0, 36, 2)
-	r.inspectorHeaderRows = 1
+	r.surface.inner = image.Rect(0, 0, 36, 2)
+	r.surface.headerRows = 1
 	for _, step := range []struct {
 		key string
 		id  int
@@ -235,8 +235,8 @@ func TestAgentsInspectorStableOrderAndWidth(t *testing.T) {
 	}
 	r.workspace().inspector.focused = true
 	r.model.approval = nil
-	r.chrome.inner = image.Rect(0, 0, 36, 10)
-	r.inspectorHeaderRows = 1
+	r.surface.inner = image.Rect(0, 0, 36, 10)
+	r.surface.headerRows = 1
 	r.navigateAgentsInspector("<End>")
 	r.navigateAgentsInspector("<Enter>")
 	if r.workspace().inspector.target.session.ID != ids[2] {
@@ -261,21 +261,21 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 	r.render()
 	click := func(action string) {
 		t.Helper()
-		rect := headerButton(r.inspectorButtons, action)
+		rect := headerButton(r.surface.buttons, action)
 		if rect.Empty() {
-			t.Fatalf("missing clickable row %s: %+v", action, r.inspectorButtons)
+			t.Fatalf("missing clickable row %s: %+v", action, r.surface.buttons)
 		}
 		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: rect.Min.X, Y: rect.Min.Y}})
 	}
-	if headerButton(r.inspectorButtons, "agents-open:done").Empty() {
+	if headerButton(r.surface.buttons, "agents-open:done").Empty() {
 		t.Fatal("newly finished agent is not clickable")
 	}
-	if headerButton(r.inspectorButtons, "agents-open:paused").Empty() {
+	if headerButton(r.surface.buttons, "agents-open:paused").Empty() {
 		t.Fatal("paused agent row not clickable")
 	}
-	first := headerButton(r.inspectorButtons, "agents-open:m")
+	first := headerButton(r.surface.buttons, "agents-open:m")
 	gap := image.Pt(first.Min.X, first.Max.Y)
-	for _, button := range r.inspectorButtons {
+	for _, button := range r.surface.buttons {
 		if gap.In(button.rect) {
 			t.Fatalf("spacer has a hit target: %+v", button)
 		}
@@ -288,17 +288,17 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 	clock.since = time.Now().Add(-agentsFinishedDelay)
 	root.agentIdle["done"] = clock
 	r.render()
-	if !headerButton(r.inspectorButtons, "agents-open:done").Empty() {
+	if !headerButton(r.surface.buttons, "agents-open:done").Empty() {
 		t.Fatal("collapsed finished agent still clickable")
 	}
 	click(agentsFinishedAction)
 	r.render()
-	if headerButton(r.inspectorButtons, "agents-open:done").Empty() {
+	if headerButton(r.surface.buttons, "agents-open:done").Empty() {
 		t.Fatal("click did not reveal the finished agent")
 	}
 	click(agentsFinishedAction)
 	r.render()
-	if !headerButton(r.inspectorButtons, "agents-open:done").Empty() {
+	if !headerButton(r.surface.buttons, "agents-open:done").Empty() {
 		t.Fatal("click did not collapse Finished")
 	}
 	click("agents-open:m")

@@ -193,6 +193,8 @@ func (r *managedREPL) showTab(i int) {
 			r.retireMainProjection(r.tabs[oldIndex])
 		}
 		old.resetAffordances()
+		// A window's keys are the screen's, not the session's.
+		r.yieldPanelKeys()
 		affordancesEnabled := old.affordances.enabled
 		nativeImages := old.nativeImages
 		cellWidth, cellHeight := old.imageCellWidth, old.imageCellHeight
@@ -523,12 +525,18 @@ func (r *managedREPL) requestNewTabLocked() {
 	if !r.canOpenLocked() {
 		return
 	}
-	name, err := r.opener.newName(r.runCtx)
-	if err != nil {
-		m.appendErrorLine("could not name a new session: " + err.Error())
-		return
+	here := func() {
+		name, err := r.opener.newName(r.runCtx)
+		if err != nil {
+			r.model.appendErrorLine("could not name a new session: " + err.Error())
+			return
+		}
+		r.beginOpenLocked(name, true)
 	}
-	r.beginOpenLocked(name, true)
+	// With a pane host, the session is a polly of its own in a tab there.
+	if !r.launchSession(sessions.ViewTarget{}, here) {
+		here()
+	}
 }
 
 // requestOpenLocked opens the named session in a new tab, or shows the tab
@@ -545,10 +553,14 @@ func (r *managedREPL) requestOpenLocked(name string) {
 	if !r.canOpenLocked() {
 		return
 	}
-	if r.beginWorkspaceTarget(sessions.ViewTarget{Name: name}) {
-		return
+	here := func() {
+		if !r.beginWorkspaceTarget(sessions.ViewTarget{Name: name}) {
+			r.beginOpenLocked(name, false)
+		}
 	}
-	r.beginOpenLocked(name, false)
+	if !r.launchSession(sessions.ViewTarget{Name: name}, here) {
+		here()
+	}
 }
 
 // Picker selections pin the identity that was displayed, even if another
@@ -564,8 +576,15 @@ func (r *managedREPL) requestOpenTargetLocked(target sessions.ViewTarget) {
 			return
 		}
 	}
-	if !r.beginWorkspaceTarget(target) {
-		r.model.appendNoticeLine("Opening sessions is unavailable")
+	here := func() {
+		if !r.beginWorkspaceTarget(target) {
+			r.model.appendNoticeLine("Opening sessions is unavailable")
+		}
+	}
+	// A polly of its own opens the session by name; the identity pinned here
+	// only guards the in-process read.
+	if target.Name == "" || !r.launchSession(target, here) {
+		here()
 	}
 }
 

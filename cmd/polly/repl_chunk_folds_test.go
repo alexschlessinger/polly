@@ -699,7 +699,7 @@ func TestAgentViewCtrlOKeepsItsHeldLine(t *testing.T) {
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow = false
 	found := false
-	for n, row := range transcriptRowsText(r.inspectorW.Rows) {
+	for n, row := range transcriptRowsText(r.surface.body.Rows) {
 		if strings.Contains(row, "stable-line-050") {
 			s.top, found = n, true
 			break
@@ -709,20 +709,20 @@ func TestAgentViewCtrlOKeepsItsHeldLine(t *testing.T) {
 		t.Fatal("fixture omitted the held answer line")
 	}
 	settle()
-	before := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
-	rows := len(r.inspectorW.Rows)
+	before := transcriptRowsText(r.surface.body.Rows[s.top : s.top+1])[0]
+	rows := len(r.surface.body.Rows)
 	r.workspace().inspector.focused = true
 	for _, depth := range []disclosureDepth{depthCollapsed, depthExpanded, depthCollapsed} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		settle()
-		after := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
+		after := transcriptRowsText(r.surface.body.Rows[s.top : s.top+1])[0]
 		if after != before || s.depth != depth || s.follow {
 			t.Fatalf("%s moved the held line: before=%q after=%q follow=%v", depth.label(), before, after, s.follow)
 		}
 		// The press did change the rows above the held line.
-		if grew := len(r.inspectorW.Rows) - rows; (depth == depthCollapsed) != (grew < 0) {
+		if grew := len(r.surface.body.Rows) - rows; (depth == depthCollapsed) != (grew < 0) {
 			t.Fatalf("%s changed the view by %d rows", depth.label(), grew)
 		}
-		rows = len(r.inspectorW.Rows)
+		rows = len(r.surface.body.Rows)
 	}
 }

@@ -127,6 +127,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 	target := viewTarget{session: sessions.ViewTarget{ID: id}}
 	liveReader, identity := r.inspectorLiveSource(target)
 	root := r.rootTab(r.visibleTab())
+	inspector := &r.workspace().inspector
 	var liveTools []swarm.LiveToolActivity
 	if member := root.swarmSnapshot.Members[id]; member != nil && currentAgentActivity(root.swarmSnapshot, member, root.swarmActivities[id]) {
 		liveTools = slices.Clone(root.swarmActivities[id].Tools)
@@ -195,7 +196,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 			p.fence, p.key, p.fields, p.width = fence, key, fields, width
 			r.childViews.put(cached)
 			// The list repaints with the landed line on its next refresh.
-			r.inspectorRefreshAt = time.Time{}
+			inspector.refreshAt = time.Time{}
 		})
 	}) {
 		p.loading = false

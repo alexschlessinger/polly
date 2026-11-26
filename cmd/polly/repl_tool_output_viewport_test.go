@@ -288,7 +288,7 @@ func TestInlineToolOutputViewportHiddenPanes(t *testing.T) {
 		f := newViewportOutputFixture(t, "watch", 1000, true, true, "preview", "full output")
 		l, _ := f.layout()
 		l.chrome.inner.Max.Y = l.chrome.inner.Min.Y + 1
-		f.r.renderInspector(l)
+		f.r.renderInspector(l.chrome.inner, f.r.viewGeometryFor(l.chrome, l.width))
 		if len(viewportLoadingOutputs(f.m)) != 0 || f.store.opens.Load() != 0 {
 			t.Fatal("zero-height Watch body started artifact reads")
 		}

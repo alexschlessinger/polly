@@ -25,10 +25,11 @@ func TestContextCommandOpensPopupWithoutTranscriptOutput(t *testing.T) {
 			m.mu.Lock()
 			quit := r.submitComposerLocked()
 			m.mu.Unlock()
-			if quit || m.modal == nil || m.modal.title != "Context" || m.modal.context == nil {
-				t.Fatalf("/context did not open the live popup: quit=%t modal=%+v", quit, m.modal)
+			panel := r.focusedPanelModal()
+			if quit || m.modal != nil || panel == nil || panel.title != "Context" || panel.context == nil {
+				t.Fatalf("/context did not open the live popup: quit=%t modal=%+v panel=%+v", quit, m.modal, panel)
 			}
-			t.Cleanup(r.closeModal)
+			t.Cleanup(r.closeFloats)
 			if m.fullTranscript() != before || len(testSessionHistory(t, session)) != 1 {
 				t.Fatal("opening Context added output or changed durable history")
 			}

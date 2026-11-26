@@ -124,7 +124,7 @@ func TestInspectorRegressionEndFollowsInspector(t *testing.T) {
 	s.follow = false
 	s.top = 0
 	s.lastRows = 1
-	r.chrome.inner = image.Rect(70, 0, 140, 30)
+	r.surface.inner = image.Rect(70, 0, 140, 30)
 	r.workspace().inspector.focused = true
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	if !s.follow {

@@ -149,7 +149,7 @@ func waitAgentsList(t *testing.T, r *managedREPL, width int, want string) string
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	for {
-		r.inspectorRefreshAt = time.Time{}
+		r.workspace().inspector.refreshAt = time.Time{}
 		r.refreshInspector(width)
 		if v := r.workspace().inspector.current; v != nil && v.model != nil {
 			if text := inspectorText(v); strings.Contains(text, want) {

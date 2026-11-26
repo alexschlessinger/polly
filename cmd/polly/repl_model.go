@@ -488,6 +488,11 @@ type approvalState struct {
 	index     int
 	out       []bool
 	reply     chan []bool
+	// waiting is when the call at index began to wait for its answer, and
+	// hosted how many of the calls the terminal's host has been asked about
+	// too (see repl_pane_approve.go).
+	waiting time.Time
+	hosted  int
 }
 
 func newReplModel() *replModel {

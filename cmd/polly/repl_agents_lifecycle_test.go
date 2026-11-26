@@ -68,7 +68,7 @@ func TestInspectorRuntimeOnlyToolKeepsManualSectionsAtCheckpoint(t *testing.T) {
 		return row
 	}
 	for _, width := range []int{140, 85} {
-		r.inspectorRefreshAt = time.Time{}
+		r.workspace().inspector.refreshAt = time.Time{}
 		check(waitInspector(t, r, width))
 	}
 
@@ -82,14 +82,14 @@ func TestInspectorRuntimeOnlyToolKeepsManualSectionsAtCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Stale runtime metadata must not duplicate the now-durable host identity.
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	row := check(v)
 	if !row.settled || row.output == nil {
 		t.Fatal("checkpoint did not replace the running row")
 	}
 	output := row.output
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	if row := check(waitInspector(t, r, 85)); row.output != output {
 		t.Fatal("reprojection discarded the carried output snapshot")
 	}

@@ -97,7 +97,7 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 		t.Fatalf("inspection carried the live thinking %d times, want once", thinking())
 	}
 	base, rendered, histories := v.saved, v.model, counted.histories.Load()
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	if v.saved != base || v.model != rendered || counted.histories.Load() != histories {
 		t.Fatal("unchanged live revision reread/rehydrated history or rerendered Markdown")
@@ -112,7 +112,7 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	close(release)
 	root.swarmSnapshot = waitSwarmIdle(t, r.state.swarm)
 	root.swarmActivities = r.state.swarm.LiveActivities()
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	if v.live.active || strings.Count(inspectorText(v), "live assistant") != 1 {
 		t.Fatalf("terminal checkpoint duplicated/lost live output: source=%+v transcript=%q", v.live, inspectorText(v))

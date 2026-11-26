@@ -15,7 +15,7 @@ func TestHelpModalLeavesRoomAboveAndBelow(t *testing.T) {
 		draft := strings.Repeat("draft\n", size.lines-1) + "draft"
 		r.model.ed.setText(draft)
 		before := r.model.fullTranscript()
-		r.runCommand("/help")
+		openHelpPage(r)
 		r.render()
 		modal := r.model.modal
 		layout := r.frameLayoutFor(size.w, size.h)
@@ -45,9 +45,9 @@ func TestHelpModalLeavesRoomAboveAndBelow(t *testing.T) {
 func TestHelpModalFiltersAndShowsCommandDetails(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
-	r.runCommand("/help")
+	openHelpPage(r)
 	m := r.model.modal
-	if m == nil {
+	if m == nil || m.helpLines == nil {
 		t.Fatal("help did not open")
 	}
 	if text := plainStyledText(m.text(10, 76)); !strings.Contains(text, "PgUp/PgDn") || strings.Contains(text, "/type to filter") {

@@ -558,7 +558,7 @@ func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
 	s := r.workspace().viewState(v.target)
 	s.follow, s.top = false, 0
 	paint()
-	if r.inspectorW.OverlayBottom != nil {
+	if r.surface.body.OverlayBottom != nil {
 		t.Fatal("fixture reported new output before the toggle")
 	}
 	r.workspace().inspector.focused = true
@@ -567,7 +567,7 @@ func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
 	if v.model.depth != depthCollapsed {
 		t.Fatal("focused Ctrl-O did not fold the inspected view")
 	}
-	if r.inspectorW.OverlayBottom != nil {
+	if r.surface.body.OverlayBottom != nil {
 		t.Fatal("folding every chunk was reported as new output")
 	}
 }
@@ -613,7 +613,7 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 		}
 		r.handleEvent(mouseEvent("<MouseLeft>", link.rect().Min))
 		// Any refresh after the click re-projects the view from its source.
-		r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
+		r.workspace().inspector.refreshAt = time.Now().Add(-2 * time.Second)
 		v = waitInspector(t, r, 140)
 		r.render()
 		for _, rec := range v.model.reasoningRecords.all() {
@@ -963,13 +963,13 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 	s.resetScroll()
 	v.loading = true
 	r.render()
-	if s.lastRows != -1 || len(r.inspectorW.OverlayBottom) != 0 {
+	if s.lastRows != -1 || len(r.surface.body.OverlayBottom) != 0 {
 		t.Fatalf("stale model seeded the new-output baseline: lastRows=%d", s.lastRows)
 	}
 	v.loading = false
 	r.render()
-	if s.lastRows < 0 || len(r.inspectorW.OverlayBottom) != 0 {
-		t.Fatalf("settled paint did not seed the baseline cleanly: lastRows=%d overlay=%d", s.lastRows, len(r.inspectorW.OverlayBottom))
+	if s.lastRows < 0 || len(r.surface.body.OverlayBottom) != 0 {
+		t.Fatalf("settled paint did not seed the baseline cleanly: lastRows=%d overlay=%d", s.lastRows, len(r.surface.body.OverlayBottom))
 	}
 }
 
@@ -1002,7 +1002,7 @@ func TestInspectorReportsASessionHeldElsewhere(t *testing.T) {
 	if err := held.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	if v.info == nil || v.info.InUse {
 		t.Fatalf("view did not notice the released lease: %#v", v.info)
@@ -1025,33 +1025,33 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	r.render()
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow, s.top = false, 0
-	wide := len(r.inspectorW.Rows)
-	if s.lastRows != wide || len(r.inspectorW.OverlayBottom) != 0 {
-		t.Fatalf("baseline after the first paint: lastRows=%d rows=%d overlay=%d", s.lastRows, wide, len(r.inspectorW.OverlayBottom))
+	wide := len(r.surface.body.Rows)
+	if s.lastRows != wide || len(r.surface.body.OverlayBottom) != 0 {
+		t.Fatalf("baseline after the first paint: lastRows=%d rows=%d overlay=%d", s.lastRows, wide, len(r.surface.body.OverlayBottom))
 	}
 
 	// Fully seen: a resize re-wraps the same content and must not announce it.
 	screen.SetSize(100, 32)
 	r.render()
-	narrow := len(r.inspectorW.Rows)
+	narrow := len(r.surface.body.Rows)
 	if narrow == wide {
 		t.Fatalf("resize did not re-wrap the view: %d rows both times", wide)
 	}
-	if len(r.inspectorW.OverlayBottom) != 0 || s.lastRows != narrow {
-		t.Fatalf("re-wrap read as new output: lastRows=%d rows=%d overlay=%d", s.lastRows, narrow, len(r.inspectorW.OverlayBottom))
+	if len(r.surface.body.OverlayBottom) != 0 || s.lastRows != narrow {
+		t.Fatalf("re-wrap read as new output: lastRows=%d rows=%d overlay=%d", s.lastRows, narrow, len(r.surface.body.OverlayBottom))
 	}
 
 	// Unseen output stays unseen across a resize in either direction.
 	s.lastRows = narrow - 10
 	screen.SetSize(140, 32)
 	r.render()
-	if len(r.inspectorW.OverlayBottom) == 0 || s.lastRows >= len(r.inspectorW.Rows) {
-		t.Fatalf("resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.inspectorW.Rows))
+	if len(r.surface.body.OverlayBottom) == 0 || s.lastRows >= len(r.surface.body.Rows) {
+		t.Fatalf("resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.surface.body.Rows))
 	}
 	screen.SetSize(100, 32)
 	r.render()
-	if len(r.inspectorW.OverlayBottom) == 0 || s.lastRows >= len(r.inspectorW.Rows) {
-		t.Fatalf("second resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.inspectorW.Rows))
+	if len(r.surface.body.OverlayBottom) == 0 || s.lastRows >= len(r.surface.body.Rows) {
+		t.Fatalf("second resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.surface.body.Rows))
 	}
 }
 

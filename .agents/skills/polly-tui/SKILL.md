@@ -23,7 +23,7 @@ POLLY_SHOT_FIXTURE=fixture.json $D hshot scenario.txt   # seeded state, scripted
 # scenario.txt — :shot paths are $VAR- and ~-expanded
 :shot $POLLY_SHOT_DIR/splash.png
 /help
-:wait "Navigate" 5
+:wait "Polly commands" 5
 :shot $POLLY_SHOT_DIR/help.png
 :size 160x50
 :settle

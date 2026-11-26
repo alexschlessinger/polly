@@ -114,14 +114,15 @@ func (r *managedREPL) inspectionTab(target viewTarget) *replTab {
 func (r *managedREPL) refreshInspector(width int) {
 	w := r.workspace()
 	i := &w.inspector
-	if !i.open {
+	// A detached view has nothing to wrap for until its screen arrives.
+	if !i.open || r.viewDetached && r.surface.inner.Empty() {
 		return
 	}
 	if i.target.kind == agentsViewKind {
-		r.refreshAgentsInspector(r.inspectorGeometry(width))
+		r.refreshAgentsInspector(r.projectionGeometry(width))
 		return
 	}
-	geometry := r.inspectorGeometry(width)
+	geometry := r.projectionGeometry(width)
 	state := *w.viewState(i.target)
 	state.sections = maps.Clone(state.sections)
 	if i.current == nil {
@@ -129,7 +130,7 @@ func (r *managedREPL) refreshInspector(width int) {
 			i.current = cached.view
 			// Cached provisional output is not proof that its invocation still
 			// exists. Reopening always samples live then validates saved state.
-			r.inspectorRefreshAt = time.Time{}
+			i.refreshAt = time.Time{}
 		}
 		if i.current == nil && i.target.kind == conversationViewKind && i.target.session.ID != "" {
 			if cached := r.childViews.take(i.target.session.ID); cached != nil {
@@ -213,10 +214,10 @@ func (r *managedREPL) refreshInspector(width int) {
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
 		source.revision = revision
-	} else if v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision && time.Since(r.inspectorRefreshAt) < r.inspectorRefreshInterval(i.target) {
+	} else if v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision && time.Since(i.refreshAt) < r.inspectorRefreshInterval(i.target) {
 		return
 	}
-	r.inspectorRefreshAt = time.Now()
+	i.refreshAt = time.Now()
 	var reader sessions.ViewStore
 	if r.state != nil {
 		reader, _ = r.state.sessionStore.(sessions.ViewStore)
@@ -336,7 +337,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				if currentIdentity != liveIdentity {
 					// A follow-up/rebind superseded the sampled execution while
 					// storage or projection was in flight. Retry, never land it.
-					r.inspectorRefreshAt = time.Time{}
+					i.refreshAt = time.Time{}
 					return
 				}
 			}

@@ -66,22 +66,28 @@ func (r *managedREPL) sessionLocked(info sessions.SessionSummary) bool {
 	return true
 }
 
+// openSessionsPicker lets the user pick a session: from the pane host's own
+// list where there is one (see repl_pane_pick.go), and from the Sessions
+// modal otherwise. Caller holds the visible model's lock.
 func (r *managedREPL) openSessionsPicker() {
-	r.openSessionsPickerSelected("")
+	if !r.pickSessionInHost() {
+		r.openSessionsPickerSelected("")
+	}
 }
 
-// openSessionsPickerSelected lists every session this polly can reach: the
-// open workspaces first, in tab order, then saved root sessions, newest first.
-// Caller holds the visible model's lock.
-func (r *managedREPL) openSessionsPickerSelected(preferred string) {
+// listSessions reads every session this polly can reach: the open workspaces
+// first, in tab order, then saved root sessions, newest first. It reports
+// false, having said why, when there is nothing to pick from. Caller holds
+// the visible model's lock.
+func (r *managedREPL) listSessions() (*sessionsPicker, bool) {
 	if r.state == nil || r.state.sessionStore == nil {
 		r.model.appendNoticeLine("Session picker unavailable")
-		return
+		return nil, false
 	}
 	summaries, err := r.state.sessionStore.ListSummaries(r.work.ctx)
 	if err != nil {
 		r.model.appendNoticeLine("Session picker unavailable · " + err.Error())
-		return
+		return nil, false
 	}
 	p := &sessionsPicker{current: r.visibleTab().viewID(), infos: make(map[string]sessions.SessionSummary), listedAt: time.Now()}
 	infos := make([]sessions.SessionSummary, 0, len(summaries))
@@ -134,6 +140,17 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	}
 	if len(p.rows) == 0 {
 		r.model.appendNoticeLine("No saved sessions")
+		return nil, false
+	}
+	return p, true
+}
+
+// openSessionsPickerSelected opens the Sessions modal on what listSessions
+// lists, with preferred selected, or the visible session when it names none.
+// Caller holds the visible model's lock.
+func (r *managedREPL) openSessionsPickerSelected(preferred string) {
+	p, ok := r.listSessions()
+	if !ok {
 		return
 	}
 	target := r.visibleTab().name
@@ -149,8 +166,26 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		canSubmit: func(name string) bool {
 			info, ok := p.named(name)
 			if ok && r.sessionLocked(info) {
-				p.flashID, p.flashUntil = info.ID, time.Now().Add(350*time.Millisecond)
-				r.refreshSessionsPickerItems(p, p.modal, info.ID)
+				// Another polly has it. Under a pane host that polly's tab
+				// comes to the front; otherwise the row says no.
+				refuse := func() {
+					p.flashID, p.flashUntil = info.ID, time.Now().Add(350*time.Millisecond)
+					r.refreshSessionsPickerItems(p, p.modal, info.ID)
+				}
+				if !r.jumpToHolder(sessions.ViewTarget{ID: info.ID, Name: info.Metadata.Name}, func(jumped bool) {
+					r.model.mu.Lock()
+					defer r.model.mu.Unlock()
+					if r.sessionsPicker != p || r.model.modal != p.modal {
+						return
+					}
+					if jumped {
+						r.closeModal()
+					} else {
+						refuse()
+					}
+				}) {
+					refuse()
+				}
 				return false
 			}
 			return true

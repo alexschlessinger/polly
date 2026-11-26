@@ -97,6 +97,10 @@ func (r *managedREPL) openSandboxProposal(m *replModel, try *sandboxTry, review 
 			m.appendNoticeLine("sandbox setup: nothing allowed")
 		},
 	}
+	// A window with the keys gives them to the review.
+	if m == r.model {
+		r.yieldPanelKeys()
+	}
 	if m.modal == nil {
 		m.modal = d.modal
 	} else {

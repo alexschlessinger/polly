@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
@@ -31,7 +32,7 @@ func (m *replModel) advanceApprovalLocked() {
 			replyApproval(a, denyToolCalls(a.calls))
 			continue
 		}
-		m.approval = a
+		m.approval, a.waiting = a, time.Now()
 		label := toolLabel(a.calls[0])
 		if len(a.calls) > 1 {
 			label += fmt.Sprintf(" +%d more", len(a.calls)-1)

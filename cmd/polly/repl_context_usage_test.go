@@ -117,7 +117,8 @@ func TestContextSessionUsageLiveSwarmRefresh(t *testing.T) {
 	launch()
 	testAddMessages(t, r.state.session, []messages.ChatMessage{turnUsageTestMessage(1200, 30)})
 	r.openContextPopover()
-	d := r.model.modal.context
+	m := r.focusedPanelModal()
+	d := m.context
 	if got := d.snapshot.usage.subagents; got.input.tokens != 4000 || got.output.tokens != 40 {
 		t.Fatalf("initial worker usage = %+v", got)
 	}
@@ -136,13 +137,13 @@ func TestContextSessionUsageLiveSwarmRefresh(t *testing.T) {
 	if d.snapshot.usage.subagents.input.tokens != 8000 || total.input.tokens != 9200 || total.output.tokens != 110 || total.input.missing || total.output.missing {
 		t.Fatalf("refreshed usage = %+v", d.snapshot.usage)
 	}
-	text := strings.Join(r.model.modal.details, "\n")
+	text := strings.Join(m.details, "\n")
 	for _, want := range []string{"Session usage", "↑ input", "↓ output", "Parent", "Subagents", "Total", "9.2k", "110"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q from report:\n%s", want, text)
 		}
 	}
-	r.closeModal()
+	r.closeFloats()
 
 	// A failed coordination read must not hide the parent's context statistics
 	// or present unavailable child usage as a complete zero.

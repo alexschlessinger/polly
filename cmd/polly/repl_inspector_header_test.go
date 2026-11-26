@@ -268,7 +268,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	if !r.closeSpentChild(child) {
 		t.Fatal("agent runtime did not retire")
 	}
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	waitInspector(t, r, 240)
 	checkTitle(title)
 	if len(r.tabs) != 1 || r.inspectionTab(target) != nil {
@@ -294,7 +294,7 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	r.render()
 	r.inspectorAction("find")
 	r.render()
-	if !headerButton(r.inspectorButtons, "args").Empty() || !headerButton(r.inspectorButtons, "raw").Empty() {
+	if !headerButton(r.surface.buttons, "args").Empty() || !headerButton(r.surface.buttons, "raw").Empty() {
 		t.Fatal("search left hidden controls clickable")
 	}
 	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
@@ -306,21 +306,21 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 		t.Fatal("search input or old action click changed the underlying view/composer")
 	}
 	r.render()
-	if !strings.Contains(plainStyledText(r.inspectorHeaderW.Text), "Find: line▏") {
-		t.Fatalf("search query is not visible: %s", plainStyledText(r.inspectorHeaderW.Text))
+	if !strings.Contains(plainStyledText(r.surface.header.Text), "Find: line▏") {
+		t.Fatalf("search query is not visible: %s", plainStyledText(r.surface.header.Text))
 	}
 	r.workspace().inspector.searchInput.setText(strings.Repeat("界", 100) + "needle")
 	r.render()
-	searchHeader := plainStyledText(r.inspectorHeaderW.Text)
+	searchHeader := plainStyledText(r.surface.header.Text)
 	if !strings.Contains(searchHeader, "Find: …") || !strings.Contains(searchHeader, "needle▏") {
 		t.Fatalf("long search query lost its visible tail: %s", searchHeader)
 	}
-	if r.inspectorW.Inner.Min.Y != r.chrome.inner.Min.Y+r.inspectorHeaderRows {
+	if r.surface.body.Inner.Min.Y != r.chrome.inner.Min.Y+r.surface.headerRows {
 		t.Fatal("body origin disagrees with header height")
 	}
 	r.inspectorAction("follow")
 	r.inspectorScroll(-3)
-	wantTop := len(r.workspace().inspector.current.model.visual.rows) - (r.chrome.inner.Dy() - r.inspectorHeaderRows) - 3
+	wantTop := len(r.workspace().inspector.current.model.visual.rows) - (r.chrome.inner.Dy() - r.surface.headerRows) - 3
 	if s.top != wantTop {
 		t.Fatalf("scroll used wrong header height: %d != %d", s.top, wantTop)
 	}

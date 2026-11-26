@@ -30,6 +30,10 @@ const (
 	hoverHintScroll = "Drag to scroll"
 	hoverHintImage  = "Open image"
 	hoverHintClose  = "Close agent panel"
+	// The marks on a window of polly's own screen.
+	hoverHintCloseWindow = "Close"
+	hoverHintDock        = "Dock beside the conversation"
+	hoverHintFloat       = "Float over the conversation"
 )
 
 // hoverUnderlineColor keeps the mark one color across a run whose text
@@ -49,44 +53,36 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 	}
 	m := r.model
 	_, height := ui.TerminalDimensions()
-	if modal := m.modal; modal != nil {
-		if !r.modalScrollbar.thumb.Empty() && p.In(r.modalScrollbar.track) {
-			return hoverTarget{hint: hoverHintScroll}
+	if r.dialogOpen() {
+		return dialogHoverTarget(m.modal, r.modalScrollbar, p)
+	}
+	if window := r.ownWindowAt(p); window != nil {
+		// A window is over whatever else is at the pointer.
+		if p.In(window.pinAt) {
+			return hoverTarget{rect: window.pinAt, hint: pinHint(window.docked)}
 		}
-		if p.In(modal.listBounds) {
-			items := modal.filteredItems()
-			if index := modal.top + p.Y - modal.listBounds.Min.Y; index >= 0 && index < len(items) &&
-				(modal.details == nil || items[index].value != "") {
-				return hoverTarget{rect: image.Rect(modal.listBounds.Min.X, p.Y, modal.listBounds.Max.X, p.Y+1)}
-			}
+		if p.In(window.closeAt) {
+			return hoverTarget{rect: window.closeAt, hint: hoverHintCloseWindow}
 		}
-		return hoverTarget{}
+		return dialogHoverTarget(window.panel.modal, window.panel.page.scrollbar, p)
 	}
 	if r.inspectorDragging || p.In(r.chrome.divider) {
 		return hoverTarget{hint: hoverHintResize}
 	}
-	if r.scrollDrag.pane != "" || (!r.inspectorScrollbar.thumb.Empty() && p.In(r.inspectorScrollbar.track)) {
+	if !r.viewDetached && (r.scrollDrag.pane != "" || (!r.surface.scrollbar.thumb.Empty() && p.In(r.surface.scrollbar.track))) {
 		return hoverTarget{hint: hoverHintScroll}
 	}
 	if p.In(m.todoLink) {
 		return hoverTarget{rect: m.todoLink}
 	}
-	i := &r.workspace().inspector
-	if i.open && p.In(r.chrome.close) {
+	if r.framed() && p.In(r.chrome.pin) {
+		return hoverTarget{rect: r.chrome.pin, hint: pinHint(!r.chrome.floating)}
+	}
+	if r.framed() && p.In(r.chrome.close) {
 		return hoverTarget{rect: r.chrome.close, hint: hoverHintClose}
 	}
-	if i.open && p.In(r.chrome.frame) {
-		for _, b := range r.inspectorButtons {
-			if p.In(b.rect) {
-				return hoverTarget{rect: b.rect}
-			}
-		}
-		if i.current != nil && i.current.model != nil {
-			// Disclosure hitboxes in the inspector are pane-local in X, as
-			// the click path expects; links and images are already absolute.
-			return modelHoverTarget(i.current.model, p, r.chrome.inner.Min.X, r.chrome.inner.Max.X)
-		}
-		return hoverTarget{}
+	if r.framed() && p.In(r.chrome.frame) {
+		return r.viewHoverTarget(p)
 	}
 	if p.In(m.parentLink) {
 		return hoverTarget{rect: m.parentLink}
@@ -101,6 +97,46 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 		right, _ = ui.TerminalDimensions()
 	}
 	return modelHoverTarget(m, p, 0, right)
+}
+
+// pinHint says what the mark on a docked or a floating window does.
+func pinHint(docked bool) string {
+	if docked {
+		return hoverHintFloat
+	}
+	return hoverHintDock
+}
+
+// dialogHoverTarget resolves the pointer against a dialog's rows that a click
+// acts on, and its scrollbar.
+func dialogHoverTarget(modal *replModal, bar scrollbar, p image.Point) hoverTarget {
+	if !bar.thumb.Empty() && p.In(bar.track) {
+		return hoverTarget{hint: hoverHintScroll}
+	}
+	if p.In(modal.listBounds) {
+		items := modal.filteredItems()
+		if index := modal.top + p.Y - modal.listBounds.Min.Y; index >= 0 && index < len(items) &&
+			(modal.details == nil || items[index].value != "") {
+			return hoverTarget{rect: image.Rect(modal.listBounds.Min.X, p.Y, modal.listBounds.Max.X, p.Y+1)}
+		}
+	}
+	return hoverTarget{}
+}
+
+// viewHoverTarget resolves a pointer on the inspected view's screen against
+// its surface: the header's buttons, then the view's own hitboxes.
+func (r *managedREPL) viewHoverTarget(p image.Point) hoverTarget {
+	for _, b := range r.surface.buttons {
+		if p.In(b.rect) {
+			return hoverTarget{rect: b.rect}
+		}
+	}
+	if i := &r.workspace().inspector; i.current != nil && i.current.model != nil {
+		// Disclosure hitboxes in the inspector are pane-local in X, as
+		// the click path expects; links and images are already absolute.
+		return modelHoverTarget(i.current.model, p, r.surface.inner.Min.X, r.surface.inner.Max.X)
+	}
+	return hoverTarget{}
 }
 
 // modelHoverTarget resolves the pointer against one model's transcript
@@ -154,19 +190,26 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 	if screen == nil {
 		return
 	}
-	for _, pt := range r.hoverCells {
-		setScreenUnderline(screen, pt, false)
-	}
-	r.hoverCells = r.hoverCells[:0]
-	width, height := screen.Size()
 	rect := r.hover.rect
-	if r.model.modal == nil {
-		if action, ok := r.selectedInspectorAction(); ok {
+	if r.model.modal == nil && r.focusedOwnWindow() == nil {
+		// A detached view's selection is marked on its own screen.
+		if action, ok := r.selectedInspectorAction(); ok && !r.viewDetached {
 			rect = action.mark
 		} else if action, ok := r.selectedInlineAction(); ok {
 			rect = action.mark
 		}
 	}
+	r.hoverCells = underlineRect(screen, r.hoverCells, rect)
+}
+
+// underlineRect moves a screen's underline from the cells it marked last
+// time to rect, and returns the cells now marked.
+func underlineRect(screen tcell.Screen, cells []image.Point, rect image.Rectangle) []image.Point {
+	for _, pt := range cells {
+		setScreenUnderline(screen, pt, false)
+	}
+	cells = cells[:0]
+	width, height := screen.Size()
 	for y := max(0, rect.Min.Y); y < min(height, rect.Max.Y); y++ {
 		first, last := -1, -1
 		for x := max(0, rect.Min.X); x < min(width, rect.Max.X); x++ {
@@ -180,9 +223,10 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 		for x := first; first >= 0 && x <= last; x++ {
 			pt := image.Pt(x, y)
 			setScreenUnderline(screen, pt, true)
-			r.hoverCells = append(r.hoverCells, pt)
+			cells = append(cells, pt)
 		}
 	}
+	return cells
 }
 
 func (r *managedREPL) hovered(pt image.Point) bool {

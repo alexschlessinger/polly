@@ -45,26 +45,26 @@ func (b scrollbar) draw(buf *ui.Buffer) {
 }
 
 // setInspectorScrollbar sizes the inspector's thumb from the rows renderInspector
-// seated; there is no bar without a frame.
-func (r *managedREPL) setInspectorScrollbar(l frameLayout) {
-	r.inspectorScrollbar = scrollbar{}
-	if !r.workspace().inspector.open || l.chrome.frame.Empty() {
+// seated; there is no bar on a surface without a track.
+func (r *managedREPL) setInspectorScrollbar(pointer image.Point, pointerKnown bool) {
+	r.surface.scrollbar = scrollbar{}
+	if !r.workspace().inspector.open || r.surface.track.Empty() {
 		return
 	}
-	_, body, track := l.chrome.split(r.inspectorHeaderRows)
-	top := r.inspectorW.TopRow
-	if r.inspectorW.PinBottom {
-		top = max(0, len(r.inspectorW.Rows)-body.Dy())
+	_, body, track := r.surface.split()
+	top := r.surface.body.TopRow
+	if r.surface.body.PinBottom {
+		top = max(0, len(r.surface.body.Rows)-body.Dy())
 	}
-	r.inspectorScrollbar = newScrollbar(track, len(r.inspectorW.Rows), body.Dy(), top)
-	r.inspectorScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(track)
-	r.inspectorScrollbar.dragging = r.scrollDrag.pane == "inspector"
+	r.surface.scrollbar = newScrollbar(track, len(r.surface.body.Rows), body.Dy(), top)
+	r.surface.scrollbar.hover = pointerKnown && pointer.In(track)
+	r.surface.scrollbar.dragging = r.scrollDrag.pane == "inspector"
 }
 
 func (r *managedREPL) setScrollTop(pane string, top int) {
 	switch pane {
 	case "inspector":
-		b := r.inspectorScrollbar
+		b := r.surface.scrollbar
 		s := r.workspace().viewState(r.workspace().inspector.target)
 		s.top = max(0, min(top, b.total-b.visible))
 		s.follow = s.top >= max(0, b.total-b.visible)
@@ -72,7 +72,7 @@ func (r *managedREPL) setScrollTop(pane string, top int) {
 		if s.follow {
 			s.lastRows = b.total
 		}
-		r.inspectorScrollbar.top = s.top
+		r.surface.scrollbar.top = s.top
 	case "modal":
 		if m := r.model.modal; m != nil {
 			b := r.modalScrollbar
@@ -80,11 +80,26 @@ func (r *managedREPL) setScrollTop(pane string, top int) {
 			m.selected = max(m.top, min(m.selected, m.top+b.visible-1))
 			r.modalScrollbar.top = m.top
 		}
+	case "panel":
+		if p := r.focusedOwnWindow(); p != nil {
+			m := p.panel.modal
+			b := r.panelScrollbar
+			m.top = max(0, min(top, b.total-b.visible))
+			m.selected = max(m.top, min(m.selected, m.top+b.visible-1))
+			r.panelScrollbar.top = m.top
+		}
 	}
 }
 
 // Called with the main model lock held before pane/editor dispatch.
 func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
+	if modal {
+		return r.handleScrollbarFor(e, "modal")
+	}
+	return r.handleScrollbarFor(e, "inspector")
+}
+
+func (r *managedREPL) handleScrollbarFor(e ui.Event, pane string) bool {
 	if e.Type != ui.MouseEvent {
 		return false
 	}
@@ -97,9 +112,16 @@ func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
 		r.scrollDrag = scrollDragState{}
 		return false
 	}
-	pane, b := "inspector", r.inspectorScrollbar
-	if modal {
-		pane, b = "modal", r.modalScrollbar
+	var b scrollbar
+	switch pane {
+	case "inspector":
+		b = r.surface.scrollbar
+	case "modal":
+		b = r.modalScrollbar
+	case "panel":
+		b = r.panelScrollbar
+	default:
+		return false
 	}
 	if b.thumb.Empty() {
 		return false
@@ -120,9 +142,14 @@ func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
 	// Several wheel events can precede a paint, including events that moved
 	// from the body onto its scrollbar. Geometry is still valid, but the
 	// last-painted top is no longer necessarily the current scroll position.
-	if modal {
+	switch pane {
+	case "modal":
 		b.top = r.model.modal.top
-	} else {
+	case "panel":
+		if p := r.focusedOwnWindow(); p != nil {
+			b.top = p.panel.modal.top
+		}
+	default:
 		s := r.workspace().viewState(r.workspace().inspector.target)
 		b.top = s.top
 		if s.follow {

@@ -39,6 +39,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// flip the gate open.
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
+	r.startPanes()
 	r.affordanceW = &affordanceLayer{}
 	if r.headless == nil {
 		r.images = termimg.NewManager(ui.DefaultBackend.Screen)
@@ -69,6 +70,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 				r.images = nil
 			}
 			r.fx.shutdown()
+			r.closePanes()
 			ui.Close()
 		})
 	}
@@ -209,6 +211,16 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 		case task := <-r.uiTasks:
 			task()
 			r.render()
+		case ev := <-r.panes.events:
+			// The pane shows this process's state, so its events repaint like
+			// the main screen's: wheel turns coalesce, the rest paint at once.
+			if r.handlePaneEvent(ev) {
+				if isWheelEvent(ev.ev) {
+					r.scheduleWheelPaint()
+				} else {
+					r.render()
+				}
+			}
 		}
 		// Every arm may leave a recorded tab request behind (a queued /close
 		// drained by settleTabs, a picker choice landing with an open
@@ -262,22 +274,16 @@ func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
 // affordance feedback has a separate cell-only tick, avoiding a full repaint
 // ~20 times a second while sitting at the prompt.
 func (r *managedREPL) needsTick() bool {
-	if r.workspace().inspector.open {
-		i := &r.workspace().inspector
-		v := i.current
-		if v != nil && !v.loading && !v.unavailable && v.failures > 0 && !time.Now().Before(v.retryAt) {
-			return true
-		}
-		if tab := r.inspectionTab(i.target); tab != nil {
-			tab.model.mu.Lock()
-			busy := tab.model.busy
-			tab.model.mu.Unlock()
-			if busy {
+	if r.viewNeedsTick() {
+		return true
+	}
+	if wall := r.panes.wall; wall != nil {
+		for _, p := range wall.panes {
+			tick := false
+			r.within(p, func() { tick = r.viewNeedsTick() })
+			if tick {
 				return true
 			}
-		}
-		if (i.target.kind == agentsViewKind || r.inspectionTab(i.target) == nil || v != nil && v.saved != nil) && (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= r.inspectorRefreshInterval(i.target) {
-			return true
 		}
 	}
 	for _, tab := range r.tabs {
@@ -289,10 +295,36 @@ func (r *managedREPL) needsTick() bool {
 	defer r.model.mu.Unlock()
 	// Context reads at most once a second; its short transitions alone need
 	// animation frames. Other live listings repaint to follow the tabs.
-	if m := r.model.modal; m != nil && m.context != nil && m.context.wantsTick(time.Now()) {
+	if r.floatsNeedTick(time.Now()) {
 		return true
 	}
 	return r.model.busy || r.model.modal != nil && r.model.modal.refresh != nil
+}
+
+// viewNeedsTick reports whether the inspected view wants the periodic
+// repaint: a failed read is due a retry, its session's turn is running, or
+// its saved state is due another read.
+func (r *managedREPL) viewNeedsTick() bool {
+	if !r.workspace().inspector.open {
+		return false
+	}
+	i := &r.workspace().inspector
+	v := i.current
+	if v != nil && !v.loading && !v.unavailable && v.failures > 0 && !time.Now().Before(v.retryAt) {
+		return true
+	}
+	if tab := r.inspectionTab(i.target); tab != nil {
+		tab.model.mu.Lock()
+		busy := tab.model.busy
+		tab.model.mu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	if (i.target.kind == agentsViewKind || r.inspectionTab(i.target) == nil || v != nil && v.saved != nil) && (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(i.refreshAt) >= r.inspectorRefreshInterval(i.target) {
+		return true
+	}
+	return false
 }
 
 // wantsRenderForEvent reports whether to repaint after handling ev. Bracketed

@@ -35,7 +35,7 @@ func TestAgentUnderlineIsPresentedWithTheFrame(t *testing.T) {
 			watchTestAgent(r, child)
 			r.render() // First opening, before the background projection lands.
 			var title image.Rectangle
-			for _, button := range r.inspectorButtons {
+			for _, button := range r.surface.buttons {
 				if button.action == "parent" {
 					title = button.rect
 				}

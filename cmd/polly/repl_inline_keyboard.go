@@ -59,7 +59,7 @@ func (r *managedREPL) selectedInlineAction() (inspectorKeyboardAction, bool) {
 
 func (r *managedREPL) handleInlineActionKey(e ui.Event) bool {
 	m := r.model
-	if r.inspectorFocused() || r.workspace().inspector.searching || m.pasting || m.hist.searching || m.approval != nil || e.Type != ui.KeyboardEvent {
+	if r.inspectorFocused() || r.frameSearching() || m.pasting || m.hist.searching || m.approval != nil || e.Type != ui.KeyboardEvent {
 		m.inlineKeyboardAction = ""
 		return false
 	}

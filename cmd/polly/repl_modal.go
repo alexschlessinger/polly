@@ -437,25 +437,26 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 }
 
 func (r *managedREPL) closeModal() {
-	if r.model.modal != nil {
-		r.model.modal.wipe()
-	}
+	closed := r.model.modal
 	// A review a turn waits on takes the place of the dialog that closed.
 	r.model.modal, r.model.pendingModal = r.model.pendingModal, nil
 	r.modalScrollbar = scrollbar{}
-	r.scrollDrag = scrollDragState{}
+	if r.scrollDrag.pane == "modal" {
+		r.scrollDrag = scrollDragState{}
+	}
+	if closed != nil {
+		closed.wipe()
+	}
 }
 
 func (r *managedREPL) openModal(modal *replModal) {
 	// Native placements under the modal rect are dropped in render, so the
 	// transcript's image logo and thumbnails cannot composite over the dialog.
 	// A review a turn waits on waits again for the new dialog to close.
-	if current := r.model.modal; current != nil && current != modal {
-		if current.awaited() {
-			r.model.pendingModal = current
-		} else if current.context != nil {
-			current.wipe()
-		}
+	// A non-modal panel that had the keys yields them and stays up behind it.
+	r.yieldPanelKeys()
+	if current := r.model.modal; current != nil && current != modal && current.awaited() {
+		r.model.pendingModal = current
 	}
 	r.model.modal = modal
 }
@@ -559,19 +560,6 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.login != nil {
 		return r.handleLoginEvent(m.login, e)
-	}
-	if m.todo != nil && r.handleTodoPanelEvent(m, e) {
-		return true
-	}
-	if m.context != nil {
-		wasUsage := m.context.usageOpen
-		if m.context.handleEvent(m, e) {
-			if m.context.usageOpen != wasUsage {
-				r.modalScrollbar = scrollbar{}
-				r.scrollDrag = scrollDragState{}
-			}
-			return true
-		}
 	}
 	if m.helpLines != nil && m.scrollHelp(e.ID) {
 		return true

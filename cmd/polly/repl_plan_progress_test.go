@@ -55,25 +55,24 @@ func TestPlanProgressLiveDividerAndPanel(t *testing.T) {
 	key("<S-Tab>")
 	key("<Enter>")
 	r.render()
-	modal := m.modal
-	if modal == nil || modal.todo == nil || modal.bounds.Max.Y != beforeLayout.transcriptHeight || modal.bounds.Max.X != w {
-		t.Fatalf("keyboard did not open the checklist above the composer: %v", modal)
+	modal := r.focusedPanelModal()
+	if modal == nil || modal.todo == nil || m.modal != nil || modal.bounds.Min.Y != 0 || modal.bounds.Max.X != w || modal.bounds.Max.Y > beforeLayout.transcriptHeight {
+		t.Fatalf("keyboard did not open the checklist at the conversation's top right: %v", modal)
 	}
-	wantBody := "✓ #3  Match [titles]\n▶ #4  Rank exact matches\n! #5  Verify ordering\n      [rank] check failed\nView plan · v"
-	if body := plainStyledText(r.modalW.Text); body != wantBody {
+	wantBody := "✓ #3  Match [titles]\n▶ #4  Rank exact matches\n! #5  Verify ordering\n      [rank] check failed\nView plan"
+	if body := plainStyledText(panelPage(r, floatChecklist).Text); body != wantBody {
 		t.Fatalf("expanded plan checklist:\n%s\nwant:\n%s", body, wantBody)
 	}
 	key("<Tab>")
 	if modal.selectedValue() != planViewAction {
 		t.Fatal("accepted view not keyboard-reachable")
 	}
-	key("x")
 	// Refresh an open panel in place, retaining its focus and scroll selection.
 	plan.Todos[2].State, plan.Todos[2].Reason = sessions.TodoDone, ""
 	tui.TodoProgress(plan, plan.Todos)
 	r.render()
 	title := screenRow(screenSnapshot(t, screen), modal.bounds.Min.Y)
-	if m.modal != modal || !strings.Contains(title, "TODO · 2/3 done") || !strings.HasSuffix(divider(), " ✓☐✓ ─") {
+	if r.focusedPanelModal() != modal || !strings.Contains(title, "TODO · 2/3 done") || !strings.HasSuffix(divider(), " ✓☐✓ ─") {
 		t.Fatalf("live update did not refresh the panel and divider together: %q", title)
 	}
 	plan.Todos[1].State, plan.Todos[1].Reason = sessions.TodoBlocked, strings.Repeat("long diagnostic ", 12)
@@ -94,11 +93,11 @@ func TestPlanProgressLiveDividerAndPanel(t *testing.T) {
 	click := mouseEvent("<MouseLeft>", link.Min)
 	r.handleEvent(click)
 	r.render()
-	if m.modal == nil {
+	if r.focusedPanelModal() == nil {
 		t.Fatal("clicking the status marks did not open the checklist")
 	}
 	r.handleEvent(click) // The marks sit outside the panel.
-	if m.modal != nil || m.fullTranscript() != before || m.ed.text() != "unfinished draft" || !m.busy {
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatChecklist) != nil || m.fullTranscript() != before || m.ed.text() != "unfinished draft" || !m.busy {
 		t.Fatal("inspection changed the composer, transcript or turn")
 	}
 }
@@ -147,7 +146,7 @@ func TestTodoDividerClearsOnCompletion(t *testing.T) {
 		t.Fatal("unfinished tasks should show task marks")
 	}
 	r.openTodoPanel()
-	panel := m.modal
+	panel := r.focusedPanelModal()
 	for i := range plan.Todos {
 		plan.Todos[i].State = sessions.TodoDone
 	}
@@ -158,10 +157,10 @@ func TestTodoDividerClearsOnCompletion(t *testing.T) {
 		t.Fatal("all-done tasks left marks or a hitbox on the divider")
 	}
 	title := screenRow(screenSnapshot(t, screen), panel.bounds.Min.Y)
-	if m.modal != panel || !strings.Contains(title, "TODO · 3/3 done") || strings.Contains(plainStyledText(r.modalW.Text), "3/3 done") {
+	if r.focusedPanelModal() != panel || !strings.Contains(title, "TODO · 3/3 done") || strings.Contains(plainStyledText(panelPage(r, floatChecklist).Text), "3/3 done") {
 		t.Fatalf("completion should stay in the open panel's header: %q", title)
 	}
-	r.dismissModal()
+	r.closeFloats()
 	plan.Mode = sessions.PlanDraft
 	tui.TodoProgress(plan, plan.Todos)
 	r.render()
@@ -243,10 +242,10 @@ func TestTodoDividerSharedWithInspector(t *testing.T) {
 			t.Fatalf("width %d: inspector overwrote or displaced task marks: %q, %v", width, row, link)
 		}
 		r.handleEvent(mouseEvent("<MouseLeft>", link.Min))
-		if m.modal == nil || m.modal.todo == nil || r.inspectorFocused() || !r.workspace().inspector.open {
+		if p := r.focusedPanelModal(); p == nil || p.todo == nil || r.inspectorFocused() || !r.workspace().inspector.open {
 			t.Fatalf("width %d: inspector intercepted the task control", width)
 		}
-		r.dismissModal()
+		r.closeFloats()
 	}
 }
 
@@ -267,17 +266,18 @@ func TestPlanProgressWidthsAndDraftActions(t *testing.T) {
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", m.todoLink.Min))
 	r.render()
-	if m.modal == nil || m.modal.title != "PLAN" || !m.modal.bounds.In(image.Rect(0, 0, 21, 10)) {
+	panel := r.focusedPanelModal()
+	if panel == nil || panel.title != "PLAN" || !panel.bounds.In(image.Rect(0, 0, 21, 10)) {
 		t.Fatalf("missing narrow plan panel")
 	}
 	var details strings.Builder
-	for _, item := range m.modal.items {
+	for _, item := range panel.items {
 		details.WriteString(item.label)
 	}
 	if !strings.Contains(strings.ReplaceAll(details.String(), " ", ""), strings.ReplaceAll(path, " ", "")) {
 		t.Fatalf("full path unreachable: %q", details.String())
 	}
-	r.dismissModal()
+	r.closeFloats()
 	plan := progressFixture()
 	plan.Todos[1].Text = "改善 [rank] " + strings.Repeat("終", 20)
 	m.setPlanProgress(plan, plan.Todos)
@@ -285,15 +285,16 @@ func TestPlanProgressWidthsAndDraftActions(t *testing.T) {
 	r.render()
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	r.render()
-	if m.modal.top == 0 || m.modal.selectedValue() != planViewAction {
-		t.Fatalf("short panel does not scroll to view action: %+v", m.modal)
+	panel = r.focusedPanelModal()
+	if panel.top == 0 || panel.selectedValue() != planViewAction {
+		t.Fatalf("short panel does not scroll to view action: %+v", panel)
 	}
-	for _, item := range m.modal.items {
-		if rw.StringWidth(item.label) > m.modal.bounds.Dx()-2 {
+	for _, item := range panel.items {
+		if rw.StringWidth(item.label) > panel.bounds.Dx()-2 {
 			t.Fatalf("wide row: %q", item.label)
 		}
 	}
-	r.dismissModal()
+	r.closeFloats()
 	m.setPlanProgress(&sessions.Plan{Mode: sessions.PlanExited, Path: path}, nil)
 	r.render()
 	if !m.todoLink.Empty() || plainStyledText(r.dividerW.Text) != strings.Repeat("─", 21) {
@@ -321,9 +322,13 @@ func TestTodoPanelOpensPlanWithKeyboardAndMouse(t *testing.T) {
 	r.render()
 	key("<Tab>")
 	key("<Enter>")
-	if r.model.modal != nil || r.state.planReview != rev {
+	if r.focusedPanelModal() != nil || r.state.planReview != rev {
 		t.Fatal("Tab and Enter did not review the draft")
 	}
+	if r.panes.floatOf(floatChecklist) == nil {
+		t.Fatal("reviewing the draft closed the checklist beside it")
+	}
+	r.runCommand("/todo") // Closed, to open again with the keys.
 	ctx := context.Background()
 	ps := r.state.session.(sessions.PlanSession)
 	if started, err := ps.AcceptPlan(ctx, rev, draft); !started || err != nil {
@@ -335,20 +340,20 @@ func TestTodoPanelOpensPlanWithKeyboardAndMouse(t *testing.T) {
 	r.render()
 	key("<End>")
 	r.render()
-	m := r.model.modal
+	m := r.focusedPanelModal()
 	y := m.listBounds.Min.Y + m.selected - m.top
-	if row := screenRow(screenSnapshot(t, screen), y); !strings.Contains(row, "View plan · v") {
+	if row := screenRow(screenSnapshot(t, screen), y); !strings.Contains(row, "View plan") || strings.Contains(row, "· v") {
 		t.Fatalf("End did not scroll to the painted plan action: %q", row)
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(m.listBounds.Min.X, y)))
-	if r.model.modal != nil || !strings.Contains(r.model.fullTranscript(), "Accepted plan (read-only) · "+rev) {
+	if r.focusedPanelModal() != nil || !strings.Contains(r.model.fullTranscript(), "Accepted plan (read-only) · "+rev) {
 		t.Fatal("click did not view the accepted plan")
 	}
-	r.runCommand("/todo")
-	r.render()
+	// The checklist stands beside the composer, where a letter is typed.
+	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(m.listBounds.Min.X, m.listBounds.Min.Y)))
 	key("v")
-	if r.model.modal != nil || strings.Count(r.model.fullTranscript(), "Accepted plan (read-only) · "+rev) != 2 {
-		t.Fatal("v did not view the accepted plan")
+	if r.focusedPanelModal() != nil || r.panes.floatOf(floatChecklist) == nil || r.model.ed.text() != "v" || strings.Count(r.model.fullTranscript(), "Accepted plan (read-only) · "+rev) != 1 {
+		t.Fatalf("a letter typed beside the checklist did not reach the composer: %q", r.model.ed.text())
 	}
 	if rows, err := r.state.session.(sessions.TodoSession).GetTodos(ctx); err != nil || len(rows) != 0 || r.model.busy {
 		t.Fatalf("inspection started work or initialized todos: %+v, %v", rows, err)
@@ -371,20 +376,20 @@ func TestTodoPanelShowsOnlyApplicablePlanDetails(t *testing.T) {
 		{name: "exited", plan: &sessions.Plan{Mode: sessions.PlanExited, Path: "old.md"}, todos: ordinary,
 			title: "TODO · 0/1 done", body: "○ #1  Check notes"},
 		{name: "draft", plan: &sessions.Plan{Mode: sessions.PlanDraft, Path: "draft.md"},
-			title: "PLAN", body: empty + "\nDraft: draft.md\nReview draft · v"},
+			title: "PLAN", body: empty + "\nDraft: draft.md\nReview draft"},
 		{name: "accepted without linked items", plan: &sessions.Plan{Mode: sessions.PlanAccepted}, todos: ordinary,
-			title: "TODO · 0/1 done", body: "○ #1  Check notes\nPlan accepted. Its checklist hasn’t been started yet.\nView plan · v"},
+			title: "TODO · 0/1 done", body: "○ #1  Check notes\nPlan accepted. Its checklist hasn’t been started yet.\nView plan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r.model.setPlanProgress(tc.plan, tc.todos)
 			r.openTodoPanel()
-			defer r.dismissModal()
+			defer r.closeFloats()
 			r.render()
-			title := screenRow(screenSnapshot(t, screen), r.model.modal.bounds.Min.Y)
+			title := screenRow(screenSnapshot(t, screen), r.focusedPanelModal().bounds.Min.Y)
 			if !strings.Contains(title, "╭─"+tc.title) || !strings.HasSuffix(title, "╮") {
 				t.Fatalf("checklist header = %q, want %q", title, tc.title)
 			}
-			if body := plainStyledText(r.modalW.Text); body != tc.body {
+			if body := plainStyledText(panelPage(r, floatChecklist).Text); body != tc.body {
 				t.Fatalf("checklist body:\n%s\nwant:\n%s", body, tc.body)
 			}
 		})
@@ -400,12 +405,12 @@ func TestTodoPanelKeepsTaskAnchorAcrossLiveUpdates(t *testing.T) {
 	ui.TodoProgress(plan, all)
 	r.openTodoPanel()
 	r.render()
-	m := r.model.modal
+	m := r.focusedPanelModal()
 	if m == nil {
 		t.Fatal("missing checklist")
 	}
-	wantBody := "Approved outcomes\n✓ #3  Match [titles]\n▶ #4  Rank exact matches\n○ #5  Verify ordering\nSession tasks\n○ #1  Send notes\nView plan · v"
-	if text := plainStyledText(r.modalW.Text); text != wantBody {
+	wantBody := "Approved outcomes\n✓ #3  Match [titles]\n▶ #4  Rank exact matches\n○ #5  Verify ordering\nSession tasks\n○ #1  Send notes\nView plan"
+	if text := plainStyledText(panelPage(r, floatChecklist).Text); text != wantBody {
 		t.Fatalf("mixed checklist:\n%s\nwant:\n%s", text, wantBody)
 	}
 	for i, item := range m.items {
@@ -423,7 +428,7 @@ func TestTodoPanelKeepsTaskAnchorAcrossLiveUpdates(t *testing.T) {
 	all[0].Text = "Share notes"
 	ui.TodoProgress(plan, all)
 	r.render()
-	if r.model.modal != m || !strings.Contains(m.items[m.selected].label, "Share notes") {
+	if r.focusedPanelModal() != m || !strings.Contains(m.items[m.selected].label, "Share notes") {
 		t.Fatalf("live update lost the reading position: %+v", m.items[m.selected])
 	}
 }
@@ -438,7 +443,7 @@ func TestTodoPanelKeepsReadingAnchorWhenReasonClears(t *testing.T) {
 	r.model.setPlanProgress(nil, todos)
 	r.openTodoPanel()
 	r.render()
-	m := r.model.modal
+	m := r.focusedPanelModal()
 	const reasonID = "todo/1/reason"
 	for i, item := range m.items {
 		if item.identity == reasonID {

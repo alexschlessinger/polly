@@ -131,8 +131,10 @@ type inspectorState struct {
 	position              int
 	current               *viewInstance
 	generation            uint64
-	searching             bool
-	searchInput           lineEditor
+	// refreshAt is when the view was last read from storage.
+	refreshAt   time.Time
+	searching   bool
+	searchInput lineEditor
 }
 
 type viewInstance struct {
@@ -171,7 +173,13 @@ func (w *sessionWorkspace) viewState(target viewTarget) *viewState {
 	return s
 }
 
+// workspace is the navigation the inspected view belongs to: the visible
+// tab's, or a wall pane's own while that pane is being painted or is handling
+// its input (see within).
 func (r *managedREPL) workspace() *sessionWorkspace {
+	if r.scoped != nil {
+		return r.scoped.view
+	}
 	t := r.visibleTab()
 	if t.workspace == nil {
 		t.workspace = &sessionWorkspace{}

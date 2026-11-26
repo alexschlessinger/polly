@@ -127,7 +127,7 @@ func TestInspectorSwarmProjectionRevisionAndResize(t *testing.T) {
 		t.Fatalf("swarm projected as saved conversation: revision=%q failures=%d", v.revision, v.failures)
 	}
 	model := v.model
-	r.inspectorRefreshAt = time.Time{}
+	r.workspace().inspector.refreshAt = time.Time{}
 	v = waitInspector(t, r, 140)
 	if v.model != model {
 		t.Fatal("unchanged swarm revision unnecessarily rebuilt projection")

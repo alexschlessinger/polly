@@ -111,18 +111,31 @@ func (u *contextSessionUsage) addExecutions(state *swarm.State) {
 	}
 }
 
-func contextUsageRow(label, input, output string) string {
-	return fmt.Sprintf("%-13s %14s %14s", label, input, output)
+// contextUsageWidth is the session usage table as plain text reports it: a
+// label and two columns of counts.
+const contextUsageWidth = 43
+
+// contextUsageRow is one row of that table, width columns wide: the label,
+// then the two counts at the right of the halves of what is left, so the
+// table fills a window however wide it is.
+func contextUsageRow(label, input, output string, width int) string {
+	const labelWidth = 13
+	room := max(contextUsageWidth, width) - labelWidth
+	return fmt.Sprintf("%-*s%*s%*s", labelWidth, label, room/2, input, room-room/2, output)
 }
 
-func (u contextSessionUsage) details() []string {
+func (u contextSessionUsage) details() []string { return u.detailsAt(contextUsageWidth) }
+
+// detailsAt is the table's rows, and the notes under it, for a reader width
+// columns wide.
+func (u contextSessionUsage) detailsAt(width int) []string {
 	total := u.parent.plus(u.subagents)
-	rows := []string{contextUsageRow("Session usage", "↑ input", "↓ output")}
+	rows := []string{contextUsageRow("Session usage", "↑ input", "↓ output", width)}
 	for _, entry := range []struct {
 		label string
 		usage contextTokenUsage
 	}{{"Parent", u.parent}, {"Subagents", u.subagents}, {"Total", total}} {
-		rows = append(rows, contextUsageRow(entry.label, entry.usage.input.text(), entry.usage.output.text()))
+		rows = append(rows, contextUsageRow(entry.label, entry.usage.input.text(), entry.usage.output.text(), width))
 	}
 	if total.input.missing || total.output.missing {
 		rows = append(rows, "≥ partial · — not reported")

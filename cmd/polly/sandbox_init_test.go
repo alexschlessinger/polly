@@ -509,7 +509,8 @@ func TestSandboxProposalDialog(t *testing.T) {
 
 	// A proposal waits for the dialog open before it, and survives another
 	// dialog opening over it; Escape cancels it.
-	r.openContextPopover()
+	other := func() { r.openModal(&replModal{title: "Other", details: []string{"another dialog"}}) }
+	other()
 	try = newProposal()
 	done = review(context.Background(), try)
 	if r.model.modal.sandboxTry != nil || r.model.pendingModal == nil {
@@ -519,7 +520,7 @@ func TestSandboxProposalDialog(t *testing.T) {
 	if r.model.modal == nil || r.model.modal.sandboxTry == nil {
 		t.Fatal("closing the dialog did not show the waiting proposal")
 	}
-	r.openContextPopover()
+	other()
 	key("<Escape>")
 	if r.model.modal == nil || r.model.modal.sandboxTry == nil {
 		t.Fatal("a dialog opened over the proposal lost it")
