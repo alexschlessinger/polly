@@ -46,6 +46,7 @@ func getCommand() *cli.Command {
 		Action:                 runCommand,
 		Commands: []*cli.Command{
 			embedCommand(),
+			paneCommand(),
 		},
 		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
 			// Just return the error without showing usage
