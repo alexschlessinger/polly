@@ -775,7 +775,7 @@ text.
 
 | Protocol | Terminals |
 |---|---|
-| Kitty graphics | Kitty, Ghostty, WezTerm |
+| Kitty graphics | Kitty, Ghostty, WezTerm, Rex |
 | Sixel | Terminals with Sixel support, including Windows Terminal 1.22+ and foot |
 | Neither | Images appear as a caption |
 

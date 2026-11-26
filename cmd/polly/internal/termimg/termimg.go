@@ -87,6 +87,11 @@ func DetectProtocol(getenv func(string) string) Protocol {
 	if getenv("KITTY_WINDOW_ID") != "" || getenv("WEZTERM_PANE") != "" || getenv("GHOSTTY_RESOURCES_DIR") != "" {
 		return ProtocolKitty
 	}
+	// Rex draws Kitty graphics, and names itself only in variables of its
+	// own: its TERM is the generic one.
+	if getenv("REX_BLOCK") != "" || strings.EqualFold(getenv("TERM_PROGRAM"), "rex") {
+		return ProtocolKitty
+	}
 	identity := strings.ToLower(strings.Join([]string{
 		getenv("TERM"),
 		getenv("TERM_PROGRAM"),

@@ -209,6 +209,9 @@ view images, and recall earlier work:
 | Agents and session | `spawn_agent`, `set_session_title`, `update_todos`, `ask_user` (TUI only) |
 | Images and themes | `view_image`, `set_theme` (TUI only) |
 | Recall | `list_artifacts`, `read_artifact`, `read_transcript` |
+| Rex (opt-in) | `rex_inspect`, `rex_layout`, `rex_terminal`, `rex_lua`, `rex_api`, `rex_client` |
+
+The Rex tools are registered as opt-in native tools (select them with `-t`, e.g. `-t rex_inspect -t rex_terminal`). Under a sandbox policy, add the `rex` preset (e.g. `--sandbox workspace+net+git+rex`) to expose the live local Rex server socket. When Polly runs inside Rex, its TUI also emits `OSC 7501` program status records for turns, approval/question prompts, and active workers.
 
 On multi-step requests, `update_todos` records outcomes and blockers in the
 session; `/todo` shows them. No plan is required. For work you want to approve

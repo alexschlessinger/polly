@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/swarm"
+	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -791,5 +794,161 @@ func TestLineToggleAddressesOneLine(t *testing.T) {
 	}
 	if !m.toggleToolDisclosure(ids[0]) || m.lineOpenOf(m.toolDisclosures.get(ids[0])) || !m.lineOpenOf(m.toolDisclosures.get(ids[1])) {
 		t.Fatal("folding the first line changed the second")
+	}
+}
+
+type fakeFXPrinter struct {
+	writes []string
+}
+
+func (p *fakeFXPrinter) Print(s string) {
+	p.writes = append(p.writes, s)
+}
+
+type fakePrintableScreen struct {
+	tcell.Screen
+	writes []string
+}
+
+func (s *fakePrintableScreen) Print(str string) {
+	s.writes = append(s.writes, str)
+}
+
+func TestNewTerminalFXUnwrapsScreenDecorators(t *testing.T) {
+	base := &fakePrintableScreen{}
+	var painter framePainter
+	wrapped := themedScreen{painter.track(base)}
+	p := screenPrinter(wrapped)
+	if p == nil {
+		t.Fatal("screenPrinter failed to unwrap themedScreen/trackedPaintScreen")
+	}
+	p.Print("\x1b]7501;state=idle:app=polly\x1b\\")
+	if len(base.writes) != 1 || base.writes[0] != "\x1b]7501;state=idle:app=polly\x1b\\" {
+		t.Fatalf("unexpected writes = %q", base.writes)
+	}
+}
+
+func TestSupportsProgramStatusOSC(t *testing.T) {
+	env := func(vals map[string]string) func(string) string {
+		return func(k string) string { return vals[k] }
+	}
+	if !supportsProgramStatusOSC(env(map[string]string{"REX_SESSION": "session:1"})) {
+		t.Fatal("REX_SESSION should enable OSC 7501")
+	}
+	if !supportsProgramStatusOSC(env(map[string]string{"REX_BLOCK": "block:1"})) {
+		t.Fatal("REX_BLOCK should enable OSC 7501")
+	}
+	if supportsProgramStatusOSC(env(map[string]string{"TERM_PROGRAM": "ghostty"})) {
+		t.Fatal("non-Rex terminals should not emit OSC 7501 by default")
+	}
+}
+
+func TestFormatProgramStatusOSC(t *testing.T) {
+	seq := formatProgramStatusOSC(programStatusRecord{
+		State: "blocked",
+		Kind:  "permission",
+		App:   "polly",
+		Msg:   "Approve bash\n\x1b]7501;evil\x07",
+	})
+	if !strings.HasPrefix(seq, "\x1b]7501;") || !strings.HasSuffix(seq, "\x1b\\") {
+		t.Fatalf("malformed OSC 7501 wrapper: %q", seq)
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b]7501;"), "\x1b\\")
+	if !strings.Contains(body, "state=blocked:kind=permission:app=polly:msg=") {
+		t.Fatalf("unexpected OSC 7501 body: %q", body)
+	}
+	_, b64, ok := strings.Cut(body, "msg=")
+	if !ok {
+		t.Fatalf("missing msg in %q", body)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("decode msg base64: %v", err)
+	}
+	if strings.ContainsAny(string(decoded), "\x1b\x07\n\r") {
+		t.Fatalf("decoded msg retained control characters: %q", string(decoded))
+	}
+
+	// Non-blocked states must omit kind.
+	working := formatProgramStatusOSC(programStatusRecord{State: "working", Kind: "permission", App: "polly"})
+	if strings.Contains(working, "kind=") {
+		t.Fatalf("working record must not emit kind: %q", working)
+	}
+}
+
+func TestFrameProgramStatusAndTerminalFXLifecycle(t *testing.T) {
+	m := newReplModel()
+	if snap := m.frameProgramStatus(); snap.Root.State != "idle" || snap.Root.App != "polly" {
+		t.Fatalf("idle snapshot = %+v", snap)
+	}
+
+	m.beginTurn("check")
+	m.state = turnStateThinking
+	if snap := m.frameProgramStatus(); snap.Root.State != "working" || snap.Root.Msg != "thinking" {
+		t.Fatalf("working snapshot = %+v", snap)
+	}
+
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
+	if snap := m.frameProgramStatus(); snap.Root.State != "blocked" || snap.Root.Kind != "permission" {
+		t.Fatalf("approval snapshot = %+v", snap)
+	}
+	m.approval = nil
+
+	m.modal = &replModal{ask: &askDialog{req: askRequest{Header: "Pick a target"}}}
+	if snap := m.frameProgramStatus(); snap.Root.State != "blocked" || snap.Root.Kind != "question" || snap.Root.Msg != "Pick a target" {
+		t.Fatalf("ask snapshot = %+v", snap)
+	}
+	m.modal = nil
+
+	m.busy = false
+	m.lastOutcome = turnOutcomeDone
+	if snap := m.frameProgramStatus(); snap.Root.State != "done" {
+		t.Fatalf("done snapshot = %+v", snap)
+	}
+	m.lastOutcome = turnOutcomeFailed
+	if snap := m.frameProgramStatus(); snap.Root.State != "error" {
+		t.Fatalf("error snapshot = %+v", snap)
+	}
+
+	// Add an active worker child disclosure and verify dedupe, clear, and shutdown.
+	rec := &toolDisclosureRecord{
+		rows: []toolDisclosureRow{{
+			agent: &agentActivity{
+				viewID: "audit-1",
+				label:  "Audit Worker",
+				state:  swarm.AgentPresentation{Lifecycle: swarm.LifecycleActive, Busy: true},
+			},
+		}},
+	}
+	m.toolDisclosures.add(rec, 0)
+
+	snap := m.frameProgramStatus()
+	if len(snap.Children) != 1 || snap.Children[0].ID != "worker/audit-1" || snap.Children[0].State != "working" {
+		t.Fatalf("worker child snapshot = %+v", snap.Children)
+	}
+
+	printer := &fakeFXPrinter{}
+	fx := &terminalFX{printer: printer, programStatusOK: true}
+	fx.setProgramStatus(snap)
+	if len(printer.writes) != 2 {
+		t.Fatalf("expected 2 writes (root + worker), got %d: %q", len(printer.writes), printer.writes)
+	}
+	// Repeating identical state must not emit redundant escapes.
+	fx.setProgramStatus(snap)
+	if len(printer.writes) != 2 {
+		t.Fatalf("duplicate snapshot emitted extra writes: %q", printer.writes)
+	}
+
+	// Settling the worker emits an explicit clear for its child ID.
+	rec.rows[0].agent.state = swarm.AgentPresentation{Lifecycle: swarm.LifecycleIdle, TaskStatus: "done"}
+	fx.setProgramStatus(m.frameProgramStatus())
+	if len(printer.writes) != 3 || printer.writes[2] != "\x1b]7501;state=clear:id=worker/audit-1\x1b\\" {
+		t.Fatalf("expected child clear sequence, got %q", printer.writes)
+	}
+
+	// Shutdown clears all OSC 7501 state.
+	fx.shutdown()
+	if len(printer.writes) != 4 || printer.writes[3] != "\x1b]7501;state=clear\x1b\\" {
+		t.Fatalf("expected shutdown clear sequence, got %q", printer.writes)
 	}
 }

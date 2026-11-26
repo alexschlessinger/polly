@@ -417,6 +417,7 @@ func (r *managedREPL) render() {
 	}
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
+	programStatus := r.model.frameProgramStatus()
 	notices := r.model.takeNotices()
 	focusKnown, focused := r.model.focusKnown, r.model.focused
 	imagePlacements := r.model.visibleImagePlacements(viewport)
@@ -576,6 +577,7 @@ func (r *managedREPL) render() {
 	if r.fx != nil {
 		r.fx.setTitle(title)
 		r.fx.setProgress(progress)
+		r.fx.setProgramStatus(programStatus)
 		for _, body := range notices {
 			r.fx.notify("polly", body)
 		}

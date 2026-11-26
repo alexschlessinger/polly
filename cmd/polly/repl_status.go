@@ -453,6 +453,99 @@ func (m *replModel) frameProgress() string {
 	return progressNone
 }
 
+// frameProgramStatus projects Polly's live turn, approval/question prompt, and
+// active worker states into OSC 7501 records for terminals such as Rex.
+// Caller must hold m.mu.
+func (m *replModel) frameProgramStatus() programStatusSnapshot {
+	root := programStatusRecord{App: "polly"}
+	switch {
+	case m.approval != nil:
+		root.State = "blocked"
+		root.Kind = "permission"
+		msg := "Approval needed"
+		if len(m.approval.calls) > 0 {
+			msg = "Approve " + toolLabel(m.approval.calls[0])
+		}
+		root.Msg = msg
+	case m.modal != nil && m.modal.ask != nil:
+		root.State = "blocked"
+		root.Kind = "question"
+		msg := strings.TrimSpace(m.modal.ask.req.Header)
+		if msg == "" {
+			msg = strings.TrimSpace(m.modal.ask.req.Question)
+		}
+		if msg == "" {
+			msg = "Question waiting for answer"
+		}
+		root.Msg = msg
+	case m.busy:
+		root.State = "working"
+		root.Msg = m.busyLabel()
+	case m.lastOutcome == turnOutcomeFailed:
+		root.State = "error"
+		root.Msg = "Turn failed"
+	case m.lastOutcome == turnOutcomeIncomplete:
+		root.State = "error"
+		root.Msg = "Turn incomplete"
+	case m.lastOutcome == turnOutcomeDone:
+		root.State = "done"
+		root.Msg = "Done"
+	default:
+		root.State = "idle"
+	}
+
+	var ids []int64
+	for id := range m.toolDisclosures.all() {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+
+	var children []programStatusRecord
+	seen := make(map[string]bool)
+	for _, id := range ids {
+		rec := m.toolDisclosures.get(id)
+		if rec == nil {
+			continue
+		}
+		for i := range rec.rows {
+			a := rec.rows[i].agent
+			if a == nil || agentSettled(a) {
+				continue
+			}
+			key := a.viewID
+			if key == "" {
+				key = a.label
+			}
+			childID := sanitizeProgramStatusID("worker/" + key)
+			if childID == "" || seen[childID] {
+				continue
+			}
+			child := programStatusRecord{
+				ID:    childID,
+				Title: a.label,
+			}
+			switch {
+			case a.approval:
+				child.State = "blocked"
+				child.Kind = "permission"
+				child.Msg = "Approval needed"
+			case a.busy():
+				child.State = "working"
+				child.Msg = "Running"
+			case a.state.Outcome == "failed":
+				child.State = "error"
+				child.Msg = "Failed"
+			default:
+				continue
+			}
+			seen[childID] = true
+			children = append(children, child)
+		}
+	}
+
+	return programStatusSnapshot{Root: root, Children: children}
+}
+
 // coarseElapsed formats a duration at whole-second granularity for surfaces
 // that shouldn't churn ten times a second (window title, notifications).
 func coarseElapsed(d time.Duration) string {
