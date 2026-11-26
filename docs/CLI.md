@@ -12,7 +12,7 @@ the [documentation index](README.md).
 - [One-shot output](#one-shot-output)
 - [Sessions](#sessions)
 - [Provider outages and retries](#provider-outages-and-retries)
-- [TUI](#tui): [keys](#keys), [commands](#slash-commands), [agent panel](#agent-panel), [inside Rex](#inside-rex)
+- [TUI](#tui): [panels](#panels-and-quick-pickers), [keys](#keys), [commands](#slash-commands), [agent panel](#agent-panel), [terminal multiplexers](#terminal-multiplexers)
 - [Files and skills in prompts](#files-and-skills-in-the-composer)
 - [Transcript and changes](#transcript)
 - [Images](#images)
@@ -277,14 +277,13 @@ and output bars, scaled separately to its share of recorded subagent input and
 output. Completed and failed workers remain included even when hidden from the
 agent panel. Scroll with the arrow keys, mouse wheel, or scrollbar when the list
 overflows. Use the Context link, Left, Backspace, or Esc to return; the overview's
-scroll position and live snapshot are retained. Ctrl-C closes the popup, and
-clicking elsewhere leaves it up without the keys.
+scroll position and live snapshot are retained.
 The footer shows a cache-hit meter, limits, and stored history; zero compactions
 and the default summary model are omitted. The chart's compaction legend appears
 only when the displayed history contains a compaction.
 Short reveal and gauge transitions animate data changes, then settle. Scroll on
-small terminals; Escape, Enter, or a click outside closes the popup without
-changing the conversation.
+small terminals; clicking outside returns focus to the composer while keeping the
+panel open, and Esc, Ctrl-C, the `×` button, or running `/context` again closes it.
 `/context text` prints the full report instead, including session identity, model,
 display status, and available last-turn usage. The line frontend prints that
 report for both `/context` and `/context text`.
@@ -299,8 +298,9 @@ and cost, exact when the provider bills it (OpenRouter) and estimated from the
 model's advertised rates otherwise. `--meta` adds `cost_usd`, plus `cost_estimated=true`
 when the cost wasn't billed.
 
-A session open in another running Polly is unavailable in the picker. [Inside
-Rex](#inside-rex), picking it brings that Polly's tab to the front instead.
+A session open in another running Polly is unavailable in the picker. Inside
+[Rex, tmux, or Zellij](#terminal-multiplexers), picking it switches to that
+Polly's tab or window instead.
 
 The composer rule has a short accent and a steady approval cue.
 Quiet mode hides the composer rule.
@@ -317,135 +317,89 @@ Every open session has its own settings. Hidden sessions keep running and queue
 your input, then post a single notice when they finish. Parent links open the
 parent conversation.
 
-### Windows and lists
+### Panels and quick pickers
 
-The agent panel, the TODO panel, and the context popover from `/context` open
-in windows that stand beside the conversation while you keep working, and
-`/help`, `/title` and `/model` ask in a list. Inside [Rex](#inside-rex) the
-windows and the list are Rex's, and inside [tmux](#inside-tmux) or
-[Zellij](#inside-zellij) the windows are their panes. Everywhere else Polly
-draws them on its own screen, placed and behaving as near to Rex's as a
-terminal's cells allow:
+The TODO panel (`/todo`), agent panel, and context popover (`/context`) open as
+live panels on the right side of the screen so you can keep working while
+watching them update. Inside [Rex, tmux, or Zellij](#terminal-multiplexers),
+Polly opens them as native floating windows or split panes; everywhere else,
+Polly draws them inside its own TUI with the same layout and shortcuts.
 
-- **The windows share one column at the right of the conversation** and never
-  cover each other: the TODO panel on top, the agent panel under it, the
-  context popover at the bottom, above the composer. Several can be open at
-  once, all as wide as the widest, so their edges line up. They make room as one opens and take it back as one closes; when the
-  column is short the tallest gives way first and scrolls, and the agent
-  panel keeps at least half.
-- **A window stays up while you type.** The TODO panel and the context
-  popover take the keys when they open and when you click or scroll them:
-  the arrows, Enter and Tab are theirs, and Esc closes the one that has
-  them. An approval or a history search that is waiting takes that Esc
-  first, and the window stays. Typing gives the keys back to the composer,
-  where the letter lands, and so does a click anywhere else; the window
-  stays where it is. Opening a panel again closes its window, as does the
-  `×` on its border.
-- **Tab goes round the open windows.** From the composer it gives the keys
-  to the topmost one: the TODO panel, then the agent panel, then the context
-  popover. In the TODO panel or the context popover, Tab first selects the
-  window's action when it has one that is not selected, and the next Tab
-  moves on to the window under it; from the last one the keys go back to the
-  composer. One of those two open with no other window keeps Tab for its
-  action, as before. While you are typing a `/command`, Tab completes it
-  unless the agent panel is open.
-- **The agent panel floats over the conversation**, which keeps its full
-  width underneath. A terminal narrower than 120 columns gives the panel
-  the whole width instead.
-- **Any of the three docks beside the conversation.** The `◨` on a window's
-  border, beside the `×`, makes it a pane of a column at the right, and the
-  conversation that much narrower; the `❐` on a docked pane floats it again.
-  Hovering either one names what it does in the status row, and Alt-P does
-  the same for the window that has the keys.
-  Docked panes stack in the same order, TODO on top and the context popover
-  at the bottom, and fill the column: the agent panel takes what the others
-  leave, in the split it used to open in, and without it the last pane does.
-  Windows that still float sit over the conversation, beside the column,
-  in one column of their own with one left edge. Where the terminal is not
-  wide enough for both, the floating ones are narrowed so that 32 columns of
-  the conversation stay uncovered.
-  Each panel is remembered on its own, across launches, in the same
-  `POLLYTOOL_PANES` setting Rex's docking uses (`agents`, `todo`,
-  `context`). Below 120 columns, or with fewer than six rows of
-  conversation, nothing docks and the marks are not shown on any of them.
-- **`/help` lists the commands and skills**: type to filter, Enter to choose.
-  A command that needs nothing more runs; one that needs an argument, or a
-  skill, is typed into the composer for you to finish. The last row opens
-  the full help page with the keys, and `/help <command>` opens that
-  command's help.
-- **`/title`** with nothing after it asks for the session's title on a line
-  that starts from the one it has.
-- **`/model`** lists the models of the session's provider and switches this
-  session to the one chosen, as `/set model` does. The last row opens the
-  setup form, which is also what opens when the models cannot be listed.
+- **Non-blocking layout.** Open panels stack cleanly in a single right-hand
+  column—TODO at the top, agent panel in the middle, context at the bottom—above
+  the composer. They resize to share space as panels open and close, and stay
+  open while you type.
+- **Keyboard focus.** TODO and context take focus when you open, click, or
+  scroll them; typing any regular character or clicking outside returns focus to
+  the composer without closing them. `Tab` cycles focus from the composer
+  through open panels (TODO → agent panel → context → composer), selecting an
+  in-panel action first when one is available. `Esc` closes the focused panel
+  (after dismissing any active approval prompt or history search), and clicking
+  `×` or running the panel's command again also closes it.
+- **Floating vs. docked.** On terminals at least 120 columns wide, panels float
+  over the conversation by default so the transcript keeps its full width
+  (below 120 columns, the agent panel uses the full width and docking is
+  unavailable). Press `Alt-P` on a focused panel—or click `◨` / `❐` in its
+  border—to dock it beside the conversation as a split pane or float it again.
+  Polly remembers each panel's preference across launches in `POLLYTOOL_PANES`
+  (comma-separated: `agents`, `todo`, `context`) in `~/.pollytool/config`, which
+  the `POLLYTOOL_PANES` environment variable overrides.
+- **Quick pickers.** `/help` opens a filterable command and skill launcher
+  (commands with no arguments run immediately; commands needing arguments or
+  skills populate the composer; the last row opens the full keybinding
+  reference). `/model` lists models for the current provider and switches the
+  session to your choice (falling back to `/setup` if the catalog is
+  unavailable). `/title` with no argument prompts to edit the current session
+  title.
+- **Agent wall (`/wall`).** Inside Rex, tmux, or Zellij, `/wall` opens a
+  dedicated tab or window tiled with live panes for up to nine active or
+  waiting agents; new agents reuse panes left by finished ones unless you've
+  scrolled or navigated in them. Press `Esc` in a pane to remove that agent from
+  the wall, or run `/wall` again to close the whole wall. Outside a multiplexer,
+  `/wall` opens the regular agent panel.
 
-### Inside Rex
+### Terminal multiplexers
 
-When Polly runs in a Rex terminal on macOS or Linux, it hands some of its own
-chrome to Rex. If Rex refuses a request, Polly does the same thing on its own
-screen, as it does outside Rex (see [Windows and lists](#windows-and-lists)),
-and says so once. A window Rex opens whose terminal has not connected back to
-Polly within three seconds counts as refused: Polly has Rex close it and draws
-the panel itself. Until the agent panel's window has connected, the panel
-stays in Polly's own frame.
+On macOS and Linux, Polly detects Rex, tmux, and Zellij automatically—no setup
+required. If multiplexers are nested (for example, tmux inside Rex), Polly uses
+the innermost one. Whenever a host doesn't support a feature or refuses a
+request, Polly falls back to its own TUI.
 
-- **Panels open in floating Rex windows** over Polly's tab instead of inside
-  its screen: the agent panel, the TODO panel, and the context popover from
-  `/context`. A window does not take the keys from the composer and does not
-  resize Polly; click into it to scroll, navigate, or act on what it shows.
-  It follows the visible session, and is Rex's to move, resize or minimize.
-  Opening a panel again closes its window, as do Escape in the window and
-  closing it in Rex.
-  - **The agent panel** takes the right of the tab, down to the composer, and
-    closes with the panel.
-  - **The TODO panel** sits at the top right and follows the checklist.
-  - **The context popover** sits at the right, above the status row. Its
-    request history is drawn in text there, not as an image.
+Across all three hosts, Polly delegates:
 
-  With several open, the windows share one column at the right, all as wide
-  as the widest, and never cover each other: the TODO panel on top, the agent panel under it, the
-  context popover at the bottom. They make room as one opens and take it
-  back as one closes; when the column is short the tallest gives way first
-  and scrolls, and the agent panel keeps at least half. They sit over
-  Polly's own pane, not over panes beside it, and above the composer however
-  many lines it has grown to, or the form docked in its place. The TODO
-  panel's window grows and shrinks with its checklist. A window you move or
-  resize stays where you put it. If Rex fails to move a window, Polly asks
-  again a couple of seconds later, and after three failures in a row leaves
-  that window where it is.
+- **Panels:** TODO, agent panel, and context open as native floating panes or
+  docked splits, controlled with the same `Tab` and `Alt-P` shortcuts and
+  remembered in `POLLYTOOL_PANES`. Moving or resizing a floating pane manually
+  pins it where you put it.
+- **Sessions as tabs/windows:** `/new` and `/sessions` launch another Polly
+  instance in its own tab or window with your current flags and environment.
+  Picking a session already open in another Polly switches directly to its tab
+  or window instead of opening a read-only duplicate.
+- **Tab/window titles:** Polly names its tab or window after the session title
+  (or handle), leaves manually renamed tabs alone, and restores automatic naming
+  on exit.
+- **External editor splits:** `/plan edit` runs `$VISUAL` or `$EDITOR` in a
+  split pane beside Polly when it's a terminal editor (leaving graphical editors
+  in their own window).
+- **Agent wall:** `/wall` tiles live agent panes in a dedicated tab or window.
 
-  **Tab and Alt-P reach the windows from the keyboard.** Tab in the composer
-  has Rex bring the first open panel's window forward with the keys: the TODO
-  panel, then the agent panel, then the context popover. In a window, Tab
-  first selects the window's action when it has one that is not selected,
-  and the next Tab moves on to the window after it; from the last one the
-  keys go back to Polly's own terminal. While you are typing a `/command`,
-  Tab completes it. Alt-P in a window docks its panel beside Polly, or floats
-  it again: Polly closes the window, opens it the other way with the keys,
-  and remembers which, as below.
+#### Rex
 
-  **A panel you dock opens docked.** Dock a panel's window into the tab as an
-  ordinary pane, with Rex's Float Pane action, and Polly keeps it up to date
-  there and opens that panel as a pane from then on: beside Polly, or under
-  a panel that is docked already. Float the pane again and the panel goes
-  back to opening as a floating window. Closing a docked pane closes the
-  panel and leaves it docked for the next time. Each panel is remembered on
-  its own, across launches, as `POLLYTOOL_PANES` in `~/.pollytool/config`
-  (any of `agents`, `todo`, `context`); setting that variable in the
-  environment overrides the file.
-- **Each session is a Rex tab.** `/new` and a pick in `/sessions` start another
-  Polly in a tab of its own, with the same options and environment. Picking a
-  session that another Polly in Rex already has open brings that Polly's tab
-  to the front.
-- **Polly asks in Rex's command palette** what it would otherwise ask in a
-  dialog of its own. Rex shows a question only for an action its configuration
-  file defines, so this needs the action below in Rex's `init.lua`, followed by
-  `rex config reload`. Without it, or while Rex is showing another question,
-  Polly asks in a list of its own. Without the action Polly tries Rex again
-  only every half minute, so its own list opens with no wait in between.
-  Polly stays usable while the palette is open,
-  and the question appears in every Rex app connected to the server, so it can
-  be answered from another device.
+- **Floating windows & docking:** Panels open as floating Rex windows over
+  Polly's pane (context request history renders in text there rather than as an
+  image). Use `Alt-P` or Rex's Float Pane action to dock or re-float a panel;
+  Polly tracks the change and saves it to `POLLYTOOL_PANES`.
+- **Live status (OSC 7501):** Polly emits `OSC 7501` status records for turns,
+  pending approvals or questions, and active subagents automatically when
+  running inside Rex.
+- **Tab switching:** Bringing newly opened tabs, peer sessions, or `/wall` to
+  the front requires **Remote Control** to be enabled in Rex's settings. With it
+  off, tabs still open in the background and Polly lets you know.
+- **Command-palette prompts (optional):** To show `/sessions`, `/help`,
+  `/model`, `/title`, and pending approvals or model questions in Rex's native
+  command palette—visible across all connected Rex clients so you can answer
+  from another device—add this action to Rex's `init.lua` and run
+  `rex config reload`:
 
   ```lua
   rex.action{
@@ -469,129 +423,42 @@ stays in Polly's own frame.
   }
   ```
 
-  - **`/sessions`, `/resume` and Ctrl-G** list the sessions. Each row shows
-    the session's title, its name and length, whether it is open here or in
-    another Polly, and how long ago it was used. The session on screen is left
-    out. Editing another session's title with F2 is only in Polly's own
-    picker.
-  - **`/help`** lists the commands and skills. Choosing a command that needs
-    nothing more runs it; one that needs an argument, or a skill, is typed
-    into the composer for you to finish. The last row opens the full help
-    page with the keys. `/help <command>` still opens that command's help.
-  - **`/title`** with nothing after it asks for the session's title, starting
-    from the one it has.
-  - **`/model`** lists the models of the session's provider and switches this
-    session to the one chosen, as `/set model` does. The last row opens the
-    setup form.
-  - **An approval or a question from the model** is asked in Polly first. It
-    is asked in the palette too when Polly's terminal does not have the keys,
-    or after fifteen seconds with no answer and no key pressed, and the first
-    answer settles it. Keys and clicks in one of Polly's own windows or panes
-    count as keys in Polly: working in the agent panel's window does not send
-    the question to the palette. The
-    palette's first row decides nothing, so a key meant for something else
-    cannot approve a tool. A question keeps only its first line there; the
-    whole of it is in Polly.
-- **A tab Polly opens comes to the front**: a new session, a session's
-  existing tab, and the agent wall. Rex's app only switches tabs for another
-  program when Remote Control is turned on in its settings. With it off, the
-  tab still opens, behind the one you are in, and Polly tells you so and
-  passes on Rex's reason the first time.
-- **The tab is named after the session**: its title, or its name until it has
-  one. A tab you named yourself keeps your name, and Rex's own name comes back
-  when Polly exits.
-- **`/plan edit` runs `$VISUAL` or `$EDITOR`** and gives it a pane beside
-  Polly if it turns out to be a terminal program. A graphical editor opens its
-  own window and gets no pane.
-- **`/wall` opens the agent wall**: a tab tiled with one live pane per agent
-  that is working or waiting on you, up to nine. Each pane is that agent's
-  panel, so you can scroll, search, follow links, and stop or resume the agent
-  there. An agent that starts takes the pane of one that has finished, unless
-  you scrolled or navigated in it, or else a new pane. Escape in a pane, or
-  closing it in Rex, takes that agent off the wall; `/wall` again closes the
-  whole wall. Outside Rex, tmux and Zellij, `/wall` opens the agent panel.
+  Without this action, Polly uses its own built-in pickers. Tool approvals and
+  model questions always appear in Polly first, then mirror to the Rex palette
+  immediately if Polly isn't focused or after 15 seconds of inactivity (using a
+  harmless first row so stray keystrokes can't accidentally approve a tool).
+  Whichever side you answer first resolves the prompt. Note that renaming
+  another session with `F2` is only available in Polly's built-in session
+  picker.
 
-### Inside tmux
+#### tmux
 
-Inside tmux, Polly asks tmux for what it asks Rex for. Nothing has to be
-configured. With one host inside another (tmux in a Rex terminal, Zellij in
-a tmux pane), Polly uses the innermost, since the pane it is in is that
-one's.
+- Works out of the box with no configuration.
+- **Floating panes** require tmux 3.8+ (`new-pane`). On older tmux versions,
+  floating panels draw inside Polly's TUI while docked splits, session windows,
+  `/plan edit`, and `/wall` still use tmux natively.
+- Dock or float panels with `Alt-P`, `join-pane`, or `break-pane -W`.
+- Interactive pickers, approvals, and model questions stay in Polly's TUI.
 
-- **Panels open in floating panes** over Polly's own pane, where tmux has
-  them (`new-pane`, in tmux 3.8): the agent panel, the TODO panel and the
-  context popover, in the same column and order as in Rex, without taking
-  the keys from the composer. Click one, or select it, to scroll and act in
-  it; Escape in it, or opening the panel again, closes it. An older tmux has
-  no floating panes, and the panels float on Polly's own screen instead (see
-  [Windows and lists](#windows-and-lists)).
-- **Tab and Alt-P work as they do in Rex**: Tab goes round the panels' panes
-  and back to Polly's own, and Alt-P in a panel's pane docks it or floats it
-  again.
-- **A panel you dock opens docked.** Put a floating pane into the window's
-  layout (`join-pane`), and Polly opens that panel as a split from then on:
-  beside its own pane, or under a panel already docked. Float it again
-  (`break-pane -W`) and it goes back to floating. This is the same
-  `POLLYTOOL_PANES` setting as everywhere else, and it works in a tmux
-  without floating panes too.
-- **A floating pane you move or resize stays where you put it.** One that
-  tmux itself moves, to keep it inside a window that got smaller, is still
-  Polly's to place.
-- **Each session is a tmux window.** `/new` and a pick in `/sessions` start
-  another Polly in a window of the same tmux session, and picking a session
-  another Polly on the same tmux server has open selects that Polly's
-  window.
-- **The window is named after the session**, unless you named it yourself;
-  tmux's automatic name comes back when Polly exits.
-- **`/plan edit`** gives a terminal editor a split beside Polly. The editor
-  starts in a window in the background and is moved beside Polly once it
-  takes the screen; a graphical editor's window stays in the background
-  until it exits.
-- **`/wall`** tiles one pane per agent in a window of its own.
-- **Questions stay on Polly's own screen.** tmux has no list to ask in, so
-  `/sessions`, `/help`, `/title`, `/model`, approvals and the model's
-  questions are asked in Polly, as outside tmux.
+#### Zellij
 
-### Inside Zellij
-
-Inside Zellij, Polly asks Zellij for the same things. Nothing has to be
-configured, but it needs a Zellij recent enough to list its panes
-(`zellij action list-panes`); with an older one Polly keeps to its own
-screen.
-
-- **Panels open in pinned floating panes** over Polly's own pane: the agent
-  panel, the TODO panel and the context popover, in the same column and
-  order as in Rex. Pinned, they stay in sight while the keys are in the
-  composer. Focus one to scroll and act in it; Escape in it, or opening the
-  panel again, closes it.
-- **Tab and Alt-P work as they do in Rex**: Tab goes round the panels' panes
-  and back to Polly's own, and Alt-P in a panel's pane embeds it or floats it
-  again. A key Zellij binds itself never reaches Polly: if your Zellij binds
-  Alt-P, use its embed-or-float key instead.
-- **A panel you embed opens embedded.** Embed a floating pane in the tab's
-  layout, with Zellij's embed-or-float key, and Polly opens that panel as a
-  split at its right from then on; float it again and it goes back to
-  floating. This is the same `POLLYTOOL_PANES` setting as everywhere else.
-  Zellij splits a pane in half and only beside the pane that asks, so panels
-  docked together stand side by side, not stacked.
-- **A floating pane you move or resize stays where you put it.**
-- **Each session is a Zellij tab.** `/new` and a pick in `/sessions` start
-  another Polly in a tab of the same Zellij session, and picking a session
-  another Polly in that session has open goes to that Polly's tab.
-- **The tab is named after the session**, unless you named it yourself.
-- **`/plan edit`** gives the editor a pane at Polly's right. Zellij does not
-  say whether a program has taken the screen, so a graphical editor gets a
-  pane too, which stays empty until the editor exits.
-- **`/wall`** opens a tab with one pane per agent, laid out by Zellij.
-- **Questions stay on Polly's own screen**, as inside tmux.
+- Works out of the box on Zellij versions that support
+  `zellij action list-panes` (older versions stay inside Polly's TUI).
+- Floating panels open as pinned floating panes so they stay visible while you
+  type. Embedded panels split side-by-side beside Polly rather than stacking
+  vertically.
+- If Zellij binds `Alt-P`, use Zellij's own embed/float keybinding instead.
+- `/plan edit` opens a pane beside Polly for graphical editors as well, since
+  Zellij doesn't expose whether a command claimed the terminal.
+- Interactive pickers, approvals, and model questions stay in Polly's TUI.
 
 ### Keys
 
 | Key | Action |
 |---|---|
 | `Enter` | Send; accept a completion first if one is open |
-| `Tab` | Move the keys to the next open window (TODO, agent panel, context) and back; with none open, accept a completion |
-| `Alt-P` | Dock the window that has the keys beside the conversation, or float it again |
+| `Tab` | Cycle focus across open panels (TODO, agent panel, context) and back; otherwise accept a completion |
+| `Alt-P` | Dock or float the focused panel |
 | `Ctrl-C` | Warn, then press again to cancel; again while canceling, quit |
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
@@ -644,9 +511,9 @@ the next attempt. A highlighted clock flags retry or timeout details shown
 below it, and a paused or failed execution shows its reason there.
 
 The view opens following new output and expanded, so every run lists its calls
-(the main conversation opens collapsed). `Ctrl-O` collapses or expands the view
-that has the keys and leaves the other as it is. Folds made by hand, opened
-thoughts and opened outputs are kept across updates and reopening the agent. For agents
+(the main conversation opens collapsed). `Ctrl-O` collapses or expands whichever
+view is focused without changing the other. Manual folds, opened thoughts, and
+opened outputs are preserved across updates and reopening the agent. For agents
 running in this Polly process, the view includes live assistant text,
 reasoning, and completed tool results before the next saved checkpoint. Updates
 are coalesced about every 100 ms, not rendered per token; this is not a
@@ -673,9 +540,8 @@ that launched it.
 Clicking outside the panel leaves it open; use its close button or `Esc` to
 dismiss it.
 
-`Tab` moves focus between the composer and the agent panel, by way of the TODO
-panel and the context popover when those are open on Polly's own screen (see
-[Windows and lists](#windows-and-lists)). In the agent list,
+`Tab` cycles focus between the composer and any open panels (see
+[Panels and quick pickers](#panels-and-quick-pickers)). In the agent list,
 `Up/Down` selects an agent and `Enter` or `Right` opens its inspection. `Left`
 returns to the list. Agent and Swarm views scroll with `Up/Down`;
 in Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
@@ -683,22 +549,21 @@ in Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
 
 In a focused panel, `Shift-Tab` selects a visible action and underlines it.
 `Left/Right` or another `Shift-Tab` moves between actions, and `Enter` activates
-the selection. `Up/Down` returns to normal navigation, and `Tab` moves on to
-the next open window, or back to the composer. `Alt-P` docks the panel or
-floats it again, and the divider's width controls apply only while it is docked.
+the selection. `Up/Down` returns to normal navigation, and `Tab` moves to the
+next open panel or back to the composer. `Alt-P` docks or floats the panel;
+divider width controls apply while it is docked.
 
 ### Slash commands
 
-`/help [command]` has the full syntax for everything. In the TUI `/help` lists
-the commands to filter and choose from, and the list's last row opens a
-compact reference dialog with the keys: type to filter, scroll with the arrows
-or Page Up/Down, and press Esc to close it.
+`/help` opens a filterable picker of commands and skills, with a final row for
+the full keybinding reference dialog; `/help <command>` shows syntax for a
+single command.
 
 | Task | Commands |
 |---|---|
-| Preferences and defaults | `/set [key [value]]`, `/speed`, `/setup` |
+| Preferences and defaults | `/model`, `/set [key [value]]`, `/speed`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
-| Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
+| Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title [text]`, `/rename` |
 | Planning and progress | `/plan [goal]`, `/todo` |
 | Context and files | `/context [text]`, `/compact`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/theme [name]`, `/clear`, `/copy`, `/screenshot [path]` |
@@ -706,8 +571,9 @@ or Page Up/Down, and press Esc to close it.
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
 | Reset and exit | `/reset confirm`, `/exit` |
 
-`/title <text>` sets the displayed title, and `/title` alone asks for it;
-`/rename <name>` changes the handle used to reopen the session. `/clear` clears only the display, keeping the saved
+`/title <text>` sets the displayed title, or run `/title` by itself to edit it
+interactively; `/rename <name>` changes the handle used to reopen the session.
+`/clear` clears only the display, keeping the saved
 conversation and the model's context. `/reset confirm` clears durable
 conversation history.
 
@@ -743,7 +609,8 @@ restores its checklist without starting work.
 `/plan <goal>` starts an investigation without authorizing project changes;
 `/plan` without a goal enters or shows the current plan. While `PLAN` is
 visible, you can ask questions or revise the proposal. Open the advertised
-Markdown file in your editor (`/plan edit`), or revise it in chat. Put the
+Markdown file in your editor (`/plan edit`, which opens terminal editors in a
+split pane inside Rex, tmux, or Zellij), or revise it in chat. Put the
 outcomes you want tracked in one `## Steps` section, using one top-level list
 item per outcome. For example:
 
@@ -804,11 +671,10 @@ model, host, context limit, and effort to the current session, the endpoint and
 key override to the process, and a changed theme to the UI. It saves the model,
 host, endpoint, effort, theme, and sandbox defaults to `~/.pollytool/config`;
 the context limit stays session-only and the key stays process-only. Once that
-file exists, Apply saves only the fields you changed: a value the form shows
-because this launch was started with it (`--baseurl`, `--model`, `--sandbox`)
-applies here and leaves the file as it was. Cycle the sandbox field away and
-back to save a policy the launch is already running. Its sandbox
-default affects later launches, not the sandbox already running.
+file exists, Apply writes only fields you actually changed so one-off launch
+flags (`--baseurl`, `--model`, `--sandbox`) aren't accidentally persisted. To
+save a sandbox policy that was passed at launch, toggle the sandbox field off
+and back on. Sandbox changes apply to later launches, not the running process.
 
 ### Agent panel
 
@@ -816,10 +682,10 @@ Click agents in the status bar or an inline agent name to open the agent panel.
 **Stop** cancels it and keeps it stopped until you choose **Resume agent**.
 Parent follow-ups cannot clear your stop. **Review** answers its approval request.
 
-At 120 columns or wider, the panel opens as a draggable 60/40 split; anything
-narrower gets the full width. Focus follows the pointer, Tab switches between
-the composer and the open windows without touching your draft, and Escape
-closes it.
+At 120 columns or wider, the panel floats on the right by default and docks into
+a draggable 60/40 split with `Alt-P` or its border toggle; narrower terminals
+give it the full width. Focus follows the pointer, `Tab` cycles between the
+composer and open panels without touching your draft, and `Esc` closes it.
 
 ### Subagents
 
@@ -1278,6 +1144,18 @@ options don't carry over between calls. A pipeline reports its last command's
 status; workflow `exec` adds `pipefail`, but ordinary Bash calls don't. Bash
 diffs in the TUI come from private Git snapshots and never touch the
 repository's own index.
+
+### Rex tools
+
+Six opt-in built-in tools let a model inspect and drive a Rex multiplexer server
+(`rex_inspect`, `rex_layout`, `rex_terminal`, `rex_lua`, `rex_api`, and
+`rex_client`). They aren't enabled by default—select the ones you want with `-t`
+(remembering that `-t` replaces the default tool list, so include `bash`,
+`read_file`, etc. if you still want them).
+
+Under a sandbox policy, add the `rex` preset (for example
+`--sandbox default+rex`) to pass `REX_SESSION`, `REX_BLOCK`, and
+`REX_RUNTIME_DIR` through and expose the live local Rex server socket.
 
 ### Shell tools
 

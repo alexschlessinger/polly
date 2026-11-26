@@ -6,7 +6,7 @@ Start with the [project overview and quick start](../README.md).
 
 | Guide | Find |
 |---|---|
-| [CLI and TUI](CLI.md) | Setup, commands, sessions, files, models, tools, and themes |
+| [CLI and TUI](CLI.md) | Setup, commands, sessions, panels, terminal multiplexers, models, tools, and themes |
 | [Sandboxing](SANDBOX.md) | Activation, home access, presets, profiles, build storage, and cleanup |
 | [Extra project directories](SANDBOX.md#extra-project-directories) | Extra project context with `--add-dir`, read-only under a sandbox |
 | [Swarms and workflows](WORKFLOWS.md) | Delegation, result delivery, review, integration, and recovery |
@@ -16,7 +16,7 @@ Start with the [project overview and quick start](../README.md).
 
 | Reference | Find |
 |---|---|
-| [Go API](API.md) | Clients, agents, tools, sessions, and managed workflows |
+| [Go API](API.md) | Clients, agents, tools, sessions, workflows, and Rex |
 | [JavaScript workflow reference](../swarm/workflow_help.md) | Complete signatures and examples, also available through `workflow_help()` |
 | [Local CI](../.github/local-ci/README.md) | Docker checks and the configured macOS/Linux runner setup |
 | [Contributor instructions](../AGENTS.md) | Repository layout, conventions, and required checks |

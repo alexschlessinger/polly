@@ -1379,19 +1379,22 @@ view, err := client.InspectSession(ctx, "")
 
 | Surface | API |
 |---|---|
-| Client & scoping | `NewClient(opts...)`, `WithBinary`, `WithServer`, `WithClient`, `WithSession`, `WithBlock`, `WithTimeout`, `WithAutoStart`, `WithCommandRunner`, `ForServer`, `ForSession`, `ForBlock`, `ForClient` |
+| Client & scoping | `NewClient(opts...)`, `WithBinary`, `WithServer`, `WithClient`, `WithSession`, `WithBlock`, `WithTimeout`, `WithAutoStart`, `WithCommandRunner`, `WithEnvLookup`, `Clone`, `ForServer`, `ForSession`, `ForBlock`, `ForClient` |
 | Generic RPC & schemas | `ListMethods`, `DescribeMethod`, `Call`, `CallSession`, `CallRaw`, `CallBlock` |
 | Sessions, tabs & layouts | `Whoami`, `Version`, `Status`, `BlockTypes`, `ListSessions`, `CreateSession`, `InspectSession`, `RenameSession`, `DestroySession`, `NewWindow`, `RenameWindow`, `CloseWindow`, `FocusWindow`, `MoveWindow`, `BlockLayout`, `ShellLayout`, `HorizontalSplit`, `VerticalSplit`, `NewSplit`, `NewBlock`, `MoveBlock`, `SwapBlocks`, `ResizePane`, `ZoomBlock`, `FocusBlock`, `FocusDirection`, `SetBlockLabel`, `DetachBlock`, `CloseBlock`, `FloatBlock`, `NewLayer`, `ResizeLayer`, `SetLayerState`, `RaiseLayer`, `LowerLayer`, `CloseLayer` |
 | Terminals | `Capture` (with automatic `blob_read` pagination), `ReadBlob`, `Write`, `SendKey`, `Process`, `Modes`, `Ports`, `ProgramStatus`, `PWD`, `Title`, `Size`, `Resize`, `Clear`, `Reset`, `ClipboardRead` |
 | Clients & actions | `ListClients`, `InspectClient`, `ListActions`, `PerformClientAction`, `InvokeAction` |
+| Prompts & navigation | `HasAction`, `Pick`, `Input`, `AskActionLua`, `SelectWindow`, `PromptError`, `PickRequest`, `PickItem`, `PickAnswer`, `InputRequest` |
 | Hosts & forwards | `ListHosts`, `CheckHosts`, `ListForwards`, `CloseForwards`, `OpenForward`, `ShareForward`, `NewForward` (`*Forward` handle with `Address`, `Wait`, `Close`) |
 | Lua & events | `EvalLua`, `EvalLuaRaw`, `Subscribe` (`*EventStream`), `WaitEvent` |
 
-When `WithServer` / `ForServer` is set, ambient `REX_SESSION` and `REX_BLOCK`
+When `WithServer` or `ForServer` is set, ambient `REX_SESSION` and `REX_BLOCK`
 environment variables are ignored unless `WithSession` or `WithBlock` is passed
-explicitly. CLI/server errors decode into `*rex.APIError` and unwrap to typed
-sentinels (`ErrBinaryNotFound`, `ErrRemoteControlDisabled`, `ErrNotFound`,
-`ErrBadRequest`, `ErrConflict`, `ErrUnreachable`).
+explicitly. CLI and server errors decode into `*rex.APIError` and unwrap to
+typed sentinels (`ErrBinaryNotFound`, `ErrRemoteControlDisabled`,
+`ErrNotFound`, `ErrBadRequest`, `ErrConflict`, `ErrUnreachable`). Prompt
+failures decode into `*rex.PromptError` (`Dismissed()` distinguishes user
+cancellation or timeout from host errors).
 
 For agent loops, `tools.WithNativeTools()` registers six opt-in native tools
 (`rex_inspect` as a `ReadOnlyTool`, `rex_layout`, `rex_terminal`, `rex_lua`,

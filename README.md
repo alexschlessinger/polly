@@ -104,9 +104,10 @@ session name to switch sessions or the model to change it.
 | Key | Action |
 |---|---|
 | `Enter` | Send; input during a turn queues for later |
-| `Tab` | Accept a completion |
+| `Tab` | Cycle focus through open panels, or accept a completion |
+| `Alt-P` | Dock or float the focused panel |
 | `Ctrl-C` | Interrupt; again, or while idle, quit |
-| `Esc` | Dismiss the popup or agent panel; otherwise interrupt |
+| `Esc` | Dismiss the popup or focused panel; otherwise interrupt |
 | `Ctrl-R` / `Ctrl-G` | Search history / pick a session |
 | `Ctrl-O` | Collapse or expand all activity |
 | `Ctrl-V` | Attach a clipboard image |
@@ -114,19 +115,24 @@ session name to switch sessions or the model to change it.
 
 Type `@` to attach a workspace file, or start a line with `/` for commands and
 skills. Dragging a file into the composer attaches it, and Shift-drag selects
-text.
+text. Inside [Rex, tmux, or Zellij](docs/CLI.md#terminal-multiplexers), Polly
+automatically opens panels as native floating windows or split panes, runs
+sessions in their own tabs or windows, and supports `/wall` to tile active
+subagents side by side.
 
 A few commands worth knowing:
 
 | Command | Action |
 |---|---|
-| `/help` | Browse commands |
+| `/help` | Filterable command and skill picker |
+| `/model` | Switch models for the current session |
 | `/set [key [value]]` | Inspect or change session preferences |
 | `/speed [default\|fast\|ultrafast]` | Inspect or change processing speed for this session |
 | `/setup` | Configure model, key override, theme, and launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
 | `/plan [goal]` | Draft and review a plan before allowing implementation |
 | `/todo` | See the session’s outcomes, progress, and blockers — no plan required |
+| `/wall` | Tile running subagents side by side (in Rex, tmux, or Zellij) |
 | `/compact` | Summarize context now, retaining the saved transcript |
 | `/copy` | Copy the last completed response to the clipboard |
 | `/theme` | Preview and switch themes |
@@ -211,7 +217,10 @@ view images, and recall earlier work:
 | Recall | `list_artifacts`, `read_artifact`, `read_transcript` |
 | Rex (opt-in) | `rex_inspect`, `rex_layout`, `rex_terminal`, `rex_lua`, `rex_api`, `rex_client` |
 
-The Rex tools are registered as opt-in native tools (select them with `-t`, e.g. `-t rex_inspect -t rex_terminal`). Under a sandbox policy, add the `rex` preset (e.g. `--sandbox workspace+net+git+rex`) to expose the live local Rex server socket. When Polly runs inside Rex, its TUI also emits `OSC 7501` program status records for turns, approval/question prompts, and active workers.
+Rex tools are opt-in: enable them explicitly with `-t` (for example
+`-t bash -t rex_inspect -t rex_terminal`), and add the `rex` sandbox preset
+(`--sandbox default+rex`) if you run sandboxed. Inside Rex, the TUI also emits
+`OSC 7501` status updates for active turns, prompts, and workers.
 
 On multi-step requests, `update_todos` records outcomes and blockers in the
 session; `/todo` shows them. No plan is required. For work you want to approve
