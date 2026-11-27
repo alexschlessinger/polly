@@ -86,6 +86,9 @@ type conversationState struct {
 	// spend totals this session's cost since this process opened it,
 	// including its swarm members' model calls.
 	spend sessionSpend
+	// remote is set for a session of a control backend: its turns run there
+	// (backend_turn.go), and agent, swarm and the sandbox are left unset.
+	remote *remoteSession
 }
 
 // sessionContext also supports display-only states that do not own a session.
@@ -237,6 +240,12 @@ type conversationOpener struct {
 	// surface (see display_contract.go); every opened state carries them.
 	displayContract    string
 	outputCapabilities outputCapabilities
+	// backend, when set, opens every session on a control backend.
+	backend *remoteBackend
+	// followRunning has a backend session whose turn runs elsewhere opened
+	// to follow that turn live (the managed REPL); without it such a
+	// session's prompt is refused as busy.
+	followRunning bool
 }
 
 // openNew sets up everything a conversation needs: the session, its tool
@@ -261,6 +270,9 @@ func notifyStderr(line string) {
 // so the managed REPL may run it off the UI goroutine while the visible
 // session keeps serving input.
 func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool) (_ *conversationState, retErr error) {
+	if o.backend != nil {
+		return o.backend.openRemoteState(ctx, o, contextID, settings, autoContext)
+	}
 	config, llmClient, sessionStore := o.config, o.llmClient, o.sessionStore
 	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
 		return nil, fmt.Errorf("modelhost is supported only for OpenRouter")
@@ -386,6 +398,9 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 	settings := config.Launch.clone()
 	if contextID == "" {
 		return contextID, settings, nil
+	}
+	if o.backend != nil {
+		return o.backend.prepareRemote(ctx, contextID, settings, cmd)
 	}
 
 	contextInfo, err := sessionStore.GetMetadata(ctx, contextID)

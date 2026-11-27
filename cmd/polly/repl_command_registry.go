@@ -145,6 +145,11 @@ func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (ha
 	}
 	ctx = r.withContext(ctx)
 	ctx.line = strings.TrimSpace(line)
+	if ctx.state != nil && ctx.state.remote != nil {
+		if why, refused := remoteUnsupportedCommands[cmd.name]; refused {
+			return true, false, ctx.replyLine(cmd.name + " is not available on a --backend session: " + why)
+		}
+	}
 	// These are user commands that can run shell code, start writable agents,
 	// load processes, or change sandbox grants without going through a turn.
 	if planRequiresWritableMode(cmd.name, args) {

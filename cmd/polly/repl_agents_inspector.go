@@ -78,6 +78,12 @@ func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspect
 			}
 		}
 	}
+	// A backend's children, as their rows say.
+	for id, entry := range remoteAgentEntries(root) {
+		if _, ok := entries[id]; !ok {
+			entries[id] = entry
+		}
+	}
 	// Legacy child tabs can exist without a swarm member record.
 	for _, tab := range r.tabs {
 		if tab == root || r.rootTab(tab) != root {

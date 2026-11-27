@@ -62,6 +62,9 @@ type replTab struct {
 	swarmActivities map[string]swarm.LiveActivity
 	agentIdle       map[string]agentIdleClock
 	swarmView       swarm.StateCache
+	// remoteAgents is a backend root's children, as their rows last said
+	// (backend_agents.go); nil for a tab of polly's own engine.
+	remoteAgents *remoteAgentRoster
 	// Typed launches announce each settled execution once, independently of paint.
 	swarmAnnounced map[string]string
 }
@@ -155,6 +158,7 @@ func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *r
 		r.tabs = append(r.tabs, tab)
 	}
 	r.showTab(r.tabIndexOfModel(m))
+	r.followRemoteTurnOn(tab)
 	return nil
 }
 

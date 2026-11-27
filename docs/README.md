@@ -11,6 +11,7 @@ Start with the [project overview and quick start](../README.md).
 | [Extra project directories](SANDBOX.md#extra-project-directories) | Extra project context with `--add-dir`, read-only under a sandbox |
 | [Swarms and workflows](WORKFLOWS.md) | Delegation, result delivery, review, integration, and recovery |
 | [Headless screenshots](SCREENSHOTS.md) | Scripted off-screen TUI captures and replayable fixtures |
+| [Control backends](BACKEND.md) | `--backend`: running turns in a JSON-RPC control daemon such as `polly-zig serve`, `--attach`, `--stop`, `--workspace` |
 
 ## Building with Polly
 
