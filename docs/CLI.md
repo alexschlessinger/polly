@@ -1327,3 +1327,14 @@ equivalent. The headless capture flags, `--shot-script <file|->`,
 `--logout <provider>` run a sign-in or forget one instead of a conversation, and
 `--device` makes `--login` use a code instead of a browser; see
 [Signing in with ChatGPT](#signing-in-with-chatgpt).
+
+`--backend <url>` (`POLLYTOOL_BACKEND`) runs every turn in a JSON-RPC control
+daemon instead of this process: `exec:///path/to/binary` or `exec://NAME`
+finds or starts the binary's daemon, and `unix:///path/to/serve.sock` dials a
+socket that is already there. With it, `--workspace <target>`
+(`POLLYTOOL_WORKSPACE`: `local`, `ssh:HOST[:DIR]`, `docker:CONTAINER[:DIR]`)
+says where the backend's tools work, and `--attach [SESSION]` and
+`--stop [SESSION]` follow or stop a session's running turn from another
+terminal (the last session by default). `--list`, `--show` and `--export` read
+the backend's store. A sandbox policy, `--confirm`, and the context operations
+that write polly's own store are refused. See [Control backends](BACKEND.md).

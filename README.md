@@ -23,6 +23,7 @@ Run it as a full-screen TUI, pipe it a prompt, or embed it in your own Go progra
 - [Skills](#skills)
 - [Themes](#themes)
 - [Sandboxing](#sandboxing)
+- [Control backends](#control-backends)
 - [Documentation](#documentation)
 
 ## Install
@@ -313,6 +314,27 @@ denied.
 
 [Presets and everyday commands →](docs/SANDBOX.md#cli-presets) ·
 [Policies and platform details →](docs/SANDBOX.md)
+
+## Control backends
+
+`--backend URL` (`POLLYTOOL_BACKEND`) runs turns in a daemon that speaks the
+JSON-RPC control contract, such as `polly-zig serve`, instead of in polly's own
+process. The TUI and the CLI work as usual, and every session is read through
+the daemon, so a socket forwarded from another machine works too.
+
+```bash
+polly --backend exec://polly-zig                       # find or start polly-zig's daemon
+polly --backend unix:///run/user/1000/polly-zig/1-<key>.sock -p "hi"
+polly --backend exec://polly-zig --attach fix-tests    # follow its running turn from here
+polly --backend exec://polly-zig --stop fix-tests      # stop it
+```
+
+The backend serves `anthropic`, `openai`, `openrouter`, `deepseek` and
+`huggingface` models. `--workspace ssh:HOST[:DIR]` or
+`docker:CONTAINER[:DIR]` runs its tools elsewhere. Its tools run outside
+polly's sandbox, so a sandbox policy or `--confirm` refuses the launch.
+
+[URLs, what runs where, and what is refused →](docs/BACKEND.md)
 
 ## Documentation
 
