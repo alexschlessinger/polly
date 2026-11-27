@@ -132,4 +132,8 @@ type Config struct {
 
 	// Skills to load directly (local paths or URLs, auto-activated)
 	Skills []string
+
+	// Backend runs turns in a control daemon instead of this process (see
+	// backend_config.go); its zero value is the in-process engine.
+	Backend backendConfig
 }

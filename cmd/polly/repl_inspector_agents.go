@@ -59,6 +59,9 @@ func (r *managedREPL) heldElsewhere(target viewTarget) bool {
 }
 
 func (r *managedREPL) stopInspectedAgent(target viewTarget) {
+	if r.stopRemoteAgent(target) {
+		return
+	}
 	if runtime := r.inspectedSwarm(target); runtime != nil {
 		model := r.model
 		r.background(func() {

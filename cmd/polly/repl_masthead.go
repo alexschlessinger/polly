@@ -237,7 +237,7 @@ func (m *replModel) setModelName(model string) {
 // workspace profile changed.
 func (r *managedREPL) refreshSandboxPosture() {
 	if r.model.masthead.enabled {
-		r.model.masthead.sandbox = currentSandboxPosture(r.config, r.state).summaryLine(false)
+		r.model.masthead.sandbox = mastheadPosture(r.config, r.state)
 		r.model.visual.invalidate()
 	}
 }

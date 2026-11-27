@@ -523,6 +523,9 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // The phases live on turnExecution; this sequences them and owns the turn UI's
 // lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
+	if state.remote != nil {
+		return runRemoteTurn(ctx, config, state, userMsg, schema, inputReader, turnUI)
+	}
 	if err := state.waitWorkspaceChanges(ctx); err != nil {
 		return 1, err
 	}

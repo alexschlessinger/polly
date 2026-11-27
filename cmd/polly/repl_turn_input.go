@@ -24,6 +24,9 @@ type managedTurnInput struct {
 	// compact is a session action: it uses the cancellable turn lifecycle
 	// but adds no user message and never continues the agent loop.
 	compact bool
+	// attach follows a backend turn that runs elsewhere, from its prompt,
+	// as this tab's turn: it sends nothing (backend_attach_tui.go).
+	attach bool
 }
 
 // turnPersistenceAck belongs to one logical user turn. Provider goroutines can

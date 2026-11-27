@@ -99,7 +99,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.model.mu.Lock()
 	// The sandbox posture reads from the masthead, exceptional or not; the
 	// line frontends keep their startup notice.
-	r.model.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, r.state).summaryLine(false)}
+	r.model.masthead = mastheadState{enabled: true, sandbox: mastheadPosture(r.config, r.state)}
 	r.model.visual.invalidate()
 	r.appendPendingSandboxWarningsLocked()
 	if r.config.Setup {

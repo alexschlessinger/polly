@@ -57,7 +57,7 @@ func normalizeCommandArgs(args []string) []string {
 		args = append([]string(nil), args...)
 		args[1] = "-p"
 	}
-	return args
+	return normalizeOptionalValueFlags(args)
 }
 
 type commandRunner struct {
@@ -105,13 +105,24 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		}
 	}
 
+	if err := validateBackendConfig(cmd, config); err != nil {
+		return nil, err
+	}
 	// An interactive REPL with no context gets a generated, disk-backed one so
 	// the conversation survives exit (resume with -L or -c <name>). Contexts
 	// that never see a turn are discarded on exit.
 	autoContext := contextID == "" && wantsAutoREPLContext(config)
 
-	sessionStore, err := setupSessionStore(config, contextID, autoContext)
-	if err != nil {
+	var backend *remoteBackend
+	var sessionStore sessions.SessionStore
+	var err error
+	if config.Backend.enabled() {
+		// Every session is the backend's, read over its socket.
+		if backend, err = newRemoteBackend(config); err != nil {
+			return nil, err
+		}
+		sessionStore = backend.store
+	} else if sessionStore, err = setupSessionStore(config, contextID, autoContext); err != nil {
 		return nil, fmt.Errorf("failed to create context store: %w", err)
 	}
 
@@ -137,7 +148,7 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	}
 
 	return &commandRunner{
-		conversationOpener: conversationOpener{config: config, llmClient: newLLMRouter(), sessionStore: sessionStore, cmd: cmd},
+		conversationOpener: conversationOpener{config: config, llmClient: newLLMRouter(), sessionStore: sessionStore, cmd: cmd, backend: backend},
 		ctx:                ctx,
 		contextID:          contextID,
 		autoContext:        autoContext,
@@ -155,7 +166,9 @@ func (r *commandRunner) openNew(ctx context.Context, contextID string, autoConte
 	if err != nil {
 		return nil, err
 	}
-	if r.config.Setup {
+	if r.config.Setup || state.remote != nil {
+		// A backend's turns run on the backend's keys, which its worker
+		// checks as it is reached.
 		return state, nil
 	}
 	if err := missingKeyError(r.llmClient, state.settings.Model, r.config.BaseURL); err != nil {
@@ -184,9 +197,15 @@ func (r *commandRunner) Run() (retErr error) {
 		if err := r.sessionStore.Close(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("close context store: %w", err))
 		}
+		if r.backend != nil {
+			retErr = errors.Join(retErr, r.backend.Close())
+		}
 	}()
 	if op := r.config.Management; op != nil {
 		return op.run(r, r.config.ManagementArg)
+	}
+	if b := r.config.Backend; b.Attach || b.Stop {
+		return r.runAttachOrStop()
 	}
 	if err := validateSandboxFlagCombination(r.cmd, r.config); err != nil {
 		return err
@@ -194,7 +213,8 @@ func (r *commandRunner) Run() (retErr error) {
 
 	// Auto-generated contexts are created silently inside initializeSession;
 	// the "Created new context" stderr notice would garble the TUI splash.
-	if r.contextID != "" && !r.autoContext {
+	// A backend makes a named session with its first prompt.
+	if r.contextID != "" && !r.autoContext && r.backend == nil {
 		contextID, err := checkAndPromptForMissingContext(r.ctx, r.sessionStore, r.contextID)
 		if err != nil {
 			return err
@@ -280,6 +300,8 @@ func (r *commandRunner) runConversation() (retErr error) {
 	defer cancelSignal()
 
 	if input.mode == conversationModeREPL && managedREPL {
+		// A backend session whose turn runs elsewhere opens to follow it.
+		r.followRunning = true
 		// Each session's lease context parents that session's turns and ends
 		// the run when it is lost (see managedREPL.Run), so the run context
 		// carries signals only. The REPL owns the opened session from here:
@@ -392,7 +414,9 @@ func (r *commandRunner) openFirstWorkspace(ctx context.Context) (openResult, err
 		if entry != nil {
 			res.workspaceEntry = entry
 			res.name = entry.root.Metadata.Name
-			if entry.root.InUse {
+			// A backend's session holds no lease here: one whose turn runs
+			// elsewhere opens to follow that turn, not read-only.
+			if entry.root.InUse && r.backend == nil {
 				return res, nil
 			}
 			ctx = context.WithValue(ctx, childViewIdentityKey{}, entry.root.ID)

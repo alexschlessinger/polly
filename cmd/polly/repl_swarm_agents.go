@@ -144,6 +144,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 	if r.work == nil {
 		return
 	}
+	r.refreshRemoteAgents()
 	for _, tab := range r.tabs {
 		if tab.state == nil || tab.swarmLoading || time.Now().Before(tab.swarmRefreshAt) {
 			continue

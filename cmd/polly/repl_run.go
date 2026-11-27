@@ -43,6 +43,9 @@ func runManagedREPL(ctx context.Context, config *Config, first openResult, opene
 		if !ok || tui.state == nil {
 			return errors.New("turn started without a session")
 		}
+		if tui.turn.attach {
+			return followRemoteTurn(turnCtx, config, tui.state, turnUI)
+		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
 		prepared, err := activateComposerSkills(turnCtx, tui.state, tui.turn.userMessage.Clone())
@@ -94,7 +97,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	}
 	m.quiet = r.config.Quiet
 	if root {
-		m.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, state).summaryLine(false)}
+		m.masthead = mastheadState{enabled: true, sandbox: mastheadPosture(r.config, state)}
 	}
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)

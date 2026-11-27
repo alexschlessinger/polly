@@ -119,6 +119,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		config.SandboxPreset = expandSandboxPreset(config.SandboxPreset)
 	}
 	config.Management, config.ManagementArg = parseManagementFlag(cmd)
+	config.Backend = parseBackendConfig(cmd)
 	for _, spec := range settingSpecs {
 		if spec.fromCmd != nil {
 			spec.fromCmd(&config.Launch, cmd)
@@ -173,6 +174,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		themeConfigFlags(),
 		headlessConfigFlags(),
 		loginConfigFlags(),
+		backendConfigFlags(),
 	)
 
 	return flags, []cli.MutuallyExclusiveFlags{
